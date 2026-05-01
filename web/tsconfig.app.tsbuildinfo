@@ -1,0 +1,1 @@
+{"root":["./src/main.tsx","./src/app/App.tsx","./src/features/admin/AdminPage.tsx","./src/features/jobs/JobCreateForm.tsx","./src/features/jobs/JobsPage.tsx","./src/features/reader/ReaderPage.tsx","./src/hooks/useAppBootstrap.ts","./src/lib/api.ts","./src/lib/media-source.ts","./src/state/store.ts","./src/types/api.ts","./setupTests.ts"],"errors":true,"version":"5.9.3"}

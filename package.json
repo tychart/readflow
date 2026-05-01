@@ -1,0 +1,13 @@
+{
+  "name": "readflow",
+  "private": true,
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "test": "make test",
+    "lint": "make lint",
+    "typecheck": "make typecheck"
+  }
+}
+
