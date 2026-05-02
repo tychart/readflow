@@ -37,9 +37,13 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
     media_store = MediaStore(settings)
     telemetry = TelemetryService(settings.runtime.recent_events_limit)
     voice_registry = VoiceRegistry(settings, base_dir)
+    voice_registry.get_voice(settings.runtime.default_voice_id)
     provider: SynthesisProvider = (
-        FakeQwenProvider() if settings.tts_provider == "fake" else QwenProvider()
+        FakeQwenProvider()
+        if settings.tts_provider == "fake"
+        else QwenProvider(default_language=settings.runtime.default_language)
     )
+    provider.validate_environment()
     hub = WebSocketHub()
     model_manager = ModelManager(provider, telemetry, settings.runtime)
     worker = SynthesisWorker(

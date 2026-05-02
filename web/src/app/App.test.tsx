@@ -91,7 +91,7 @@ test("jobs list updates from websocket events", async () => {
           title: "Live job",
           status: "queued",
           voice_id: "suzy",
-          model_id: "qwen3-tts-0.6b",
+        model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: false,
           total_chunks_emitted: 1,
           total_chunks_completed: 0,

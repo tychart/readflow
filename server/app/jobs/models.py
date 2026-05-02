@@ -57,6 +57,7 @@ class ChunkRecord:
     plan_version: int
     char_start: int
     char_end: int
+    language: str = "English"
     status: ChunkStatus = ChunkStatus.PLANNED
     start_seconds: float = 0.0
     duration_seconds: float = 0.0
@@ -74,6 +75,7 @@ class Job:
     source_text: str
     model_id: str
     voice_id: str
+    language: str = "English"
     plan_version: int = 1
     status: JobStatus = JobStatus.QUEUED
     is_active_listening: bool = False

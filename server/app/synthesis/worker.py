@@ -49,39 +49,40 @@ class SynthesisWorker:
         start = monotonic()
         self._model_manager.mark_busy()
         try:
-            results = await self._provider.synthesize_batch(model_id, chunks, prompts)
-        except SynthesisOOMError:
-            self._telemetry.record_oom()
-            if len(chunks) == 1:
-                self._model_manager.mark_idle()
-                raise
-            retry_size = max(1, len(chunks) - 1)
-            results = await self._provider.synthesize_batch(
-                model_id, chunks[:retry_size], prompts[:retry_size]
-            )
-            chunks = chunks[:retry_size]
-        packaged: list[RenderedChunkResult] = []
-        for chunk, result in zip(chunks, results, strict=True):
-            stored = self._media_store.package_wav_chunk(
-                chunk.job_id, chunk.index, result.wav_bytes
-            )
-            packaged.append(
-                RenderedChunkResult(
-                    chunk_index=chunk.index,
-                    segment_path=stored.segment_path,
-                    init_segment_path=stored.init_segment_path,
-                    duration_seconds=stored.duration_seconds,
-                    reserved_vram_mb=result.reserved_vram_mb,
-                    allocated_vram_mb=result.allocated_vram_mb,
+            try:
+                results = await self._provider.synthesize_batch(model_id, chunks, prompts)
+            except SynthesisOOMError:
+                self._telemetry.record_oom()
+                if len(chunks) == 1:
+                    raise
+                retry_size = max(1, len(chunks) - 1)
+                results = await self._provider.synthesize_batch(
+                    model_id, chunks[:retry_size], prompts[:retry_size]
                 )
+                chunks = chunks[:retry_size]
+            packaged: list[RenderedChunkResult] = []
+            for chunk, result in zip(chunks, results, strict=True):
+                stored = self._media_store.package_wav_chunk(
+                    chunk.job_id, chunk.index, result.wav_bytes
+                )
+                packaged.append(
+                    RenderedChunkResult(
+                        chunk_index=chunk.index,
+                        segment_path=stored.segment_path,
+                        init_segment_path=stored.init_segment_path,
+                        duration_seconds=stored.duration_seconds,
+                        reserved_vram_mb=result.reserved_vram_mb,
+                        allocated_vram_mb=result.allocated_vram_mb,
+                    )
+                )
+            duration = monotonic() - start
+            last = packaged[-1] if packaged else RenderedChunkResult(0, "", "", 0.0, 0, 0)
+            self._telemetry.record_batch(
+                batch_size=len(packaged),
+                duration_seconds=duration,
+                reserved_vram_mb=last.reserved_vram_mb,
+                allocated_vram_mb=last.allocated_vram_mb,
             )
-        duration = monotonic() - start
-        last = packaged[-1] if packaged else RenderedChunkResult(0, "", "", 0.0, 0, 0)
-        self._telemetry.record_batch(
-            batch_size=len(packaged),
-            duration_seconds=duration,
-            reserved_vram_mb=last.reserved_vram_mb,
-            allocated_vram_mb=last.allocated_vram_mb,
-        )
-        self._model_manager.mark_idle()
-        return packaged
+            return packaged
+        finally:
+            self._model_manager.mark_idle()

@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
           title: "Playwright job",
           status: "queued",
           voice_id: "suzy",
-          model_id: "qwen3-tts-0.6b",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: false,
           total_chunks_emitted: 1,
           total_chunks_completed: 0,
@@ -33,7 +33,7 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({
       json: [
         { id: "suzy", display_name: "Suzy", description: null },
-        { id: "male_default", display_name: "Milo", description: null },
+        { id: "howard", display_name: "Howard", description: null },
       ],
     });
   });
@@ -73,4 +73,3 @@ test("jobs page creates a job", async ({ page }) => {
   await page.getByRole("button", { name: "Create job" }).click();
   await expect(page.getByText("Playwright job")).toBeVisible();
 });
-

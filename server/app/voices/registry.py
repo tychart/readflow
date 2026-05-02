@@ -53,16 +53,29 @@ class VoiceRegistry:
 
     def _load_voices(self) -> None:
         if not self._voices_dir.exists():
-            self._voices_dir.mkdir(parents=True, exist_ok=True)
-        for voice_dir in self._voices_dir.iterdir():
+            raise RuntimeError(
+                f"Voice directory '{self._voices_dir}' does not exist. "
+                "Provide built-in voices under server/voices/<voice_id>/."
+            )
+        for voice_dir in sorted(self._voices_dir.iterdir()):
             if not voice_dir.is_dir():
                 continue
             meta_path = voice_dir / "meta.json"
             ref_audio_path = voice_dir / "ref.wav"
             ref_text_path = voice_dir / "ref.txt"
-            if not meta_path.exists() or not ref_audio_path.exists() or not ref_text_path.exists():
-                continue
+            missing = [
+                str(path.name)
+                for path in (meta_path, ref_audio_path, ref_text_path)
+                if not path.exists()
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Voice '{voice_dir.name}' is missing required files: {', '.join(missing)}"
+                )
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            reference_text = ref_text_path.read_text(encoding="utf-8").strip()
+            if not reference_text:
+                raise RuntimeError(f"Voice '{voice_dir.name}' has an empty ref.txt")
             voice = VoiceDefinition(
                 id=voice_dir.name,
                 display_name=meta.get("display_name", voice_dir.name.replace("_", " ").title()),
@@ -72,30 +85,7 @@ class VoiceRegistry:
             )
             self._voices[voice.id] = voice
         if not self._voices:
-            self._bootstrap_default_voices()
-            self._load_voices()
-
-    def _bootstrap_default_voices(self) -> None:
-        seed_voices = {
-            "suzy": {
-                "display_name": "Suzy",
-                "description": "Warm default narrator voice.",
-            },
-            "male_default": {
-                "display_name": "Milo",
-                "description": "Calm alternate narrator voice.",
-            },
-        }
-        silent_wav = (
-            b"RIFF$\x08\x00\x00WAVEfmt "
-            b"\x10\x00\x00\x00\x01\x00\x01\x00D\xac\x00\x00\x88X\x01\x00\x02\x00\x10\x00data"
-            b"\x00\x08\x00\x00" + b"\x00" * 2048
-        )
-        for voice_id, meta in seed_voices.items():
-            voice_dir = self._voices_dir / voice_id
-            voice_dir.mkdir(parents=True, exist_ok=True)
-            (voice_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-            (voice_dir / "ref.txt").write_text(
-                "This is a placeholder reference transcript for development.", encoding="utf-8"
+            raise RuntimeError(
+                f"No built-in voices were discovered in '{self._voices_dir}'. "
+                "Add real voice folders before starting the app."
             )
-            (voice_dir / "ref.wav").write_bytes(silent_wav)

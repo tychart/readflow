@@ -14,7 +14,7 @@ def test_planner_prefers_sentence_boundaries_for_startup_chunk():
             "Second sentence is slightly longer, but should still be held "
             "for the next chunk.\n\nThird paragraph starts here."
         ),
-        model_id="qwen3-tts-0.6b",
+        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
 
@@ -41,7 +41,7 @@ def test_planner_enters_steady_state_after_first_three_chunks():
         title="Example",
         source_kind="text",
         source_text=text,
-        model_id="qwen3-tts-0.6b",
+        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
 

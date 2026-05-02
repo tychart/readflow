@@ -11,7 +11,7 @@ test("loads a job and sends play plus voice actions", async () => {
     jobs: [],
     voices: [
       { id: "suzy", display_name: "Suzy", description: null },
-      { id: "male_default", display_name: "Milo", description: null },
+      { id: "howard", display_name: "Howard", description: null },
     ],
     adminState: null,
     websocketStatus: "open",
@@ -28,7 +28,7 @@ test("loads a job and sends play plus voice actions", async () => {
           title: "Reader job",
           status: "queued",
           voice_id: "suzy",
-          model_id: "qwen3-tts-0.6b",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: false,
           total_chunks_emitted: 1,
           total_chunks_completed: 1,
@@ -80,7 +80,7 @@ test("loads a job and sends play plus voice actions", async () => {
           title: "Reader job",
           status: init?.body ? "playing" : "queued",
           voice_id: "suzy",
-          model_id: "qwen3-tts-0.6b",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: true,
           total_chunks_emitted: 1,
           total_chunks_completed: 1,
@@ -101,8 +101,8 @@ test("loads a job and sends play plus voice actions", async () => {
           id: "job-1",
           title: "Reader job",
           status: "queued",
-          voice_id: "male_default",
-          model_id: "qwen3-tts-0.6b",
+          voice_id: "howard",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: false,
           total_chunks_emitted: 1,
           total_chunks_completed: 1,
@@ -132,9 +132,8 @@ test("loads a job and sends play plus voice actions", async () => {
 
   await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
   await user.click(screen.getByRole("button", { name: /play/i }));
-  await user.selectOptions(screen.getByRole("combobox"), "male_default");
+  await user.selectOptions(screen.getByRole("combobox"), "howard");
 
   expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/voice", expect.any(Object));
 });
-

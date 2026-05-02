@@ -18,6 +18,7 @@ class JobManager:
         source_kind: str,
         model_id: str,
         voice_id: str,
+        language: str = "English",
         title: str | None = None,
     ) -> Job:
         now = time()
@@ -28,6 +29,7 @@ class JobManager:
             source_text=source_text,
             model_id=model_id,
             voice_id=voice_id,
+            language=language,
             submitted_at=now,
             updated_at=now,
         )
@@ -114,6 +116,7 @@ class JobManager:
             index=len(job.chunks),
             text=text,
             voice_id=voice_id,
+            language=job.language,
             plan_version=plan_version,
             char_start=char_start,
             char_end=char_end,

@@ -54,6 +54,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         text: str | None = Form(default=None),
         title: str | None = Form(default=None),
         voice_id: str | None = Form(default=None),
+        language: str | None = Form(default=None),
         file: UploadFile | None = File(default=None),
         app_services: AppServices = Depends(services),
     ) -> CreateJobResponse:
@@ -76,6 +77,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             source_kind=source_kind,
             model_id=app_services.settings.runtime.default_model_id,
             voice_id=voice,
+            language=language or app_services.settings.runtime.default_language,
             title=title,
         )
         detail = job_to_detail(job)
