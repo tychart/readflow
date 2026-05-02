@@ -4,7 +4,8 @@ import os
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from app.core.app import create_app
 
@@ -21,17 +22,20 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 @pytest.fixture
 def app(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("READFLOW_TTS_PROVIDER", "fake")
+    monkeypatch.setenv("READFLOW_SCHEDULER_AUTOSTART", "false")
     monkeypatch.setenv("READFLOW_TEMP_DIR_NAME", f"readflow-test-{uuid4()}")
     return create_app()
 
 
-@pytest.fixture
-def client(app):
-    with TestClient(app) as test_client:
-        yield test_client
+@pytest_asyncio.fixture
+async def client(app):
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:
+            yield test_client
 
 
-@pytest.fixture
-def services(app):
-    with TestClient(app):
-        yield app.state.services
+@pytest_asyncio.fixture
+async def services(client, app):
+    del client
+    yield app.state.services

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, ClassVar, cast
 
 from app.jobs.models import ChunkRecord
 from app.synthesis.provider import QwenProvider
@@ -71,7 +72,7 @@ class _FakeQwenModel:
 
 
 class _FakeQwenFactory:
-    created_models: list[_FakeQwenModel] = []
+    created_models: ClassVar[list[_FakeQwenModel]] = []
 
     @classmethod
     def from_pretrained(cls, *args, **kwargs) -> _FakeQwenModel:
@@ -132,12 +133,13 @@ def test_qwen_provider_batches_list_inputs_and_reuses_prompt_objects(monkeypatch
     )
 
     model = _FakeQwenFactory.created_models[-1]
-    call = model.generate_calls[-1]
+    call = cast(dict[str, Any], model.generate_calls[-1])
+    voice_clone_prompt = cast(list[object], call["voice_clone_prompt"])
 
     assert call["text"] == ["Hello there.", "General Kenobi."]
     assert call["language"] == "English"
-    assert len(call["voice_clone_prompt"]) == 2
-    assert call["voice_clone_prompt"][0] is call["voice_clone_prompt"][1]
+    assert len(voice_clone_prompt) == 2
+    assert voice_clone_prompt[0] is voice_clone_prompt[1]
     assert model.prompt_calls == [("/tmp/suzy.wav", "Reference text", False)]
     assert len(results) == 2
     assert all(result.wav_bytes == b"wav" for result in results)
@@ -193,5 +195,6 @@ def test_qwen_provider_repeats_list_like_prompts_using_batch_script_shape(monkey
         provider.synthesize_batch("Qwen/Qwen3-TTS-12Hz-0.6B-Base", chunks, [prompt, prompt])
     )
 
-    call = model.generate_calls[-1]
-    assert call["voice_clone_prompt"] == ["prompt-token", "prompt-token"]
+    call = cast(dict[str, Any], model.generate_calls[-1])
+    voice_clone_prompt = cast(list[str], call["voice_clone_prompt"])
+    assert voice_clone_prompt == ["prompt-token", "prompt-token"]

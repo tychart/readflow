@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     app_name: str = "ReadFlow"
     tts_provider: Literal["qwen", "fake"] = "qwen"
+    scheduler_autostart: bool = True
     voices_dir: str = "voices"
     temp_dir_name: str = "readflow"
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)

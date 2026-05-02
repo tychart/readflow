@@ -127,7 +127,8 @@ class QwenProvider:
             raise RuntimeError(f"Model '{model_id}' is not loaded")
         if len(chunks) != len(prompts):
             raise RuntimeError(
-                f"Expected one voice prompt per chunk, received {len(prompts)} prompts for {len(chunks)} chunks"
+                "Expected one voice prompt per chunk, "
+                f"received {len(prompts)} prompts for {len(chunks)} chunks"
             )
         languages = {chunk.language for chunk in chunks}
         if not languages:
@@ -139,7 +140,12 @@ class QwenProvider:
             raise RuntimeError("Mixed voices in one synthesis batch are not supported")
         language = next(iter(languages))
         try:
-            return await self._call_in_worker(self._synthesize_batch_sync, chunks, prompts, language)
+            return await self._call_in_worker(
+                self._synthesize_batch_sync,
+                chunks,
+                prompts,
+                language,
+            )
         except RuntimeError as exc:
             if _is_cuda_oom_error(exc):
                 await self._call_in_worker(self._clear_cuda_after_failure_sync)

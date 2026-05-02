@@ -15,14 +15,15 @@ from app.core.services import AppServices, build_services
 def create_app() -> FastAPI:
     settings = get_settings()
     base_dir = Path(__file__).resolve().parents[2]
-    services = build_services(settings, base_dir)
     scheduler_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         nonlocal scheduler_task
+        services = build_services(settings, base_dir)
         app.state.services = services
-        scheduler_task = asyncio.create_task(services.scheduler.run_forever())
+        if settings.scheduler_autostart:
+            scheduler_task = asyncio.create_task(services.scheduler.run_forever())
         yield
         await services.scheduler.shutdown()
         if scheduler_task is not None:

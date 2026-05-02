@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from app.core.app import create_app
 from app.core.config import Settings
@@ -66,28 +66,42 @@ def test_real_qwen_provider_generates_audio_from_real_voice_clone_prompt():
 @pytest.mark.real_model
 def test_real_qwen_app_serves_packaged_segments(monkeypatch):
     monkeypatch.setenv("READFLOW_TTS_PROVIDER", "qwen")
+    monkeypatch.setenv("READFLOW_SCHEDULER_AUTOSTART", "false")
     monkeypatch.setenv("READFLOW_TEMP_DIR_NAME", f"readflow-real-{uuid4()}")
     app = create_app()
 
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/jobs",
-            data={"text": "Hello there. This is a tiny end-to-end real model test.", "voice_id": "suzy"},
-        )
-        assert response.status_code == 200
-        job = response.json()["job"]
+    async def run() -> None:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.post(
+                    "/api/jobs",
+                    data={
+                        "text": "Hello there. This is a tiny end-to-end real model test.",
+                        "voice_id": "suzy",
+                    },
+                )
+                assert response.status_code == 200
+                job = response.json()["job"]
 
-        asyncio.run(app.state.services.scheduler.run_once())
+                await app.state.services.scheduler.run_once()
 
-        manifest_response = client.get(f"/api/jobs/{job['id']}/manifest")
-        assert manifest_response.status_code == 200
-        manifest = manifest_response.json()
+                manifest_response = await client.get(f"/api/jobs/{job['id']}/manifest")
+                assert manifest_response.status_code == 200
+                manifest = manifest_response.json()
 
-        written_chunk = next(chunk for chunk in manifest["chunks"] if chunk["status"] == "written")
-        init_response = client.get(manifest["init_segment_url"])
-        segment_response = client.get(written_chunk["segment_url"])
+                written_chunk = next(
+                    chunk for chunk in manifest["chunks"] if chunk["status"] == "written"
+                )
+                init_response = await client.get(manifest["init_segment_url"])
+                segment_response = await client.get(written_chunk["segment_url"])
 
-        assert init_response.status_code == 200
-        assert segment_response.status_code == 200
-        assert init_response.content
-        assert segment_response.content
+                assert init_response.status_code == 200
+                assert segment_response.status_code == 200
+                assert init_response.content
+                assert segment_response.content
+
+    asyncio.run(run())

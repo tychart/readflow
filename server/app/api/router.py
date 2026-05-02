@@ -30,7 +30,7 @@ from app.schemas.api import (
 def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     router = APIRouter(prefix="/api")
 
-    def services() -> AppServices:
+    async def services() -> AppServices:
         return get_services()
 
     def admin_config_response(app_services: AppServices) -> AdminConfigResponse:

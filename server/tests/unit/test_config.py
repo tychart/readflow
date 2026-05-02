@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+import asyncio
 
 from app.core.app import create_app
 from app.core.config import Settings
@@ -18,7 +18,11 @@ def test_settings_default_to_real_qwen_runtime():
 
 def test_app_fixture_can_override_provider_to_fake(monkeypatch):
     monkeypatch.setenv("READFLOW_TTS_PROVIDER", "fake")
+    monkeypatch.setenv("READFLOW_SCHEDULER_AUTOSTART", "false")
     app = create_app()
 
-    with TestClient(app):
-        assert isinstance(app.state.services.provider, FakeQwenProvider)
+    async def run() -> None:
+        async with app.router.lifespan_context(app):
+            assert isinstance(app.state.services.provider, FakeQwenProvider)
+
+    asyncio.run(run())

@@ -110,9 +110,13 @@ class SchedulerService:
         grouped: dict[tuple[str, str, str, str], list[ChunkRecord]] = defaultdict(list)
         for chunk in ranked_chunks:
             job = self._job_manager.get_job(chunk.job_id)
-            grouped[(job.model_id, job.language, chunk.voice_id, self._length_bucket(chunk))].append(
-                chunk
+            key = (
+                job.model_id,
+                job.language,
+                chunk.voice_id,
+                self._length_bucket(chunk),
             )
+            grouped[key].append(chunk)
         (model_id, _language, _voice_id, _bucket), chunks = next(iter(grouped.items()))
         reserved_vram, _allocated = await self._model_manager.memory_stats()
         batch_size = self._choose_batch_size(len(chunks), reserved_vram)
