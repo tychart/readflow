@@ -38,3 +38,8 @@ Object.defineProperty(window.URL, "createObjectURL", {
   writable: true,
   value: () => "blob:mock-media-source",
 });
+
+Object.defineProperty(window.URL, "revokeObjectURL", {
+  writable: true,
+  value: () => undefined,
+});

@@ -1,5 +1,6 @@
 export type JobStatus = "queued" | "rendering" | "paused" | "playing" | "completed" | "failed";
 export type ChunkStatus = "planned" | "queued" | "rendering" | "written" | "stale" | "failed";
+export type WebSocketStatus = "connecting" | "open" | "reconnecting" | "closed" | "error";
 
 export interface Chunk {
   index: number;
@@ -91,7 +92,7 @@ export interface WsEnvelope {
     | "scheduler_state"
     | "model_state"
     | "telemetry"
-    | "admin_config_updated";
+    | "admin_config_updated"
+    | "pong";
   payload: Record<string, unknown>;
 }
-

@@ -4,27 +4,47 @@ import { App } from "./App";
 import { useAppStore } from "../state/store";
 
 class MockWebSocket extends EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances: MockWebSocket[] = [];
   static latest: MockWebSocket | null = null;
-  readyState = 1;
+
+  readyState = MockWebSocket.CONNECTING;
 
   constructor() {
     super();
+    MockWebSocket.instances.push(this);
     MockWebSocket.latest = this;
-    queueMicrotask(() => this.dispatchEvent(new Event("open")));
+    queueMicrotask(() => {
+      this.readyState = MockWebSocket.OPEN;
+      this.dispatchEvent(new Event("open"));
+    });
   }
 
   close() {
+    this.readyState = MockWebSocket.CLOSED;
     this.dispatchEvent(new Event("close"));
   }
 
-  send() {}
+  send(payload: string) {
+    if (payload === "ping") {
+      queueMicrotask(() => this.emit({ type: "pong", payload: {} }));
+    }
+  }
 
   emit(payload: object) {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) }));
   }
+
+  fail() {
+    this.dispatchEvent(new Event("error"));
+    this.close();
+  }
 }
 
-test("jobs list updates from websocket events", async () => {
+function seedStore() {
   useAppStore.setState({
     jobs: [],
     voices: [],
@@ -52,14 +72,18 @@ test("jobs list updates from websocket events", async () => {
       },
     },
     websocketStatus: "connecting",
+    lastSocketMessageAt: null,
+    lastSocketError: null,
+    reconnectAttempt: 0,
+    isSocketStale: false,
     lastEvent: null,
-    setJobs: useAppStore.getState().setJobs,
-    setVoices: useAppStore.getState().setVoices,
-    setAdminState: useAppStore.getState().setAdminState,
-    setWebsocketStatus: useAppStore.getState().setWebsocketStatus,
-    applyEvent: useAppStore.getState().applyEvent,
   });
+}
 
+beforeEach(() => {
+  seedStore();
+  MockWebSocket.instances = [];
+  MockWebSocket.latest = null;
   vi.stubGlobal("WebSocket", MockWebSocket);
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -78,10 +102,19 @@ test("jobs list updates from websocket events", async () => {
       }),
     };
   }) as typeof fetch;
+});
 
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+test("jobs list updates from websocket events and shows live connection state", async () => {
   render(<App />);
 
   await waitFor(() => expect(MockWebSocket.latest).not.toBeNull());
+  expect(await screen.findByText(/live open/i)).toBeInTheDocument();
+
   act(() => {
     MockWebSocket.latest?.emit({
       type: "job_created",
@@ -91,7 +124,7 @@ test("jobs list updates from websocket events", async () => {
           title: "Live job",
           status: "queued",
           voice_id: "suzy",
-        model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: false,
           total_chunks_emitted: 1,
           total_chunks_completed: 0,
@@ -108,4 +141,23 @@ test("jobs list updates from websocket events", async () => {
   });
 
   expect(await screen.findByText("Live job")).toBeInTheDocument();
+});
+
+test("socket reconnects and surfaces reconnecting state", async () => {
+  render(<App />);
+
+  await waitFor(() => expect(MockWebSocket.latest).not.toBeNull());
+
+  act(() => {
+    MockWebSocket.latest?.fail();
+  });
+
+  expect(await screen.findByText(/live reconnecting/i)).toBeInTheDocument();
+
+  await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), {
+    timeout: 2_500,
+  });
+  await waitFor(() => expect(screen.getByText(/live open/i)).toBeInTheDocument(), {
+    timeout: 2_500,
+  });
 });

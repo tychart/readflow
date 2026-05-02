@@ -16,3 +16,4 @@ server/.venv/
 web/coverage/
 tmp/
 
+web/tsconfig.node.tsbuildinfo

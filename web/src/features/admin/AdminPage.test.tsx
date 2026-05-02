@@ -10,6 +10,10 @@ test("renders admin telemetry and saves config", async () => {
     jobs: [],
     voices: [],
     websocketStatus: "open",
+    lastSocketMessageAt: Date.now(),
+    lastSocketError: null,
+    reconnectAttempt: 0,
+    isSocketStale: false,
     lastEvent: null,
     adminState: {
       config: {
@@ -45,7 +49,7 @@ test("renders admin telemetry and saves config", async () => {
     setJobs: useAppStore.getState().setJobs,
     setVoices: useAppStore.getState().setVoices,
     setAdminState: useAppStore.getState().setAdminState,
-    setWebsocketStatus: useAppStore.getState().setWebsocketStatus,
+    setSocketState: useAppStore.getState().setSocketState,
     applyEvent: useAppStore.getState().applyEvent,
   });
 
@@ -77,4 +81,3 @@ test("renders admin telemetry and saves config", async () => {
   expect(screen.getByText(/batch size: 4/i)).toBeInTheDocument();
   expect(global.fetch).toHaveBeenCalledWith("/api/admin/config", expect.any(Object));
 });
-
