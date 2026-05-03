@@ -1,21 +1,13 @@
 import { useEffect } from "react";
 
 import { api } from "../lib/api";
+import { websocketUrl } from "../lib/transport";
 import { useAppStore } from "../state/store";
 import type { WsEnvelope } from "../types/api";
 
 const HEARTBEAT_MS = 15_000;
 const STALE_AFTER_MS = 30_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
-
-function websocketUrl() {
-  const url = new URL(window.location.href);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/api/ws";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
 
 export function useAppBootstrap() {
   const setJobs = useAppStore((state) => state.setJobs);
@@ -199,13 +191,22 @@ export function useAppBootstrap() {
 
       socket.addEventListener("message", (event) => {
         markActivity();
+        if (typeof event.data !== "string") {
+          setSocketState({
+            status: "error",
+            error: "Received non-text websocket data",
+          });
+          return;
+        }
+
+        const rawPayload = event.data.trim();
         let payload: WsEnvelope;
         try {
-          payload = JSON.parse(String(event.data)) as WsEnvelope;
+          payload = JSON.parse(rawPayload) as WsEnvelope;
         } catch {
           setSocketState({
             status: "error",
-            error: "Received malformed websocket data",
+            error: `Received malformed websocket data: ${rawPayload.slice(0, 80) || "<empty>"}`,
           });
           return;
         }

@@ -6,6 +6,7 @@ import type {
   JobSummary,
   Voice,
 } from "../types/api";
+import { apiPath } from "./transport";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -25,35 +26,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listJobs: () => request<JobSummary[]>("/api/jobs"),
-  getJob: (jobId: string) => request<JobDetail>(`/api/jobs/${jobId}`),
+  listJobs: () => request<JobSummary[]>(apiPath("/jobs")),
+  getJob: (jobId: string) => request<JobDetail>(apiPath(`/jobs/${jobId}`)),
   createJob: (formData: FormData) =>
-    request<{ job: JobDetail }>("/api/jobs", { method: "POST", body: formData }),
-  getManifest: (jobId: string) => request<JobManifest>(`/api/jobs/${jobId}/manifest`),
-  activateJob: (jobId: string) => request<JobDetail>(`/api/jobs/${jobId}/activate`, { method: "POST" }),
-  pauseJob: (jobId: string) => request<JobDetail>(`/api/jobs/${jobId}/pause`, { method: "POST" }),
-  resumeJob: (jobId: string) => request<JobDetail>(`/api/jobs/${jobId}/resume`, { method: "POST" }),
+    request<{ job: JobDetail }>(apiPath("/jobs"), { method: "POST", body: formData }),
+  getManifest: (jobId: string) => request<JobManifest>(apiPath(`/jobs/${jobId}/manifest`)),
+  activateJob: (jobId: string) =>
+    request<JobDetail>(apiPath(`/jobs/${jobId}/activate`), { method: "POST" }),
+  pauseJob: (jobId: string) =>
+    request<JobDetail>(apiPath(`/jobs/${jobId}/pause`), { method: "POST" }),
+  resumeJob: (jobId: string) =>
+    request<JobDetail>(apiPath(`/jobs/${jobId}/resume`), { method: "POST" }),
   updateJobVoice: (jobId: string, voiceId: string) =>
-    request<JobDetail>(`/api/jobs/${jobId}/voice`, {
+    request<JobDetail>(apiPath(`/jobs/${jobId}/voice`), {
       method: "POST",
       body: JSON.stringify({ voice_id: voiceId }),
     }),
   updatePlayback: (jobId: string, currentTimeSeconds: number, isPlaying: boolean) =>
-    request<JobDetail>(`/api/jobs/${jobId}/playback`, {
+    request<JobDetail>(apiPath(`/jobs/${jobId}/playback`), {
       method: "POST",
       body: JSON.stringify({
         current_time_seconds: currentTimeSeconds,
         is_playing: isPlaying,
       }),
     }),
-  listVoices: () => request<Voice[]>("/api/voices"),
-  getAdminState: () => request<AdminState>("/api/admin/state"),
+  listVoices: () => request<Voice[]>(apiPath("/voices")),
+  getAdminState: () => request<AdminState>(apiPath("/admin/state")),
   updateAdminConfig: (config: Partial<AdminConfig>) =>
-    request<AdminConfig>("/api/admin/config", {
+    request<AdminConfig>(apiPath("/admin/config"), {
       method: "POST",
       body: JSON.stringify(config),
     }),
-  warmModel: () => request<{ status: string }>("/api/admin/model/warm", { method: "POST" }),
-  evictModel: () => request<{ status: string }>("/api/admin/model/evict", { method: "POST" }),
+  warmModel: () => request<{ status: string }>(apiPath("/admin/model/warm"), { method: "POST" }),
+  evictModel: () =>
+    request<{ status: string }>(apiPath("/admin/model/evict"), { method: "POST" }),
 };
-
