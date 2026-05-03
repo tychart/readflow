@@ -19,6 +19,7 @@ class SchedulerService:
     def __init__(
         self,
         config: RuntimeConfig,
+        chunk_mime_type: str,
         job_manager: JobManager,
         planner: ChunkPlanner,
         worker: SynthesisWorker,
@@ -27,6 +28,7 @@ class SchedulerService:
         hub: WebSocketHub,
     ) -> None:
         self._config = config
+        self._chunk_mime_type = chunk_mime_type
         self._job_manager = job_manager
         self._planner = planner
         self._worker = worker
@@ -144,6 +146,8 @@ class SchedulerService:
                     payload={
                         "job": job_to_detail(job).model_dump(),
                         "chunk_index": chunk.index,
+                        "mime_type": self._chunk_mime_type,
+                        "init_segment_url": f"/api/jobs/{job.id}/chunks/init",
                     },
                 ).model_dump()
             )

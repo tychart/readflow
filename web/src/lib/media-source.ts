@@ -1,6 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { JobManifest } from "../types/api";
+
+const PLAYABLE_EPSILON_SECONDS = 0.05;
+
+export type PlayerState =
+  | "idle"
+  | "priming"
+  | "waiting_for_first_chunk"
+  | "ready_paused"
+  | "playing"
+  | "stalled_waiting_for_next_chunk"
+  | "ended"
+  | "error";
 
 interface UseMediaSourcePlayerOptions {
   jobId: string;
@@ -12,6 +24,12 @@ interface UseMediaSourcePlayerOptions {
 interface QueuedChunk {
   index: number;
   url: string;
+}
+
+interface AudioDiagnostics {
+  paused: boolean;
+  readyState: number;
+  networkState: number;
 }
 
 async function fetchBuffer(url: string): Promise<ArrayBuffer> {
@@ -27,6 +45,13 @@ function getBufferedEnd(audio: HTMLAudioElement | null) {
     return 0;
   }
   return audio.buffered.end(audio.buffered.length - 1);
+}
+
+function hasBufferedAhead(audio: HTMLAudioElement | null, bufferedUntilSeconds: number) {
+  if (!audio) {
+    return false;
+  }
+  return bufferedUntilSeconds > (audio.currentTime ?? 0) + PLAYABLE_EPSILON_SECONDS;
 }
 
 function appendBuffer(sourceBuffer: SourceBuffer, payload: ArrayBuffer) {
@@ -45,6 +70,52 @@ function appendBuffer(sourceBuffer: SourceBuffer, payload: ArrayBuffer) {
   });
 }
 
+function safePause(audio: HTMLAudioElement) {
+  try {
+    audio.pause();
+  } catch {
+    // jsdom does not implement full media playback controls.
+  }
+}
+
+function safeLoad(audio: HTMLAudioElement) {
+  try {
+    audio.load();
+  } catch {
+    // jsdom does not implement full media playback controls.
+  }
+}
+
+function isAutoplayPolicyError(error: unknown) {
+  return error instanceof DOMException && error.name === "NotAllowedError";
+}
+
+function readablePlaybackError(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return fallback;
+}
+
+function clampToBuffered(audio: HTMLAudioElement | null, targetSeconds: number) {
+  if (!audio || audio.buffered.length === 0) {
+    return 0;
+  }
+
+  const clampedTarget = Math.max(0, targetSeconds);
+  for (let index = 0; index < audio.buffered.length; index += 1) {
+    const start = audio.buffered.start(index);
+    const end = audio.buffered.end(index);
+    if (clampedTarget < start) {
+      return start;
+    }
+    if (clampedTarget <= end) {
+      return clampedTarget;
+    }
+  }
+  return audio.buffered.end(audio.buffered.length - 1);
+}
+
 export function useMediaSourcePlayer({
   jobId,
   manifest,
@@ -56,27 +127,86 @@ export function useMediaSourcePlayer({
   const objectUrlRef = useRef<string | null>(null);
   const activeStreamKeyRef = useRef<string | null>(null);
   const processingQueueRef = useRef(false);
+  const initSegmentAppendedRef = useRef(false);
+  const initSegmentPendingRef = useRef(false);
   const appendQueueRef = useRef<QueuedChunk[]>([]);
   const appendedChunkIndexesRef = useRef<Set<number>>(new Set());
   const pendingChunkIndexesRef = useRef<Set<number>>(new Set());
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
-  const [isReady, setIsReady] = useState(false);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
+  const [isReady, setIsReady] = useState(false);
+  const [isStreamPrimed, setIsStreamPrimed] = useState(false);
   const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
   const [isWaitingForData, setIsWaitingForData] = useState(false);
   const [lastPlayerError, setLastPlayerError] = useState<string | null>(null);
   const [appendedChunksCount, setAppendedChunksCount] = useState(0);
+  const [hasEnded, setHasEnded] = useState(false);
+  const [playerState, setPlayerState] = useState<PlayerState>("idle");
+  const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<AudioDiagnostics>({
+    paused: true,
+    readyState: 0,
+    networkState: 0,
+  });
 
-  const streamKey = manifest ? `${jobId}:${manifest.init_segment_url ?? "no-init"}` : null;
+  const streamKey = manifest ? `${jobId}:${manifest.mime_type}` : null;
   const mimeType = manifest?.mime_type ?? null;
   const initSegmentUrl = manifest?.init_segment_url ?? null;
+  const renderedDurationSeconds = useMemo(
+    () =>
+      manifest?.chunks.reduce((maxDuration, chunk) => {
+        if (chunk.status !== "written") {
+          return maxDuration;
+        }
+        return Math.max(maxDuration, chunk.start_seconds + chunk.duration_seconds);
+      }, 0) ?? 0,
+    [manifest],
+  );
 
-  const updateBufferedState = () => {
+  const updatePlaybackState = useCallback(() => {
     const audio = audioRef.current;
     setBufferedUntilSeconds(getBufferedEnd(audio));
     setCurrentTimeSeconds(audio?.currentTime ?? 0);
-  };
+    setDiagnostics({
+      paused: audio?.paused ?? true,
+      readyState: audio?.readyState ?? 0,
+      networkState: audio?.networkState ?? 0,
+    });
+  }, []);
+
+  const attemptPlay = useCallback(
+    async (reason: "auto" | "user") => {
+      const audio = audioRef.current;
+      if (!audio || !isReady || !isStreamPrimed || isTerminal) {
+        return false;
+      }
+      if (!hasBufferedAhead(audio, bufferedUntilSeconds)) {
+        return false;
+      }
+
+      try {
+        await audio.play();
+        setIsAutoplayBlocked(false);
+        setLastPlayerError(null);
+        return true;
+      } catch (error) {
+        if (reason === "auto" && isAutoplayPolicyError(error)) {
+          setIsAutoplayBlocked(true);
+          setLastPlayerError("Playback blocked by browser; press play to resume.");
+          return false;
+        }
+        if (isAutoplayPolicyError(error)) {
+          setIsAutoplayBlocked(true);
+        }
+        setLastPlayerError(
+          readablePlaybackError(error, "Unable to resume playback automatically"),
+        );
+        return false;
+      }
+    },
+    [bufferedUntilSeconds, isReady, isStreamPrimed, isTerminal],
+  );
 
   const processQueue = useCallback(async () => {
     if (processingQueueRef.current || !sourceBufferRef.current || !activeStreamKeyRef.current) {
@@ -90,6 +220,7 @@ export function useMediaSourcePlayer({
         if (!currentStreamKey || currentStreamKey !== streamKey) {
           break;
         }
+
         try {
           const payload = await fetchBuffer(nextChunk.url);
           if (activeStreamKeyRef.current !== currentStreamKey || !sourceBufferRef.current) {
@@ -101,11 +232,12 @@ export function useMediaSourcePlayer({
           appendedChunkIndexesRef.current.add(nextChunk.index);
           setAppendedChunksCount(appendedChunkIndexesRef.current.size);
           setLastPlayerError(null);
-          updateBufferedState();
+          setHasEnded(false);
+          updatePlaybackState();
         } catch (error) {
           pendingChunkIndexesRef.current.delete(nextChunk.index);
           setLastPlayerError(
-            error instanceof Error ? error.message : "Unable to append streamed audio",
+            readablePlaybackError(error, "Unable to append streamed audio"),
           );
           break;
         }
@@ -113,14 +245,15 @@ export function useMediaSourcePlayer({
     } finally {
       processingQueueRef.current = false;
     }
-  }, [streamKey]);
+  }, [streamKey, updatePlaybackState]);
 
   useEffect(() => {
-    if (!streamKey || !mimeType || !initSegmentUrl || !audioRef.current) {
+    if (!streamKey || !mimeType || !audioRef.current) {
       return;
     }
     if (!("MediaSource" in window)) {
       setLastPlayerError("MediaSource is not available in this browser");
+      setPlayerState("error");
       return;
     }
 
@@ -132,36 +265,39 @@ export function useMediaSourcePlayer({
     activeStreamKeyRef.current = streamKey;
     sourceBufferRef.current = null;
     objectUrlRef.current = objectUrl;
+    initSegmentAppendedRef.current = false;
+    initSegmentPendingRef.current = false;
     appendQueueRef.current = [];
     appendedChunkIndexesRef.current = new Set();
     pendingChunkIndexesRef.current = new Set();
     processingQueueRef.current = false;
-    setIsReady(false);
     setBufferedUntilSeconds(0);
     setCurrentTimeSeconds(0);
+    setIsReady(false);
+    setIsStreamPrimed(false);
     setIsActuallyPlaying(false);
     setIsWaitingForData(false);
     setLastPlayerError(null);
     setAppendedChunksCount(0);
+    setHasEnded(false);
+    setIsAutoplayBlocked(false);
+    setDiagnostics({ paused: true, readyState: 0, networkState: 0 });
+    safePause(audio);
     audio.src = objectUrl;
 
     const handleSourceOpen = async () => {
       try {
         const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
         sourceBufferRef.current = sourceBuffer;
-        const initBuffer = await fetchBuffer(initSegmentUrl);
-        if (cancelled || activeStreamKeyRef.current !== streamKey) {
-          return;
-        }
-        await appendBuffer(sourceBuffer, initBuffer);
         if (!cancelled && activeStreamKeyRef.current === streamKey) {
           setIsReady(true);
-          updateBufferedState();
+          setLastPlayerError(null);
+          updatePlaybackState();
         }
       } catch (error) {
         if (!cancelled) {
           setLastPlayerError(
-            error instanceof Error ? error.message : "Failed to initialize media stream",
+            readablePlaybackError(error, "Failed to initialize media stream"),
           );
         }
       }
@@ -174,19 +310,67 @@ export function useMediaSourcePlayer({
       activeStreamKeyRef.current = null;
       sourceBufferRef.current = null;
       appendQueueRef.current = [];
+      initSegmentAppendedRef.current = false;
+      initSegmentPendingRef.current = false;
       appendedChunkIndexesRef.current.clear();
       pendingChunkIndexesRef.current.clear();
       processingQueueRef.current = false;
       setIsReady(false);
+      setIsStreamPrimed(false);
+      setHasEnded(false);
+      setIsAutoplayBlocked(false);
+      safePause(audio);
+      audio.removeAttribute("src");
+      safeLoad(audio);
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
       }
     };
-  }, [initSegmentUrl, mimeType, streamKey]);
+  }, [mimeType, streamKey, updatePlaybackState]);
 
   useEffect(() => {
-    if (!manifest || !isReady || activeStreamKeyRef.current !== streamKey) {
+    if (
+      !isReady ||
+      !streamKey ||
+      !initSegmentUrl ||
+      !sourceBufferRef.current ||
+      initSegmentAppendedRef.current ||
+      initSegmentPendingRef.current
+    ) {
+      return;
+    }
+
+    const currentStreamKey = streamKey;
+    initSegmentPendingRef.current = true;
+
+    void (async () => {
+      try {
+        const initBuffer = await fetchBuffer(initSegmentUrl);
+        if (activeStreamKeyRef.current !== currentStreamKey || !sourceBufferRef.current) {
+          return;
+        }
+        await appendBuffer(sourceBufferRef.current, initBuffer);
+        if (activeStreamKeyRef.current !== currentStreamKey) {
+          return;
+        }
+        initSegmentAppendedRef.current = true;
+        setIsStreamPrimed(true);
+        setLastPlayerError(null);
+        updatePlaybackState();
+        void processQueue();
+      } catch (error) {
+        setLastPlayerError(
+          readablePlaybackError(error, "Failed to initialize media stream"),
+        );
+      } finally {
+        initSegmentPendingRef.current = false;
+      }
+    })();
+  }, [initSegmentUrl, isReady, processQueue, streamKey, updatePlaybackState]);
+
+  useEffect(() => {
+    if (!manifest || !isReady || !isStreamPrimed || activeStreamKeyRef.current !== streamKey) {
       return;
     }
     const missingChunks = manifest.chunks
@@ -212,7 +396,7 @@ export function useMediaSourcePlayer({
     }
     appendQueueRef.current.sort((left, right) => left.index - right.index);
     void processQueue();
-  }, [isReady, manifest, processQueue, streamKey]);
+  }, [isReady, isStreamPrimed, manifest, processQueue, streamKey]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -223,39 +407,47 @@ export function useMediaSourcePlayer({
     const handlePlay = () => {
       setIsActuallyPlaying(true);
       setIsWaitingForData(false);
+      setIsAutoplayBlocked(false);
       setLastPlayerError(null);
-      updateBufferedState();
+      setHasEnded(false);
+      updatePlaybackState();
     };
     const handlePause = () => {
       setIsActuallyPlaying(false);
-      updateBufferedState();
+      updatePlaybackState();
     };
     const handleWaiting = () => {
       setIsWaitingForData(true);
-      updateBufferedState();
+      setIsActuallyPlaying(false);
+      updatePlaybackState();
     };
     const handleProgress = () => {
-      updateBufferedState();
+      updatePlaybackState();
     };
     const handleTimeUpdate = () => {
-      updateBufferedState();
+      updatePlaybackState();
     };
     const handleSeeking = () => {
-      updateBufferedState();
+      updatePlaybackState();
     };
     const handleEnded = () => {
+      setHasEnded(true);
       setIsActuallyPlaying(false);
       setIsWaitingForData(false);
-      updateBufferedState();
+      updatePlaybackState();
     };
     const handlePlaying = () => {
+      setHasEnded(false);
       setIsActuallyPlaying(true);
       setIsWaitingForData(false);
-      updateBufferedState();
+      setIsAutoplayBlocked(false);
+      setLastPlayerError(null);
+      updatePlaybackState();
     };
     const handleError = () => {
       setIsActuallyPlaying(false);
       setLastPlayerError("Audio playback failed");
+      updatePlaybackState();
     };
 
     audio.addEventListener("play", handlePlay);
@@ -281,32 +473,134 @@ export function useMediaSourcePlayer({
       audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("error", handleError);
     };
-  }, []);
+  }, [updatePlaybackState]);
 
   useEffect(() => {
+    if (!playIntent || isTerminal || isAutoplayBlocked) {
+      return;
+    }
     const audio = audioRef.current;
-    if (!audio || !playIntent || !isReady || isTerminal) {
+    if (!audio || !isReady || !isStreamPrimed) {
       return;
     }
-    const hasBufferedAhead = bufferedUntilSeconds > audio.currentTime + 0.05;
-    if (!hasBufferedAhead || (!isWaitingForData && !audio.paused)) {
+    if (!hasBufferedAhead(audio, bufferedUntilSeconds)) {
       return;
     }
-    void audio.play().catch((error: unknown) => {
-      setLastPlayerError(
-        error instanceof Error ? error.message : "Unable to resume playback automatically",
-      );
-    });
-  }, [bufferedUntilSeconds, isReady, isTerminal, isWaitingForData, playIntent]);
+    if (!audio.paused && !isWaitingForData) {
+      return;
+    }
+    void attemptPlay("auto");
+  }, [
+    attemptPlay,
+    bufferedUntilSeconds,
+    isAutoplayBlocked,
+    isReady,
+    isStreamPrimed,
+    isTerminal,
+    isWaitingForData,
+    playIntent,
+  ]);
+
+  useEffect(() => {
+    if (lastPlayerError) {
+      setPlayerState("error");
+      return;
+    }
+    if (playIntent) {
+      if (!isStreamPrimed || renderedDurationSeconds <= PLAYABLE_EPSILON_SECONDS) {
+        setPlayerState("waiting_for_first_chunk");
+        return;
+      }
+      if (isActuallyPlaying) {
+        setPlayerState("playing");
+        return;
+      }
+      if (
+        isWaitingForData ||
+        bufferedUntilSeconds <= currentTimeSeconds + PLAYABLE_EPSILON_SECONDS
+      ) {
+        setPlayerState(
+          currentTimeSeconds <= PLAYABLE_EPSILON_SECONDS
+            ? "waiting_for_first_chunk"
+            : "stalled_waiting_for_next_chunk",
+        );
+        return;
+      }
+      setPlayerState("ready_paused");
+      return;
+    }
+    if (hasEnded && isTerminal) {
+      setPlayerState("ended");
+      return;
+    }
+    if (streamKey && !isStreamPrimed) {
+      setPlayerState("priming");
+      return;
+    }
+    if (isStreamPrimed && renderedDurationSeconds > PLAYABLE_EPSILON_SECONDS) {
+      setPlayerState("ready_paused");
+      return;
+    }
+    setPlayerState("idle");
+  }, [
+    bufferedUntilSeconds,
+    currentTimeSeconds,
+    hasEnded,
+    isActuallyPlaying,
+    isStreamPrimed,
+    isTerminal,
+    isWaitingForData,
+    lastPlayerError,
+    playIntent,
+    renderedDurationSeconds,
+    streamKey,
+  ]);
+
+  const requestUserGesturePlay = useCallback(async () => {
+    const played = await attemptPlay("user");
+    if (!played) {
+      updatePlaybackState();
+    }
+    return played;
+  }, [attemptPlay, updatePlaybackState]);
+
+  const pausePlayback = useCallback(() => {
+    audioRef.current?.pause();
+    updatePlaybackState();
+  }, [updatePlaybackState]);
+
+  const seekToSeconds = useCallback(
+    (targetSeconds: number) => {
+      const audio = audioRef.current;
+      if (!audio) {
+        return 0;
+      }
+      const cappedTarget = Math.min(targetSeconds, renderedDurationSeconds);
+      const clampedTarget = clampToBuffered(audio, cappedTarget);
+      audio.currentTime = clampedTarget;
+      setHasEnded(false);
+      updatePlaybackState();
+      return clampedTarget;
+    },
+    [renderedDurationSeconds, updatePlaybackState],
+  );
 
   return {
     audioRef,
     appendedChunksCount,
     bufferedUntilSeconds,
     currentTimeSeconds,
+    diagnostics,
     isActuallyPlaying,
+    isAutoplayBlocked,
     isReady,
+    isStreamPrimed,
     isWaitingForData,
     lastPlayerError,
+    pausePlayback,
+    playerState,
+    renderedDurationSeconds,
+    requestUserGesturePlay,
+    seekToSeconds,
   };
 }

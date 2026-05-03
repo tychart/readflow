@@ -56,6 +56,7 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
     )
     scheduler = SchedulerService(
         config=settings.runtime,
+        chunk_mime_type=settings.chunk_mime_type,
         job_manager=job_manager,
         planner=planner,
         worker=worker,

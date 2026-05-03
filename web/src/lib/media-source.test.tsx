@@ -1,4 +1,5 @@
 import { act, render, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 
 import { useMediaSourcePlayer } from "./media-source";
 import type { JobManifest } from "../types/api";
@@ -81,6 +82,11 @@ function installBufferedAudioState(getBufferedEnd: () => number) {
     },
   });
 }
+
+beforeEach(() => {
+  HTMLMediaElement.prototype.pause = vi.fn();
+  HTMLMediaElement.prototype.load = vi.fn();
+});
 
 afterEach(() => {
   Object.defineProperty(window, "MediaSource", {
@@ -293,4 +299,87 @@ test("starts playback after the first hydrated chunk arrives when play was press
   rerender(<Harness manifest={buildManifest([0])} playIntent={true} />);
 
   await waitFor(() => expect(playMock).toHaveBeenCalled());
+});
+
+test("surfaces autoplay blocking when automatic resume is rejected by the browser", async () => {
+  let bufferedEnd = 0;
+  const blockedPlay = vi.fn().mockRejectedValue(new DOMException("blocked", "NotAllowedError"));
+
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+  HTMLMediaElement.prototype.play = blockedPlay;
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 3;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness() {
+    const { audioRef, isAutoplayBlocked, lastPlayerError } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0]),
+      playIntent: true,
+      isTerminal: false,
+    });
+    return (
+      <div data-autoplay-blocked={isAutoplayBlocked ? "yes" : "no"}>
+        <audio ref={audioRef} />
+        <span>{lastPlayerError}</span>
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+
+  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-autoplay-blocked", "yes"));
+});
+
+test("clamps custom timeline seeking to currently buffered audio", async () => {
+  let bufferedEnd = 0;
+
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 2;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness() {
+    const { audioRef, bufferedUntilSeconds, seekToSeconds } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0]),
+      playIntent: false,
+      isTerminal: false,
+    });
+
+    useEffect(() => {
+      if (bufferedUntilSeconds < 2) {
+        return;
+      }
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+      audio.currentTime = 0;
+      seekToSeconds(9);
+    }, [audioRef, bufferedUntilSeconds, seekToSeconds]);
+
+    return <audio ref={audioRef} />;
+  }
+
+  const { container } = render(<Harness />);
+  const audio = container.querySelector("audio");
+
+  await waitFor(() => expect(audio?.currentTime).toBe(2));
 });

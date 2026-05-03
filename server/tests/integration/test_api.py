@@ -108,3 +108,12 @@ async def test_scheduler_emits_chunk_ready_without_duplicate_job_updated(client,
 
     assert "chunk_ready" in message_types or "job_completed" in message_types
     assert "job_updated" not in message_types
+
+    chunk_event = next(
+        message
+        for message in job_events
+        if cast(str, message["type"]) in {"chunk_ready", "job_completed"}
+    )
+    payload = cast(dict[str, Any], chunk_event["payload"])
+    assert payload["mime_type"].startswith("audio/mp4")
+    assert payload["init_segment_url"] == f"/api/jobs/{job_id}/chunks/init"

@@ -1,14 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useParams } from "react-router-dom";
 
 import { api } from "../../lib/api";
-import { useMediaSourcePlayer } from "../../lib/media-source";
+import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
-import type { JobDetail, JobManifest, JobStatus } from "../../types/api";
+import type { Chunk, JobDetail, JobManifest, JobStatus } from "../../types/api";
 
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
 const READER_POLL_INTERVAL_MS = 2_000;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
+
+interface StreamEventPayload {
+  job?: JobDetail;
+  mime_type?: string;
+  init_segment_url?: string | null;
+}
 
 function formatRelativeTime(timestamp: number | null) {
   if (!timestamp) {
@@ -18,22 +32,85 @@ function formatRelativeTime(timestamp: number | null) {
   return deltaSeconds === 0 ? "just now" : `${deltaSeconds}s ago`;
 }
 
+function formatClock(seconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainder = totalSeconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
 function isTerminalStatus(status: JobStatus | undefined) {
   return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
 }
 
-function manifestFromJobDetail(job: JobDetail, previousManifest: JobManifest | null) {
-  if (!previousManifest) {
+function buildManifestFromEvent(
+  job: JobDetail,
+  previousManifest: JobManifest | null,
+  payload?: StreamEventPayload,
+) {
+  const nextMimeType = payload?.mime_type ?? previousManifest?.mime_type ?? null;
+  const nextInitSegmentUrl =
+    payload && "init_segment_url" in payload
+      ? payload.init_segment_url ?? null
+      : previousManifest?.init_segment_url ?? null;
+
+  if (!nextMimeType) {
     return null;
   }
-  const hasWrittenChunks = job.chunks.some((chunk) => chunk.status === "written");
-  if (hasWrittenChunks && !previousManifest.init_segment_url) {
-    return previousManifest;
-  }
+
   return {
-    ...previousManifest,
+    mime_type: nextMimeType,
+    init_segment_url: nextInitSegmentUrl,
     chunks: job.chunks,
   } satisfies JobManifest;
+}
+
+function findChunkForTime(chunks: Chunk[], timeSeconds: number) {
+  return chunks.find((chunk) => {
+    const start = chunk.start_seconds;
+    const end = chunk.start_seconds + chunk.duration_seconds;
+    return timeSeconds >= start && timeSeconds < end;
+  }) ?? chunks.at(-1) ?? null;
+}
+
+function describePlayerState(playerState: PlayerState, isAutoplayBlocked: boolean) {
+  if (isAutoplayBlocked) {
+    return "Playback blocked by browser; press play to resume.";
+  }
+
+  switch (playerState) {
+    case "priming":
+      return "Preparing stream…";
+    case "waiting_for_first_chunk":
+      return "Waiting for first chunk…";
+    case "stalled_waiting_for_next_chunk":
+      return "Buffering next chunk…";
+    case "ready_paused":
+      return "Ready to play.";
+    case "playing":
+      return "Playing live stream.";
+    case "ended":
+      return "Playback complete.";
+    case "error":
+      return "Playback error.";
+    default:
+      return "Waiting to start.";
+  }
+}
+
+function statusTone(playerState: PlayerState, isAutoplayBlocked: boolean, hasError: boolean) {
+  if (hasError) {
+    return "border-rose-200 bg-rose-50/80 text-rose-900";
+  }
+  if (
+    isAutoplayBlocked ||
+    playerState === "waiting_for_first_chunk" ||
+    playerState === "stalled_waiting_for_next_chunk" ||
+    playerState === "priming"
+  ) {
+    return "border-amber-200 bg-amber-50/80 text-amber-950";
+  }
+  return "border-emerald-200 bg-emerald-50/80 text-emerald-950";
 }
 
 export function ReaderPage() {
@@ -51,8 +128,9 @@ export function ReaderPage() {
   const [error, setError] = useState<string | null>(null);
   const [playIntent, setPlayIntent] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
-  const [lastRefreshReason, setLastRefreshReason] = useState<string>("initial");
+  const [lastRefreshReason, setLastRefreshReason] = useState("initial");
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
+  const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
 
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
@@ -60,6 +138,8 @@ export function ReaderPage() {
   const queuedRefreshReasonRef = useRef<string | null>(null);
   const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
+  const timelineTrackRef = useRef<HTMLDivElement | null>(null);
+  const isScrubbingRef = useRef(false);
 
   const isJobTerminal = isTerminalStatus(job?.status);
   const {
@@ -67,10 +147,17 @@ export function ReaderPage() {
     appendedChunksCount,
     bufferedUntilSeconds,
     currentTimeSeconds,
+    diagnostics,
     isActuallyPlaying,
-    isReady,
+    isAutoplayBlocked,
     isWaitingForData,
+    isStreamPrimed,
     lastPlayerError,
+    pausePlayback,
+    playerState,
+    renderedDurationSeconds,
+    requestUserGesturePlay,
+    seekToSeconds,
   } = useMediaSourcePlayer({
     jobId,
     manifest,
@@ -78,21 +165,37 @@ export function ReaderPage() {
     isTerminal: isJobTerminal,
   });
 
-  const totalDuration = useMemo(
+  const renderedChunks = useMemo(
     () =>
-      manifest?.chunks.reduce(
-        (sum, chunk) => Math.max(sum, chunk.start_seconds + chunk.duration_seconds),
-        0,
-      ) ?? 0,
+      (manifest?.chunks ?? [])
+        .filter((chunk) => chunk.status === "written")
+        .sort((left, right) => left.index - right.index),
     [manifest],
   );
+  const totalWrittenDuration = renderedDurationSeconds;
   const playedPercent =
-    totalDuration > 0 ? (currentTimeSeconds / totalDuration) * 100 : 0;
+    totalWrittenDuration > 0 ? (currentTimeSeconds / totalWrittenDuration) * 100 : 0;
   const bufferedPercent =
-    totalDuration > 0 ? (bufferedUntilSeconds / totalDuration) * 100 : 0;
+    totalWrittenDuration > 0 ? (bufferedUntilSeconds / totalWrittenDuration) * 100 : 0;
   const writtenChunkCount = job?.chunks.filter((chunk) => chunk.status === "written").length ?? 0;
   const shouldUsePollingFallback =
     !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
+  const activeChunk = useMemo(
+    () => findChunkForTime(renderedChunks, currentTimeSeconds),
+    [currentTimeSeconds, renderedChunks],
+  );
+  const hoveredChunk = useMemo(
+    () => renderedChunks.find((chunk) => chunk.index === hoveredChunkIndex) ?? null,
+    [hoveredChunkIndex, renderedChunks],
+  );
+  const detailChunk = hoveredChunk ?? activeChunk;
+  const liveStatus = describePlayerState(playerState, isAutoplayBlocked);
+  const showSpinner =
+    playerState === "priming" ||
+    playerState === "waiting_for_first_chunk" ||
+    playerState === "stalled_waiting_for_next_chunk";
+  const primaryButtonLabel =
+    playIntent && !isAutoplayBlocked ? "Pause" : isAutoplayBlocked ? "Resume" : "Play";
 
   useEffect(() => {
     manifestRef.current = manifest;
@@ -176,23 +279,32 @@ export function ReaderPage() {
   }, [refreshReaderState]);
 
   useEffect(() => {
-    const eventJob = lastEvent?.payload.job as JobDetail | undefined;
+    const payload = lastEvent?.payload as StreamEventPayload | undefined;
+    const eventJob = payload?.job;
     if (!lastEvent || !eventJob || eventJob.id !== jobId) {
       return;
     }
-    if (lastEvent.type !== "job_updated" && lastEvent.type !== "job_completed" && lastEvent.type !== "chunk_ready") {
+    if (
+      lastEvent.type !== "job_updated" &&
+      lastEvent.type !== "job_completed" &&
+      lastEvent.type !== "chunk_ready"
+    ) {
       return;
     }
+
     setJob(eventJob);
-    setManifest((previousManifest) => manifestFromJobDetail(eventJob, previousManifest));
+    setManifest((previousManifest) => buildManifestFromEvent(eventJob, previousManifest, payload));
     setError(null);
     setLastRefreshAt(Date.now());
     setLastRefreshReason(`ws:${lastEvent.type}`);
+
     if (
-      !manifestRef.current ||
-      (lastEvent.type === "chunk_ready" && !manifestRef.current.init_segment_url)
+      lastEvent.type === "chunk_ready" &&
+      !payload?.mime_type &&
+      !payload?.init_segment_url &&
+      !manifestRef.current
     ) {
-      void refreshReaderState(`ws:${lastEvent.type}:hydrate`);
+      void refreshReaderState(`ws:${lastEvent.type}:reconcile`);
     }
   }, [jobId, lastEvent, refreshReaderState]);
 
@@ -214,8 +326,14 @@ export function ReaderPage() {
       return;
     }
 
-    const handlePlay = () => syncPlaybackState(true, true);
-    const handlePause = () => syncPlaybackState(true, false);
+    const handlePlay = () => {
+      syncPlaybackState(true, true);
+    };
+    const handlePause = () => {
+      if (!playIntent) {
+        syncPlaybackState(true, false);
+      }
+    };
     const handleSeek = () => syncPlaybackState(true);
     const handleWaiting = () => syncPlaybackState(true, playIntent);
     const handleEnded = () => {
@@ -255,21 +373,12 @@ export function ReaderPage() {
       return;
     }
     setPlayIntent(true);
+    setError(null);
     try {
       const nextJob = await api.activateJob(job.id);
       setJob(nextJob);
-      if (audioRef.current && audioRef.current.src && isReady) {
-        void audioRef.current.play().catch((playError: unknown) => {
-          if (!isReady && !totalDuration) {
-            return;
-          }
-          setError(
-            playError instanceof Error
-              ? `Unable to start playback: ${playError.message}`
-              : "Unable to start playback",
-          );
-        });
-      }
+      setManifest((previousManifest) => buildManifestFromEvent(nextJob, previousManifest));
+      await requestUserGesturePlay();
     } catch (playError) {
       setPlayIntent(false);
       setError(
@@ -283,10 +392,11 @@ export function ReaderPage() {
       return;
     }
     setPlayIntent(false);
-    audioRef.current?.pause();
+    pausePlayback();
     try {
       const nextJob = await api.pauseJob(job.id);
       setJob(nextJob);
+      setManifest((previousManifest) => buildManifestFromEvent(nextJob, previousManifest));
       syncPlaybackState(true, false);
     } catch (pauseError) {
       setError(
@@ -302,6 +412,7 @@ export function ReaderPage() {
     try {
       const nextJob = await api.updateJobVoice(job.id, voiceId);
       setJob(nextJob);
+      setManifest((previousManifest) => buildManifestFromEvent(nextJob, previousManifest));
       setError(null);
     } catch (voiceError) {
       setError(
@@ -310,31 +421,105 @@ export function ReaderPage() {
     }
   };
 
+  const updateTimelineHover = useCallback(
+    (clientX: number) => {
+      if (!timelineTrackRef.current || totalWrittenDuration <= 0 || renderedChunks.length === 0) {
+        setHoveredChunkIndex(null);
+        return null;
+      }
+      const rect = timelineTrackRef.current.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      const hoveredTime = ratio * totalWrittenDuration;
+      const hovered = findChunkForTime(renderedChunks, hoveredTime);
+      setHoveredChunkIndex(hovered?.index ?? null);
+      return hoveredTime;
+    },
+    [renderedChunks, totalWrittenDuration],
+  );
+
+  const applyTimelineSeek = useCallback(
+    (targetTime: number | null) => {
+      if (targetTime === null) {
+        return;
+      }
+      const appliedTime = seekToSeconds(targetTime);
+      const appliedChunk = findChunkForTime(renderedChunks, appliedTime);
+      setHoveredChunkIndex(appliedChunk?.index ?? null);
+      syncPlaybackState(true);
+    },
+    [renderedChunks, seekToSeconds, syncPlaybackState],
+  );
+
+  const handleTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (totalWrittenDuration <= 0) {
+      return;
+    }
+    isScrubbingRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    applyTimelineSeek(updateTimelineHover(event.clientX));
+  };
+
+  const handleTimelinePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const nextTime = updateTimelineHover(event.clientX);
+    if (isScrubbingRef.current) {
+      applyTimelineSeek(nextTime);
+    }
+  };
+
+  const handleTimelinePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) {
+      return;
+    }
+    isScrubbingRef.current = false;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    applyTimelineSeek(updateTimelineHover(event.clientX));
+  };
+
+  const handleTimelineKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (totalWrittenDuration <= 0) {
+      return;
+    }
+    const stepSeconds = event.shiftKey ? 10 : 5;
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      applyTimelineSeek(currentTimeSeconds + stepSeconds);
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      applyTimelineSeek(currentTimeSeconds - stepSeconds);
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      applyTimelineSeek(0);
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      applyTimelineSeek(bufferedUntilSeconds);
+    }
+  };
+
   if (loading) {
     return <div className="panel rounded-[2rem] p-8">Loading reader…</div>;
   }
 
   if (!job) {
-    return <div className="panel rounded-[2rem] p-8 text-rose-700">{error ?? "Job not found"}</div>;
+    return (
+      <div className="panel rounded-[2rem] p-8 text-rose-700">{error ?? "Job not found"}</div>
+    );
   }
 
   return (
     <div className="grid gap-6 xl:grid-cols-[1.3fr_0.9fr]">
       <div className="space-y-6">
-        {(websocketStatus !== "open" || isSocketStale || isWaitingForData || error || lastPlayerError) ? (
+        {(websocketStatus !== "open" || isSocketStale || error || lastPlayerError) ? (
           <div className="panel rounded-[2rem] border border-amber-200 bg-amber-50/80 p-5 text-sm text-amber-950">
             <div className="mb-2 font-semibold uppercase tracking-[0.2em]">Reader warnings</div>
             <div className="space-y-2">
               {websocketStatus !== "open" || isSocketStale ? (
-                <div>
-                  Live socket is {isSocketStale ? "stale" : websocketStatus}. Polling fallback is active.
-                </div>
+                <div>Live updates degraded, using fallback sync…</div>
               ) : null}
-              {isWaitingForData && !isJobTerminal ? (
-                <div>Playback is waiting for the next chunk to finish buffering.</div>
-              ) : null}
+              {error ? <div>{error}</div> : null}
               {lastPlayerError ? <div>{lastPlayerError}</div> : null}
-              {lastPlaybackSyncError ? <div>{lastPlaybackSyncError}</div> : null}
               {lastSocketError ? <div>{lastSocketError}</div> : null}
             </div>
           </div>
@@ -355,37 +540,138 @@ export function ReaderPage() {
           </div>
         </div>
       </div>
+
       <div className="space-y-6">
         <div className="panel rounded-[2rem] p-6">
-          <audio className="mb-4 w-full" controls ref={audioRef} />
-          <div className="mb-4 h-4 overflow-hidden rounded-full bg-stone-200">
-            <div
-              className="h-full bg-stone-300"
-              style={{ width: `${Math.min(bufferedPercent, 100)}%` }}
-            >
+          <audio aria-hidden="true" className="hidden" ref={audioRef} />
+
+          <div
+            className={`mb-5 rounded-3xl border px-4 py-3 text-sm ${statusTone(
+              playerState,
+              isAutoplayBlocked,
+              !!(error || lastPlayerError),
+            )}`}
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              {showSpinner ? (
+                <span
+                  aria-hidden="true"
+                  className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+                />
+              ) : null}
+              <span className="font-medium">{liveStatus}</span>
+            </div>
+          </div>
+
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <button
+                className="rounded-full bg-[var(--accent)] px-5 py-3 font-semibold text-white"
+                onClick={() => void (playIntent && !isAutoplayBlocked ? handlePause() : handlePlay())}
+                type="button"
+              >
+                {primaryButtonLabel}
+              </button>
+              <div className="text-sm text-stone-600">
+                {formatClock(currentTimeSeconds)} / {formatClock(totalWrittenDuration)}
+              </div>
+            </div>
+            <div className="text-right text-sm text-stone-600">
+              <div>Rendered: {totalWrittenDuration.toFixed(1)}s</div>
+              <div>Buffered: {bufferedUntilSeconds.toFixed(1)}s</div>
+            </div>
+          </div>
+
+          <div
+            aria-label="Rendered audio timeline"
+            aria-valuemax={Math.round(totalWrittenDuration * 10) / 10}
+            aria-valuemin={0}
+            aria-valuenow={Math.round(currentTimeSeconds * 10) / 10}
+            className={`relative h-16 rounded-[1.75rem] border border-stone-200 bg-stone-200/80 p-2 ${
+              totalWrittenDuration > 0 ? "cursor-pointer" : "cursor-not-allowed opacity-70"
+            }`}
+            onKeyDown={handleTimelineKeyDown}
+            onPointerCancel={handleTimelinePointerUp}
+            onPointerDown={handleTimelinePointerDown}
+            onPointerLeave={() => {
+              if (!isScrubbingRef.current) {
+                setHoveredChunkIndex(null);
+              }
+            }}
+            onPointerMove={handleTimelinePointerMove}
+            onPointerUp={handleTimelinePointerUp}
+            ref={timelineTrackRef}
+            role="slider"
+            tabIndex={0}
+          >
+            <div className="absolute inset-[0.55rem] overflow-hidden rounded-[1.25rem] bg-stone-300/70">
               <div
-                className="h-full bg-[var(--accent)]"
+                className="absolute inset-y-0 left-0 bg-stone-400/60"
+                style={{ width: `${Math.min(bufferedPercent, 100)}%` }}
+              />
+              <div
+                className="absolute inset-y-0 left-0 bg-[var(--accent)]/85"
                 style={{ width: `${Math.min(playedPercent, 100)}%` }}
+              />
+              {renderedChunks.map((chunk) => {
+                const leftPercent =
+                  totalWrittenDuration > 0
+                    ? (chunk.start_seconds / totalWrittenDuration) * 100
+                    : 0;
+                const widthPercent =
+                  totalWrittenDuration > 0
+                    ? (chunk.duration_seconds / totalWrittenDuration) * 100
+                    : 0;
+                const isActive = activeChunk?.index === chunk.index;
+                const isHovered = hoveredChunk?.index === chunk.index;
+                return (
+                  <div
+                    className={`absolute inset-y-0 border-r border-white/80 ${
+                      isActive ? "bg-white/10" : ""
+                    } ${isHovered ? "bg-white/20" : ""}`}
+                    key={chunk.index}
+                    style={{
+                      left: `${leftPercent}%`,
+                      width: `${Math.max(widthPercent, 2)}%`,
+                    }}
+                    title={`Chunk ${chunk.index + 1} • ${formatClock(chunk.start_seconds)} - ${formatClock(chunk.start_seconds + chunk.duration_seconds)} • ${chunk.duration_seconds.toFixed(1)}s`}
+                  />
+                );
+              })}
+              <div
+                className="absolute inset-y-0 z-10 w-0.5 bg-stone-950/80"
+                style={{ left: `${Math.min(playedPercent, 100)}%` }}
               />
             </div>
           </div>
-          <div className="mb-4 grid grid-cols-2 gap-3">
-            <button
-              className="rounded-full bg-[var(--accent)] px-4 py-3 font-semibold text-white"
-              onClick={() => void handlePlay()}
-              type="button"
-            >
-              Play
-            </button>
-            <button
-              className="rounded-full border border-stone-300 bg-white/70 px-4 py-3 font-semibold"
-              onClick={() => void handlePause()}
-              type="button"
-            >
-              Pause
-            </button>
+
+          <div className="mt-4 grid gap-3 text-sm text-stone-700 md:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-2xl bg-white/70 p-4">
+              <div className="mb-1 font-semibold">
+                {detailChunk ? `Chunk ${detailChunk.index + 1}` : "No chunk rendered yet"}
+              </div>
+              {detailChunk ? (
+                <div className="space-y-1">
+                  <div>
+                    {formatClock(detailChunk.start_seconds)} -{" "}
+                    {formatClock(detailChunk.start_seconds + detailChunk.duration_seconds)}
+                  </div>
+                  <div>{detailChunk.duration_seconds.toFixed(1)}s</div>
+                </div>
+              ) : (
+                <div>Press play to arm playback and wait for the first rendered audio chunk.</div>
+              )}
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              <div className="mb-1 font-semibold">Live status</div>
+              <div>{websocketStatus === "open" && !isSocketStale ? "WS live" : "Fallback sync"}</div>
+              <div>
+                {writtenChunkCount}/{job.chunks.length} chunks rendered
+              </div>
+            </div>
           </div>
-          <label className="mb-2 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600">
+
+          <label className="mb-2 mt-5 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600">
             Voice for future chunks
           </label>
           <select
@@ -399,14 +685,11 @@ export function ReaderPage() {
               </option>
             ))}
           </select>
-          <div className="mt-4 text-sm text-stone-600">
-            Buffer ready: {bufferedUntilSeconds.toFixed(1)}s of {totalDuration.toFixed(1)}s.{" "}
-            {isReady ? "MediaSource ready." : "Preparing stream…"}
-          </div>
         </div>
-        <div className="panel rounded-[2rem] p-6">
-          <h2 className="mb-3 text-lg font-semibold">Live diagnostics</h2>
-          <div className="grid gap-3 text-sm text-stone-700 md:grid-cols-2">
+
+        <details className="panel rounded-[2rem] p-6" open>
+          <summary className="cursor-pointer text-lg font-semibold">Live diagnostics</summary>
+          <div className="mt-4 grid gap-3 text-sm text-stone-700 md:grid-cols-2">
             <div className="rounded-2xl bg-white/70 p-4">
               Socket: {websocketStatus}
               {isSocketStale ? " (stale)" : ""}
@@ -418,32 +701,37 @@ export function ReaderPage() {
               Reader refresh: {formatRelativeTime(lastRefreshAt)} via {lastRefreshReason}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
-              Written chunks: {writtenChunkCount}/{job.chunks.length}
-            </div>
-            <div className="rounded-2xl bg-white/70 p-4">
               Appended chunks: {appendedChunksCount}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
-              Playback intent: {playIntent ? "play" : "pause"}
+              Playback intent: {playIntent ? "armed" : "paused"}
             </div>
+            <div className="rounded-2xl bg-white/70 p-4">Player state: {playerState}</div>
             <div className="rounded-2xl bg-white/70 p-4">
-              Audio element: {isActuallyPlaying ? "playing" : "idle"}
+              Audio: {isActuallyPlaying ? "playing" : diagnostics.paused ? "paused" : "ready"}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
               Waiting for data: {isWaitingForData ? "yes" : "no"}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
-              Current time: {currentTimeSeconds.toFixed(1)}s
+              Stream primed: {isStreamPrimed ? "yes" : "no"}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
               Buffered until: {bufferedUntilSeconds.toFixed(1)}s
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Current time: {currentTimeSeconds.toFixed(1)}s
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Audio ready/network: {diagnostics.readyState}/{diagnostics.networkState}
             </div>
             <div className="rounded-2xl bg-white/70 p-4 md:col-span-2">
               Last transport/player issue:{" "}
               {lastPlayerError ?? lastPlaybackSyncError ?? lastSocketError ?? "none"}
             </div>
           </div>
-        </div>
+        </details>
+
         <div className="panel rounded-[2rem] p-6">
           <h2 className="mb-3 text-lg font-semibold">Chunk status</h2>
           <div className="space-y-2">
@@ -454,7 +742,8 @@ export function ReaderPage() {
               >
                 <span>Chunk {chunk.index + 1}</span>
                 <span className="text-sm text-stone-600">
-                  {chunk.status} {chunk.duration_seconds ? `• ${chunk.duration_seconds.toFixed(1)}s` : ""}
+                  {chunk.status}{" "}
+                  {chunk.duration_seconds ? `• ${chunk.duration_seconds.toFixed(1)}s` : ""}
                 </span>
               </div>
             ))}

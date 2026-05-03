@@ -73,6 +73,7 @@ function seedStore(overrides?: Partial<ReturnType<typeof useAppStore.getState>>)
 beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
+  HTMLMediaElement.prototype.load = vi.fn();
 });
 
 afterEach(() => {
@@ -157,7 +158,7 @@ test("refreshes when a relevant websocket event arrives without page reload", as
     </MemoryRouter>,
   );
 
-  expect(await screen.findByText(/Written chunks: 1\/1/)).toBeInTheDocument();
+  expect(await screen.findByText(/1\/1 chunks rendered/i)).toBeInTheDocument();
   expect(jobFetchCount).toBe(1);
   expect(manifestFetchCount).toBe(1);
 
@@ -168,11 +169,13 @@ test("refreshes when a relevant websocket event arrives without page reload", as
       payload: {
         job: buildReaderJob(2),
         chunk_index: 1,
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
       },
     });
   });
 
-  expect(await screen.findByText(/Written chunks: 2\/2/)).toBeInTheDocument();
+  expect(await screen.findByText(/2\/2 chunks rendered/i)).toBeInTheDocument();
   expect(screen.getByText("Chunk 2")).toBeInTheDocument();
   expect(jobFetchCount).toBe(1);
   expect(manifestFetchCount).toBe(1);
@@ -205,13 +208,77 @@ test("polling fallback updates the reader while the socket is stale", async () =
     </MemoryRouter>,
   );
 
-  expect(
-    await screen.findByText(/Live socket is stale\. Polling fallback is active\./i),
-  ).toBeInTheDocument();
-  expect(screen.getByText(/Written chunks: 1\/1/)).toBeInTheDocument();
+  expect(await screen.findByText(/Live updates degraded, using fallback sync/i)).toBeInTheDocument();
+  expect(screen.getByText(/1\/1 chunks rendered/i)).toBeInTheDocument();
 
   chunkCount = 2;
-  await waitFor(() => expect(screen.getByText(/Written chunks: 2\/2/)).toBeInTheDocument(), {
+  await waitFor(() => expect(screen.getByText(/2\/2 chunks rendered/i)).toBeInTheDocument(), {
     timeout: 2_500,
   });
+});
+
+test("shows waiting copy when play is armed before the first chunk exists and hydrates from websocket metadata", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  let job = {
+    ...buildReaderJob(0, "rendering"),
+    total_chunks_emitted: 1,
+    total_chunks_completed: 0,
+    buffered_seconds: 0,
+    chunks: [],
+  };
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => job };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return {
+        ok: true,
+        json: async () => ({
+          mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+          init_segment_url: null,
+          chunks: [],
+        }),
+      };
+    }
+    if (url.endsWith("/activate")) {
+      return { ok: true, json: async () => ({ ...job, status: "playing", is_active_listening: true }) };
+    }
+    if (url.endsWith("/playback")) {
+      return { ok: true, json: async () => ({ ...job, status: "playing", is_active_listening: true }) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+  await user.click(screen.getByRole("button", { name: /play/i }));
+
+  expect(await screen.findByText(/Waiting for first chunk/i)).toBeInTheDocument();
+
+  job = buildReaderJob(1, "playing");
+  act(() => {
+    useAppStore.getState().applyEvent({
+      type: "chunk_ready",
+      payload: {
+        job,
+        chunk_index: 0,
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
+      },
+    });
+  });
+
+  expect(await screen.findByText(/1\/1 chunks rendered/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /pause/i })).toBeInTheDocument();
 });

@@ -250,8 +250,8 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByText("Chunk 1")).toBeVisible();
-  await expect(page.getByText(/Written chunks: 1\/1/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Chunk status" })).toBeVisible();
+  await expect(page.getByText(/1\/1 chunks rendered/i)).toBeVisible();
 
   chunkCount = 2;
   await page.evaluate(() => {
@@ -260,7 +260,7 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
         emit: (payload: object) => void;
       }>;
     };
-    mockWindow.__mockSockets[0].emit({
+    const payload = {
       type: "chunk_ready",
       payload: {
         job: {
@@ -277,16 +277,40 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
           source_kind: "text",
           source_text: "Playwright text",
           plan_version: 1,
-          chunks: [],
+          chunks: [
+            {
+              index: 0,
+              status: "written",
+              duration_seconds: 4,
+              start_seconds: 0,
+              plan_version: 1,
+              voice_id: "suzy",
+              segment_url: "/api/jobs/job-1/chunks/0",
+            },
+            {
+              index: 1,
+              status: "written",
+              duration_seconds: 4,
+              start_seconds: 4,
+              plan_version: 1,
+              voice_id: "suzy",
+              segment_url: "/api/jobs/job-1/chunks/1",
+            },
+          ],
           failed_reason: null,
         },
         chunk_index: 1,
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
       },
-    });
+    };
+    for (const socket of mockWindow.__mockSockets) {
+      socket.emit(payload);
+    }
   });
 
-  await expect(page.getByText("Chunk 2")).toBeVisible();
-  await expect(page.getByText(/Written chunks: 2\/2/)).toBeVisible();
+  await expect(page.getByText(/2\/2 chunks rendered/i)).toBeVisible();
+  await expect(page.getByText(/Chunk 2/).first()).toBeVisible();
 });
 
 test("reader shows a visible fallback warning when the socket disconnects", async ({ page }) => {
@@ -304,7 +328,7 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByText("Chunk 1")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Chunk status" })).toBeVisible();
 
   await page.evaluate(() => {
     const mockWindow = globalThis as typeof globalThis & {
@@ -319,6 +343,6 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
     }
   });
 
-  await expect(page.getByText(/Live socket is reconnecting\. Polling fallback is active\./i)).toBeVisible();
+  await expect(page.getByText(/Live updates degraded, using fallback sync/i)).toBeVisible();
   await expect(page.getByText(/Live reconnecting/i)).toBeVisible();
 });
