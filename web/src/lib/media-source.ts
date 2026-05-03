@@ -116,7 +116,7 @@ export function useMediaSourcePlayer({
   }, [streamKey]);
 
   useEffect(() => {
-    if (!streamKey || !mimeType || !audioRef.current) {
+    if (!streamKey || !mimeType || !initSegmentUrl || !audioRef.current) {
       return;
     }
     if (!("MediaSource" in window)) {
@@ -149,13 +149,11 @@ export function useMediaSourcePlayer({
       try {
         const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
         sourceBufferRef.current = sourceBuffer;
-        if (initSegmentUrl) {
-          const initBuffer = await fetchBuffer(initSegmentUrl);
-          if (cancelled || activeStreamKeyRef.current !== streamKey) {
-            return;
-          }
-          await appendBuffer(sourceBuffer, initBuffer);
+        const initBuffer = await fetchBuffer(initSegmentUrl);
+        if (cancelled || activeStreamKeyRef.current !== streamKey) {
+          return;
         }
+        await appendBuffer(sourceBuffer, initBuffer);
         if (!cancelled && activeStreamKeyRef.current === streamKey) {
           setIsReady(true);
           updateBufferedState();

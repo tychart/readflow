@@ -60,3 +60,51 @@ async def test_admin_warm_and_evict_endpoints(client):
     assert warm.json()["status"] == "warm"
     assert evict.status_code == 200
     assert evict.json()["status"] == "evicted"
+
+
+async def test_playback_updates_do_not_broadcast_job_events(client, services):
+    create_response = await client.post(
+        "/api/jobs",
+        data={"text": "A playback-tracked job.", "voice_id": "suzy"},
+    )
+    job_id = create_response.json()["job"]["id"]
+
+    websocket = _FakeWebSocket()
+    await services.hub.connect(websocket)
+
+    try:
+        response = await client.post(
+            f"/api/jobs/{job_id}/playback",
+            json={"current_time_seconds": 4.5, "is_playing": True},
+        )
+    finally:
+        await services.hub.disconnect(websocket)
+
+    assert response.status_code == 200
+    assert websocket.messages == []
+
+
+async def test_scheduler_emits_chunk_ready_without_duplicate_job_updated(client, services):
+    create_response = await client.post(
+        "/api/jobs",
+        data={"text": "Hello world. This should become speech.", "voice_id": "suzy"},
+    )
+    job_id = create_response.json()["job"]["id"]
+
+    websocket = _FakeWebSocket()
+    await services.hub.connect(websocket)
+
+    try:
+        await services.scheduler.run_once()
+    finally:
+        await services.hub.disconnect(websocket)
+
+    job_events = [
+        message
+        for message in websocket.messages
+        if cast(dict[str, Any], message["payload"]).get("job", {}).get("id") == job_id
+    ]
+    message_types = {cast(str, message["type"]) for message in job_events}
+
+    assert "chunk_ready" in message_types or "job_completed" in message_types
+    assert "job_updated" not in message_types

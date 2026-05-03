@@ -7,8 +7,8 @@ import { useAppStore } from "../../state/store";
 import type { JobDetail, JobManifest, JobStatus } from "../../types/api";
 
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
-const READER_POLL_INTERVAL_MS = 1_000;
-const PLAYBACK_SYNC_INTERVAL_MS = 1_000;
+const READER_POLL_INTERVAL_MS = 2_000;
+const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 
 function formatRelativeTime(timestamp: number | null) {
   if (!timestamp) {
@@ -20,6 +20,20 @@ function formatRelativeTime(timestamp: number | null) {
 
 function isTerminalStatus(status: JobStatus | undefined) {
   return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
+}
+
+function manifestFromJobDetail(job: JobDetail, previousManifest: JobManifest | null) {
+  if (!previousManifest) {
+    return null;
+  }
+  const hasWrittenChunks = job.chunks.some((chunk) => chunk.status === "written");
+  if (hasWrittenChunks && !previousManifest.init_segment_url) {
+    return previousManifest;
+  }
+  return {
+    ...previousManifest,
+    chunks: job.chunks,
+  } satisfies JobManifest;
 }
 
 export function ReaderPage() {
@@ -45,6 +59,7 @@ export function ReaderPage() {
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const queuedRefreshReasonRef = useRef<string | null>(null);
   const lastPlaybackSyncAtRef = useRef(0);
+  const manifestRef = useRef<JobManifest | null>(null);
 
   const isJobTerminal = isTerminalStatus(job?.status);
   const {
@@ -76,6 +91,12 @@ export function ReaderPage() {
   const bufferedPercent =
     totalDuration > 0 ? (bufferedUntilSeconds / totalDuration) * 100 : 0;
   const writtenChunkCount = job?.chunks.filter((chunk) => chunk.status === "written").length ?? 0;
+  const shouldUsePollingFallback =
+    !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
+
+  useEffect(() => {
+    manifestRef.current = manifest;
+  }, [manifest]);
 
   const refreshReaderState = useCallback(
     async (reason: string, showLoading = false) => {
@@ -159,18 +180,24 @@ export function ReaderPage() {
     if (!lastEvent || !eventJob || eventJob.id !== jobId) {
       return;
     }
-    if (
-      lastEvent.type !== "job_updated" &&
-      lastEvent.type !== "job_completed" &&
-      lastEvent.type !== "chunk_ready"
-    ) {
+    if (lastEvent.type !== "job_updated" && lastEvent.type !== "job_completed" && lastEvent.type !== "chunk_ready") {
       return;
     }
-    void refreshReaderState(`ws:${lastEvent.type}`);
+    setJob(eventJob);
+    setManifest((previousManifest) => manifestFromJobDetail(eventJob, previousManifest));
+    setError(null);
+    setLastRefreshAt(Date.now());
+    setLastRefreshReason(`ws:${lastEvent.type}`);
+    if (
+      !manifestRef.current ||
+      (lastEvent.type === "chunk_ready" && !manifestRef.current.init_segment_url)
+    ) {
+      void refreshReaderState(`ws:${lastEvent.type}:hydrate`);
+    }
   }, [jobId, lastEvent, refreshReaderState]);
 
   useEffect(() => {
-    if (!job || isTerminalStatus(job.status)) {
+    if (!shouldUsePollingFallback) {
       return;
     }
     const timer = window.setInterval(() => {
@@ -179,7 +206,7 @@ export function ReaderPage() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [job, refreshReaderState]);
+  }, [refreshReaderState, shouldUsePollingFallback]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -231,7 +258,7 @@ export function ReaderPage() {
     try {
       const nextJob = await api.activateJob(job.id);
       setJob(nextJob);
-      if (audioRef.current) {
+      if (audioRef.current && audioRef.current.src && isReady) {
         void audioRef.current.play().catch((playError: unknown) => {
           if (!isReady && !totalDuration) {
             return;

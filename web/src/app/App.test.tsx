@@ -1,6 +1,7 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 
 import { App } from "./App";
+import { liveClient } from "../lib/live-client";
 import { useAppStore } from "../state/store";
 
 class MockWebSocket extends EventTarget {
@@ -106,11 +107,16 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  cleanup();
+  liveClient.resetForTests();
   vi.unstubAllGlobals();
 });
 
 test("jobs list updates from websocket events and shows live connection state", async () => {
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
 
   await waitFor(() => expect(MockWebSocket.latest).not.toBeNull());
   expect(await screen.findByText(/live open/i)).toBeInTheDocument();
@@ -144,7 +150,10 @@ test("jobs list updates from websocket events and shows live connection state", 
 });
 
 test("socket reconnects and surfaces reconnecting state", async () => {
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
 
   await waitFor(() => expect(MockWebSocket.latest).not.toBeNull());
 

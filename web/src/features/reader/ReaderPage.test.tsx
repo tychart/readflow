@@ -133,13 +133,17 @@ test("loads a job and sends play plus voice actions", async () => {
 test("refreshes when a relevant websocket event arrives without page reload", async () => {
   seedStore();
   let chunkCount = 1;
+  let jobFetchCount = 0;
+  let manifestFetchCount = 0;
 
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
+      jobFetchCount += 1;
       return { ok: true, json: async () => buildReaderJob(chunkCount) };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
+      manifestFetchCount += 1;
       return { ok: true, json: async () => buildManifest(chunkCount) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([chunkCount]).buffer };
@@ -154,6 +158,8 @@ test("refreshes when a relevant websocket event arrives without page reload", as
   );
 
   expect(await screen.findByText(/Written chunks: 1\/1/)).toBeInTheDocument();
+  expect(jobFetchCount).toBe(1);
+  expect(manifestFetchCount).toBe(1);
 
   chunkCount = 2;
   act(() => {
@@ -168,6 +174,8 @@ test("refreshes when a relevant websocket event arrives without page reload", as
 
   expect(await screen.findByText(/Written chunks: 2\/2/)).toBeInTheDocument();
   expect(screen.getByText("Chunk 2")).toBeInTheDocument();
+  expect(jobFetchCount).toBe(1);
+  expect(manifestFetchCount).toBe(1);
 });
 
 test("polling fallback updates the reader while the socket is stale", async () => {

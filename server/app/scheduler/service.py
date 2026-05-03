@@ -147,11 +147,6 @@ class SchedulerService:
                     },
                 ).model_dump()
             )
-            await self._hub.broadcast(
-                WsEnvelope(
-                    type="job_updated", payload={"job": job_to_detail(job).model_dump()}
-                ).model_dump()
-            )
 
     def _length_bucket(self, chunk: ChunkRecord) -> str:
         length = len(chunk.text)

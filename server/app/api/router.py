@@ -204,11 +204,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = job_to_detail(job)
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
-        )
-        return detail
+        return job_to_detail(job)
 
     @router.delete("/jobs/{job_id}", status_code=204)
     async def delete_job(job_id: str, app_services: AppServices = Depends(services)) -> None:

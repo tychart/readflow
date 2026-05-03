@@ -21,6 +21,14 @@ function buildManifest(chunkIndexes: number[]): JobManifest {
   };
 }
 
+function buildPendingManifest(): JobManifest {
+  return {
+    mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+    init_segment_url: null,
+    chunks: [],
+  };
+}
+
 function installRecordingMediaSource(recording: number[], getBufferedEnd: () => number) {
   class RecordingSourceBuffer extends EventTarget {
     public updating = false;
@@ -246,6 +254,41 @@ test("tries to resume playback after waiting when play intent remains true and n
   act(() => {
     audio?.dispatchEvent(new Event("waiting"));
   });
+
+  rerender(<Harness manifest={buildManifest([0])} playIntent={true} />);
+
+  await waitFor(() => expect(playMock).toHaveBeenCalled());
+});
+
+test("starts playback after the first hydrated chunk arrives when play was pressed early", async () => {
+  let bufferedEnd = 0;
+  const playMock = vi.fn().mockResolvedValue(undefined);
+
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+  HTMLMediaElement.prototype.play = playMock;
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 3;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness({ manifest, playIntent }: { manifest: JobManifest; playIntent: boolean }) {
+    const { audioRef } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest,
+      playIntent,
+      isTerminal: false,
+    });
+    return <audio ref={audioRef} />;
+  }
+
+  const { rerender } = render(<Harness manifest={buildPendingManifest()} playIntent={true} />);
 
   rerender(<Harness manifest={buildManifest([0])} playIntent={true} />);
 
