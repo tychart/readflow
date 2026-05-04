@@ -101,6 +101,16 @@ beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
   HTMLMediaElement.prototype.load = vi.fn();
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get() {
+      return {
+        length: 1,
+        start: () => 0,
+        end: () => 60,
+      };
+    },
+  });
 });
 
 afterEach(() => {

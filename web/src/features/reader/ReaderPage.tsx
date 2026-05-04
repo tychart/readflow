@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { api } from "../../lib/api";
 import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest, JobStatus } from "../../types/api";
+import { calculateChunkSeekTargetSeconds } from "./timeline";
 
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
 const READER_POLL_INTERVAL_MS = 2_000;
@@ -230,6 +231,7 @@ export function ReaderPage() {
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
   const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
+  const [pendingAnchorSeekSeconds, setPendingAnchorSeekSeconds] = useState<number | null>(null);
 
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
@@ -237,6 +239,8 @@ export function ReaderPage() {
   const queuedRefreshReasonRef = useRef<string | null>(null);
   const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
+  const seekingPointerIdRef = useRef<number | null>(null);
+  const suppressSlotClickIndexRef = useRef<number | null>(null);
 
   const isJobTerminal = isTerminalStatus(job?.status);
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
@@ -315,6 +319,7 @@ export function ReaderPage() {
     playerState,
     renderedDurationSeconds,
     requestUserGesturePlay,
+    seekToSeconds,
   } = useMediaSourcePlayer({
     jobId,
     manifest: streamManifest,
@@ -327,6 +332,19 @@ export function ReaderPage() {
     () => deriveActiveChunkProgress(contiguousReadyChunks, currentTimeSeconds),
     [contiguousReadyChunks, currentTimeSeconds],
   );
+  const contiguousReadyIndexSet = useMemo(
+    () => new Set(contiguousReadyChunks.map((chunk) => chunk.index)),
+    [contiguousReadyChunks],
+  );
+  const streamStartByIndex = useMemo(() => {
+    let runningStart = 0;
+    const starts = new Map<number, number>();
+    for (const chunk of contiguousReadyChunks) {
+      starts.set(chunk.index, runningStart);
+      runningStart += chunk.duration_seconds;
+    }
+    return starts;
+  }, [contiguousReadyChunks]);
 
   const timelineSlots = useMemo<TimelineSlot[]>(() => {
     const contiguousReadyIndexes = new Set(contiguousReadyChunks.map((chunk) => chunk.index));
@@ -561,6 +579,17 @@ export function ReaderPage() {
     };
   }, [audioRef, isWaitingForData, job, playIntent, syncPlaybackState]);
 
+  useEffect(() => {
+    if (pendingAnchorSeekSeconds === null) {
+      return;
+    }
+    if (!isStreamPrimed || renderedDurationSeconds <= 0) {
+      return;
+    }
+    seekToSeconds(Math.min(pendingAnchorSeekSeconds, renderedDurationSeconds));
+    setPendingAnchorSeekSeconds(null);
+  }, [isStreamPrimed, pendingAnchorSeekSeconds, renderedDurationSeconds, seekToSeconds]);
+
   const handlePlay = async () => {
     if (!job) {
       return;
@@ -599,13 +628,14 @@ export function ReaderPage() {
   };
 
   const activatePlaybackAtChunk = useCallback(
-    async (chunk: Chunk) => {
+    async (chunk: Chunk, startOffsetSeconds = 0) => {
       if (!job) {
         return;
       }
       setPlaybackAnchorIndex(chunk.index);
       setHoveredChunkIndex(chunk.index);
       setPlayIntent(true);
+      setPendingAnchorSeekSeconds(startOffsetSeconds);
       setError(null);
       try {
         const nextJob = await api.activateJob(job.id);
@@ -614,6 +644,7 @@ export function ReaderPage() {
         await requestUserGesturePlay();
       } catch (activationError) {
         setPlayIntent(false);
+        setPendingAnchorSeekSeconds(null);
         setError(
           activationError instanceof Error
             ? activationError.message
@@ -632,6 +663,7 @@ export function ReaderPage() {
       setPlaybackAnchorIndex(chunk.index);
       setHoveredChunkIndex(chunk.index);
       setPlayIntent(true);
+      setPendingAnchorSeekSeconds(null);
       setError(null);
       try {
         const nextJob = await api.activateJob(job.id);
@@ -648,6 +680,65 @@ export function ReaderPage() {
     },
     [job],
   );
+
+  const seekWithinTimelineSlot = useCallback(
+    (slot: TimelineSlot, element: HTMLButtonElement, clientX: number) => {
+      if (!contiguousReadyIndexSet.has(slot.chunk.index) || slot.chunk.duration_seconds <= 0) {
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0) {
+        return false;
+      }
+      const chunkStartSeconds = streamStartByIndex.get(slot.chunk.index) ?? 0;
+      seekToSeconds(
+        calculateChunkSeekTargetSeconds(
+          clientX,
+          { left: rect.left, width: rect.width },
+          chunkStartSeconds,
+          slot.chunk.duration_seconds,
+        ),
+      );
+      return true;
+    },
+    [contiguousReadyIndexSet, seekToSeconds, streamStartByIndex],
+  );
+
+  const handleTimelinePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>, slot: TimelineSlot) => {
+      if (event.button !== 0) {
+        return;
+      }
+      const target = event.currentTarget;
+      const didSeek = seekWithinTimelineSlot(slot, target, event.clientX);
+      if (!didSeek) {
+        return;
+      }
+      suppressSlotClickIndexRef.current = slot.chunk.index;
+      seekingPointerIdRef.current = event.pointerId;
+      if (typeof target.setPointerCapture === "function") {
+        target.setPointerCapture(event.pointerId);
+      }
+      event.preventDefault();
+    },
+    [seekWithinTimelineSlot],
+  );
+
+  const handleTimelinePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>, slot: TimelineSlot) => {
+      if (seekingPointerIdRef.current !== event.pointerId) {
+        return;
+      }
+      seekWithinTimelineSlot(slot, event.currentTarget, event.clientX);
+    },
+    [seekWithinTimelineSlot],
+  );
+
+  const clearTimelineSeeking = useCallback((pointerId: number) => {
+    if (seekingPointerIdRef.current === pointerId) {
+      seekingPointerIdRef.current = null;
+    }
+  }, []);
 
   const handleVoiceChange = async (voiceId: string) => {
     if (!job) {
@@ -666,7 +757,17 @@ export function ReaderPage() {
   };
 
   const handleTimelineSlotClick = async (slot: TimelineSlot) => {
+    if (suppressSlotClickIndexRef.current === slot.chunk.index) {
+      suppressSlotClickIndexRef.current = null;
+      return;
+    }
+
     if (slot.chunk.status === "failed") {
+      return;
+    }
+
+    if (contiguousReadyIndexSet.has(slot.chunk.index)) {
+      seekToSeconds(streamStartByIndex.get(slot.chunk.index) ?? 0);
       return;
     }
 
@@ -782,13 +883,17 @@ export function ReaderPage() {
                       } ${isFailed ? "cursor-not-allowed" : "cursor-pointer"}`}
                       data-slot-state={slot.state}
                       key={slot.chunk.index}
-                      onClick={() => void handleTimelineSlotClick(slot)}
-                      onFocus={() => setHoveredChunkIndex(slot.chunk.index)}
-                      onMouseEnter={() => setHoveredChunkIndex(slot.chunk.index)}
-                      onMouseLeave={() => setHoveredChunkIndex(null)}
-                      style={{
-                        flexGrow: slot.visualDurationSeconds,
-                        flexBasis: 0,
+                    onClick={() => void handleTimelineSlotClick(slot)}
+                    onFocus={() => setHoveredChunkIndex(slot.chunk.index)}
+                    onMouseEnter={() => setHoveredChunkIndex(slot.chunk.index)}
+                    onMouseLeave={() => setHoveredChunkIndex(null)}
+                    onPointerDown={(event) => handleTimelinePointerDown(event, slot)}
+                    onPointerMove={(event) => handleTimelinePointerMove(event, slot)}
+                    onPointerUp={(event) => clearTimelineSeeking(event.pointerId)}
+                    onPointerCancel={(event) => clearTimelineSeeking(event.pointerId)}
+                    style={{
+                      flexGrow: slot.visualDurationSeconds,
+                      flexBasis: 0,
                       }}
                       type="button"
                     >
