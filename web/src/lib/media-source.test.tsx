@@ -119,6 +119,7 @@ test("appends init and media chunks in ascending index order", async () => {
     const { audioRef, appendedChunksCount, isReady } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest: buildManifest([0, 1]),
+      playbackAnchorIndex: 0,
       playIntent: false,
       isTerminal: false,
     });
@@ -190,6 +191,7 @@ test("uses sequence mode so independently packaged chunks play in append order",
     const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest: buildManifest([0]),
+      playbackAnchorIndex: 0,
       playIntent: false,
       isTerminal: false,
     });
@@ -273,6 +275,7 @@ test("does not recreate the media source when the manifest object changes but th
     const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest,
+      playbackAnchorIndex: 0,
       playIntent,
       isTerminal: false,
     });
@@ -315,6 +318,7 @@ test("tries to resume playback after waiting when play intent remains true and n
     const { audioRef } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest,
+      playbackAnchorIndex: 0,
       playIntent,
       isTerminal: false,
     });
@@ -358,6 +362,7 @@ test("starts playback after the first hydrated chunk arrives when play was press
     const { audioRef } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest,
+      playbackAnchorIndex: 0,
       playIntent,
       isTerminal: false,
     });
@@ -393,6 +398,7 @@ test("surfaces autoplay blocking when automatic resume is rejected by the browse
     const { audioRef, isAutoplayBlocked, lastPlayerError } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest: buildManifest([0]),
+      playbackAnchorIndex: 0,
       playIntent: true,
       isTerminal: false,
     });
@@ -429,6 +435,7 @@ test("clamps custom timeline seeking to currently buffered audio", async () => {
     const { audioRef, bufferedUntilSeconds, seekToSeconds } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest: buildManifest([0]),
+      playbackAnchorIndex: 0,
       playIntent: false,
       isTerminal: false,
     });
@@ -486,6 +493,7 @@ test("keeps the custom player clock in sync while audio time advances live", asy
     const { audioRef, currentTimeSeconds } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest: buildManifest([0]),
+      playbackAnchorIndex: 0,
       playIntent: true,
       isTerminal: false,
     });

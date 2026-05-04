@@ -44,6 +44,81 @@ function buildManifest(chunkCount: number) {
   };
 }
 
+function buildGapJob(status: "queued" | "rendering" | "playing" = "queued") {
+  return {
+    ...buildJob(0, status),
+    status,
+    is_active_listening: status === "playing",
+    total_chunks_emitted: 6,
+    total_chunks_completed: 4,
+    buffered_seconds: 16,
+    chunks: [
+      {
+        index: 0,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 0,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+      },
+      {
+        index: 1,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 4,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/1",
+      },
+      {
+        index: 2,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 8,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/2",
+      },
+      {
+        index: 3,
+        status: "queued",
+        duration_seconds: 0,
+        start_seconds: 0,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: null,
+      },
+      {
+        index: 4,
+        status: "rendering",
+        duration_seconds: 0,
+        start_seconds: 0,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: null,
+      },
+      {
+        index: 5,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 20,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/5",
+      },
+    ],
+  };
+}
+
+function buildGapManifest() {
+  return {
+    mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+    init_segment_url: "/api/jobs/job-1/chunks/init",
+    chunks: buildGapJob().chunks,
+  };
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript({
     content: `
@@ -345,4 +420,41 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
 
   await expect(page.getByText(/Live updates degraded, using fallback sync/i)).toBeVisible();
   await expect(page.getByText(/Live reconnecting/i)).toBeVisible();
+});
+
+test("reader renders missing gap slots and allows a manual jump to a later ready chunk", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildGapJob("queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildGapManifest() });
+  });
+  await page.route("**/api/jobs/job-1/activate", async (route) => {
+    await route.fulfill({ json: buildGapJob("playing") });
+  });
+  await page.route("**/api/jobs/job-1/playback", async (route) => {
+    await route.fulfill({ json: buildGapJob("playing") });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByText(/4\/6 chunks rendered/i)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Chunk 4 expected but not received" }),
+  ).toHaveAttribute("data-slot-state", "missing_expected");
+  await expect(
+    page.getByRole("button", { name: "Chunk 5 expected but not received" }),
+  ).toHaveAttribute("data-slot-state", "missing_expected");
+  await expect(page.getByRole("button", { name: "Chunk 6 ready after gap" })).toHaveAttribute(
+    "data-slot-state",
+    "ready_after_gap",
+  );
+
+  await page.getByRole("button", { name: "Chunk 6 ready after gap" }).click();
+
+  await expect(page.getByText(/Playback anchor: Chunk 6/i)).toBeVisible();
 });

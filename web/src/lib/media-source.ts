@@ -17,6 +17,7 @@ export type PlayerState =
 interface UseMediaSourcePlayerOptions {
   jobId: string;
   manifest: JobManifest | null;
+  playbackAnchorIndex: number;
   playIntent: boolean;
   isTerminal: boolean;
 }
@@ -124,6 +125,7 @@ function clampToBuffered(audio: HTMLAudioElement | null, targetSeconds: number) 
 export function useMediaSourcePlayer({
   jobId,
   manifest,
+  playbackAnchorIndex,
   playIntent,
   isTerminal,
 }: UseMediaSourcePlayerOptions) {
@@ -162,7 +164,7 @@ export function useMediaSourcePlayer({
     networkState: 0,
   });
 
-  const streamKey = manifest ? `${jobId}:${manifest.mime_type}` : null;
+  const streamKey = manifest ? `${jobId}:${manifest.mime_type}:${playbackAnchorIndex}` : null;
   const mimeType = manifest?.mime_type ?? null;
   const initSegmentUrl = manifest?.init_segment_url ?? null;
   const renderedDurationSeconds = useMemo(

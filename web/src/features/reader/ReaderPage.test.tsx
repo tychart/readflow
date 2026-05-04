@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { ReaderPage } from "./ReaderPage";
 import { useAppStore } from "../../state/store";
+import type { Chunk } from "../../types/api";
 
 function buildReaderJob(
   chunkCount: number,
@@ -49,6 +50,32 @@ function buildManifest(chunkCount: number) {
       voice_id: "suzy",
       segment_url: `/api/jobs/job-1/chunks/${index}`,
     })),
+  };
+}
+
+function buildReaderJobWithChunks(
+  chunks: Chunk[],
+  status: "queued" | "rendering" | "playing" | "paused" = "queued",
+) {
+  const writtenChunkCount = chunks.filter((chunk) => chunk.status === "written").length;
+  return {
+    ...buildReaderJob(0, status),
+    status,
+    is_active_listening: status === "playing",
+    total_chunks_emitted: chunks.length,
+    total_chunks_completed: writtenChunkCount,
+    buffered_seconds: chunks
+      .filter((chunk) => chunk.status === "written")
+      .reduce((total, chunk) => total + chunk.duration_seconds, 0),
+    chunks,
+  };
+}
+
+function buildManifestFromChunks(chunks: Chunk[]) {
+  return {
+    mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+    init_segment_url: "/api/jobs/job-1/chunks/init",
+    chunks,
   };
 }
 
@@ -124,7 +151,7 @@ test("loads a job and sends play plus voice actions", async () => {
   );
 
   await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
-  await user.click(screen.getByRole("button", { name: /play/i }));
+  await user.click(screen.getByRole("button", { name: "Play" }));
   await user.selectOptions(screen.getByRole("combobox"), "howard");
 
   expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object));
@@ -262,7 +289,7 @@ test("shows waiting copy when play is armed before the first chunk exists and hy
   );
 
   await screen.findByText("Reader job");
-  await user.click(screen.getByRole("button", { name: /play/i }));
+  await user.click(screen.getByRole("button", { name: "Play" }));
 
   expect(await screen.findByText(/Waiting for first chunk/i)).toBeInTheDocument();
 
@@ -281,4 +308,121 @@ test("shows waiting copy when play is armed before the first chunk exists and hy
 
   expect(await screen.findByText(/1\/1 chunks rendered/i)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /pause/i })).toBeInTheDocument();
+});
+
+test("renders gap-aware slots and allows manual jump to a later ready chunk without auto-skipping", async () => {
+  seedStore();
+
+  const chunks: Chunk[] = [
+    {
+      index: 0,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 0,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/0",
+    },
+    {
+      index: 1,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 4,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/1",
+    },
+    {
+      index: 2,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 8,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/2",
+    },
+    {
+      index: 3,
+      status: "queued",
+      duration_seconds: 0,
+      start_seconds: 0,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: null,
+    },
+    {
+      index: 4,
+      status: "rendering",
+      duration_seconds: 0,
+      start_seconds: 0,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: null,
+    },
+    {
+      index: 5,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 20,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/5",
+    },
+  ];
+
+  const activateMock = vi.fn(async () => ({
+    ok: true,
+    json: async () => buildReaderJobWithChunks(chunks, "playing"),
+  }));
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/activate")) {
+      return activateMock();
+    }
+    if (url.endsWith("/playback")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+
+  expect(screen.getByRole("button", { name: "Chunk 1 active" })).toHaveAttribute(
+    "data-slot-state",
+    "playing",
+  );
+  expect(screen.getByRole("button", { name: "Chunk 4 expected but not received" })).toHaveAttribute(
+    "data-slot-state",
+    "missing_expected",
+  );
+  expect(screen.getByRole("button", { name: "Chunk 5 expected but not received" })).toHaveAttribute(
+    "data-slot-state",
+    "missing_expected",
+  );
+  expect(screen.getByRole("button", { name: "Chunk 6 ready after gap" })).toHaveAttribute(
+    "data-slot-state",
+    "ready_after_gap",
+  );
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Chunk 6 ready after gap" }));
+
+  await waitFor(() =>
+    expect(screen.getByText(/Playback anchor: Chunk 6/i)).toBeInTheDocument(),
+  );
+  expect(activateMock).toHaveBeenCalledTimes(1);
 });

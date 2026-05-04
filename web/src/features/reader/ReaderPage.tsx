@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { api } from "../../lib/api";
@@ -18,10 +10,31 @@ const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
 const READER_POLL_INTERVAL_MS = 2_000;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 
+type TimelineSlotState =
+  | "played"
+  | "playing"
+  | "ready"
+  | "ready_after_gap"
+  | "missing_expected"
+  | "failed";
+
+interface TimelineSlot {
+  chunk: Chunk;
+  state: TimelineSlotState;
+  fillPercent: number;
+  isAnchor: boolean;
+}
+
 interface StreamEventPayload {
   job?: JobDetail;
   mime_type?: string;
   init_segment_url?: string | null;
+}
+
+interface ActiveChunkProgress {
+  activeChunkIndex: number | null;
+  fillByIndex: Map<number, number>;
+  playedIndexes: Set<number>;
 }
 
 function formatRelativeTime(timestamp: number | null) {
@@ -43,6 +56,10 @@ function isTerminalStatus(status: JobStatus | undefined) {
   return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
 }
 
+function sortChunks(chunks: Chunk[]) {
+  return [...chunks].sort((left, right) => left.index - right.index);
+}
+
 function buildManifestFromEvent(
   job: JobDetail,
   previousManifest: JobManifest | null,
@@ -61,16 +78,37 @@ function buildManifestFromEvent(
   return {
     mime_type: nextMimeType,
     init_segment_url: nextInitSegmentUrl,
-    chunks: job.chunks,
+    chunks: sortChunks(job.chunks),
   } satisfies JobManifest;
 }
 
-function findChunkForTime(chunks: Chunk[], timeSeconds: number) {
-  return chunks.find((chunk) => {
-    const start = chunk.start_seconds;
-    const end = chunk.start_seconds + chunk.duration_seconds;
-    return timeSeconds >= start && timeSeconds < end;
-  }) ?? chunks.at(-1) ?? null;
+function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null) {
+  if (manifest) {
+    return sortChunks(manifest.chunks);
+  }
+  if (job) {
+    return sortChunks(job.chunks);
+  }
+  return [];
+}
+
+function chunkStatusText(state: TimelineSlotState) {
+  switch (state) {
+    case "played":
+      return "played";
+    case "playing":
+      return "active";
+    case "ready":
+      return "ready";
+    case "ready_after_gap":
+      return "ready after gap";
+    case "missing_expected":
+      return "expected but not received";
+    case "failed":
+      return "failed";
+    default:
+      return "unknown";
+  }
 }
 
 function describePlayerState(playerState: PlayerState, isAutoplayBlocked: boolean) {
@@ -113,6 +151,64 @@ function statusTone(playerState: PlayerState, isAutoplayBlocked: boolean, hasErr
   return "border-emerald-200 bg-emerald-50/80 text-emerald-950";
 }
 
+function buildStreamManifest(
+  fullManifest: JobManifest | null,
+  contiguousReadyChunks: Chunk[],
+): JobManifest | null {
+  if (!fullManifest) {
+    return null;
+  }
+
+  let runningStart = 0;
+  const normalizedChunks = contiguousReadyChunks.map((chunk) => {
+    const normalized = {
+      ...chunk,
+      start_seconds: runningStart,
+    };
+    runningStart += chunk.duration_seconds;
+    return normalized;
+  });
+
+  return {
+    mime_type: fullManifest.mime_type,
+    init_segment_url: fullManifest.init_segment_url,
+    chunks: normalizedChunks,
+  };
+}
+
+function deriveActiveChunkProgress(
+  contiguousReadyChunks: Chunk[],
+  currentTimeSeconds: number,
+): ActiveChunkProgress {
+  const fillByIndex = new Map<number, number>();
+  const playedIndexes = new Set<number>();
+  let remaining = Math.max(0, currentTimeSeconds);
+  let activeChunkIndex: number | null = null;
+
+  for (const chunk of contiguousReadyChunks) {
+    if (remaining >= chunk.duration_seconds) {
+      fillByIndex.set(chunk.index, 100);
+      playedIndexes.add(chunk.index);
+      remaining -= chunk.duration_seconds;
+      continue;
+    }
+
+    fillByIndex.set(
+      chunk.index,
+      chunk.duration_seconds > 0 ? (remaining / chunk.duration_seconds) * 100 : 0,
+    );
+    activeChunkIndex = chunk.index;
+    break;
+  }
+
+  return { activeChunkIndex, fillByIndex, playedIndexes };
+}
+
+function describeTimelineSlot(slot: TimelineSlot) {
+  const chunkNumber = slot.chunk.index + 1;
+  return `Chunk ${chunkNumber} ${chunkStatusText(slot.state)}`;
+}
+
 export function ReaderPage() {
   const { jobId = "" } = useParams();
   const voices = useAppStore((state) => state.voices);
@@ -127,6 +223,7 @@ export function ReaderPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [playIntent, setPlayIntent] = useState(false);
+  const [playbackAnchorIndex, setPlaybackAnchorIndex] = useState(0);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
@@ -138,10 +235,69 @@ export function ReaderPage() {
   const queuedRefreshReasonRef = useRef<string | null>(null);
   const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
-  const timelineTrackRef = useRef<HTMLDivElement | null>(null);
-  const isScrubbingRef = useRef(false);
 
   const isJobTerminal = isTerminalStatus(job?.status);
+  const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
+
+  useEffect(() => {
+    if (knownChunks.length === 0) {
+      if (playbackAnchorIndex !== 0) {
+        setPlaybackAnchorIndex(0);
+      }
+      return;
+    }
+    if (!knownChunks.some((chunk) => chunk.index === playbackAnchorIndex)) {
+      setPlaybackAnchorIndex(knownChunks[0]?.index ?? 0);
+    }
+  }, [knownChunks, playbackAnchorIndex]);
+
+  const anchoredChunks = useMemo(
+    () => knownChunks.filter((chunk) => chunk.index >= playbackAnchorIndex),
+    [knownChunks, playbackAnchorIndex],
+  );
+
+  const contiguousReadyChunks = useMemo(() => {
+    const contiguous: Chunk[] = [];
+    for (const chunk of anchoredChunks) {
+      if (chunk.status !== "written") {
+        break;
+      }
+      contiguous.push(chunk);
+    }
+    return contiguous;
+  }, [anchoredChunks]);
+
+  const firstGapChunk = useMemo(
+    () => anchoredChunks.find((chunk) => chunk.status !== "written") ?? null,
+    [anchoredChunks],
+  );
+  const expectedNextChunkIndex = firstGapChunk?.index ?? null;
+  const writtenAfterGapIndexes = useMemo(
+    () =>
+      new Set(
+        anchoredChunks
+          .filter(
+            (chunk) =>
+              chunk.index >= (expectedNextChunkIndex ?? Number.POSITIVE_INFINITY) &&
+              chunk.status === "written",
+          )
+          .map((chunk) => chunk.index),
+      ),
+    [anchoredChunks, expectedNextChunkIndex],
+  );
+  const missingExpectedIndexes = useMemo(
+    () =>
+      new Set(
+        anchoredChunks
+          .filter((chunk) => chunk.status !== "written" && chunk.status !== "failed")
+          .map((chunk) => chunk.index),
+      ),
+    [anchoredChunks],
+  );
+  const streamManifest = useMemo(
+    () => buildStreamManifest(manifest, contiguousReadyChunks),
+    [contiguousReadyChunks, manifest],
+  );
   const {
     audioRef,
     appendedChunksCount,
@@ -157,38 +313,71 @@ export function ReaderPage() {
     playerState,
     renderedDurationSeconds,
     requestUserGesturePlay,
-    seekToSeconds,
   } = useMediaSourcePlayer({
     jobId,
-    manifest,
+    manifest: streamManifest,
+    playbackAnchorIndex,
     playIntent,
     isTerminal: isJobTerminal,
   });
 
-  const renderedChunks = useMemo(
-    () =>
-      (manifest?.chunks ?? [])
-        .filter((chunk) => chunk.status === "written")
-        .sort((left, right) => left.index - right.index),
-    [manifest],
+  const activeProgress = useMemo(
+    () => deriveActiveChunkProgress(contiguousReadyChunks, currentTimeSeconds),
+    [contiguousReadyChunks, currentTimeSeconds],
   );
-  const totalWrittenDuration = renderedDurationSeconds;
-  const playedPercent =
-    totalWrittenDuration > 0 ? (currentTimeSeconds / totalWrittenDuration) * 100 : 0;
-  const bufferedPercent =
-    totalWrittenDuration > 0 ? (bufferedUntilSeconds / totalWrittenDuration) * 100 : 0;
-  const writtenChunkCount = job?.chunks.filter((chunk) => chunk.status === "written").length ?? 0;
+
+  const timelineSlots = useMemo<TimelineSlot[]>(() => {
+    const contiguousReadyIndexes = new Set(contiguousReadyChunks.map((chunk) => chunk.index));
+    return knownChunks.map((chunk) => {
+      let state: TimelineSlotState;
+      if (chunk.status === "failed") {
+        state = "failed";
+      } else if (activeProgress.activeChunkIndex === chunk.index) {
+        state = "playing";
+      } else if (activeProgress.playedIndexes.has(chunk.index)) {
+        state = "played";
+      } else if (chunk.index < playbackAnchorIndex && chunk.status === "written") {
+        state = "ready";
+      } else if (contiguousReadyIndexes.has(chunk.index)) {
+        state = "ready";
+      } else if (writtenAfterGapIndexes.has(chunk.index)) {
+        state = "ready_after_gap";
+      } else if (missingExpectedIndexes.has(chunk.index)) {
+        state = "missing_expected";
+      } else if (chunk.status === "written") {
+        state = "ready";
+      } else {
+        state = "missing_expected";
+      }
+
+      return {
+        chunk,
+        state,
+        fillPercent: activeProgress.fillByIndex.get(chunk.index) ?? (state === "played" ? 100 : 0),
+        isAnchor: chunk.index === playbackAnchorIndex,
+      };
+    });
+  }, [
+    activeProgress.activeChunkIndex,
+    activeProgress.fillByIndex,
+    activeProgress.playedIndexes,
+    contiguousReadyChunks,
+    knownChunks,
+    missingExpectedIndexes,
+    playbackAnchorIndex,
+    writtenAfterGapIndexes,
+  ]);
+
+  const detailSlot = useMemo(() => {
+    if (hoveredChunkIndex !== null) {
+      return timelineSlots.find((slot) => slot.chunk.index === hoveredChunkIndex) ?? null;
+    }
+    return timelineSlots.find((slot) => slot.chunk.index === activeProgress.activeChunkIndex) ?? null;
+  }, [activeProgress.activeChunkIndex, hoveredChunkIndex, timelineSlots]);
+
+  const writtenChunkCount = knownChunks.filter((chunk) => chunk.status === "written").length;
   const shouldUsePollingFallback =
     !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
-  const activeChunk = useMemo(
-    () => findChunkForTime(renderedChunks, currentTimeSeconds),
-    [currentTimeSeconds, renderedChunks],
-  );
-  const hoveredChunk = useMemo(
-    () => renderedChunks.find((chunk) => chunk.index === hoveredChunkIndex) ?? null,
-    [hoveredChunkIndex, renderedChunks],
-  );
-  const detailChunk = hoveredChunk ?? activeChunk;
   const liveStatus = describePlayerState(playerState, isAutoplayBlocked);
   const showSpinner =
     playerState === "priming" ||
@@ -405,6 +594,57 @@ export function ReaderPage() {
     }
   };
 
+  const activatePlaybackAtChunk = useCallback(
+    async (chunk: Chunk) => {
+      if (!job) {
+        return;
+      }
+      setPlaybackAnchorIndex(chunk.index);
+      setHoveredChunkIndex(chunk.index);
+      setPlayIntent(true);
+      setError(null);
+      try {
+        const nextJob = await api.activateJob(job.id);
+        setJob(nextJob);
+        setManifest((previousManifest) => buildManifestFromEvent(nextJob, previousManifest));
+        await requestUserGesturePlay();
+      } catch (activationError) {
+        setPlayIntent(false);
+        setError(
+          activationError instanceof Error
+            ? activationError.message
+            : "Unable to activate playback",
+        );
+      }
+    },
+    [job, requestUserGesturePlay],
+  );
+
+  const armPlaybackAtMissingChunk = useCallback(
+    async (chunk: Chunk) => {
+      if (!job) {
+        return;
+      }
+      setPlaybackAnchorIndex(chunk.index);
+      setHoveredChunkIndex(chunk.index);
+      setPlayIntent(true);
+      setError(null);
+      try {
+        const nextJob = await api.activateJob(job.id);
+        setJob(nextJob);
+        setManifest((previousManifest) => buildManifestFromEvent(nextJob, previousManifest));
+      } catch (activationError) {
+        setPlayIntent(false);
+        setError(
+          activationError instanceof Error
+            ? activationError.message
+            : "Unable to activate playback",
+        );
+      }
+    },
+    [job],
+  );
+
   const handleVoiceChange = async (voiceId: string) => {
     if (!job) {
       return;
@@ -421,81 +661,17 @@ export function ReaderPage() {
     }
   };
 
-  const updateTimelineHover = useCallback(
-    (clientX: number) => {
-      if (!timelineTrackRef.current || totalWrittenDuration <= 0 || renderedChunks.length === 0) {
-        setHoveredChunkIndex(null);
-        return null;
-      }
-      const rect = timelineTrackRef.current.getBoundingClientRect();
-      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-      const hoveredTime = ratio * totalWrittenDuration;
-      const hovered = findChunkForTime(renderedChunks, hoveredTime);
-      setHoveredChunkIndex(hovered?.index ?? null);
-      return hoveredTime;
-    },
-    [renderedChunks, totalWrittenDuration],
-  );
-
-  const applyTimelineSeek = useCallback(
-    (targetTime: number | null) => {
-      if (targetTime === null) {
-        return;
-      }
-      const appliedTime = seekToSeconds(targetTime);
-      const appliedChunk = findChunkForTime(renderedChunks, appliedTime);
-      setHoveredChunkIndex(appliedChunk?.index ?? null);
-      syncPlaybackState(true);
-    },
-    [renderedChunks, seekToSeconds, syncPlaybackState],
-  );
-
-  const handleTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (totalWrittenDuration <= 0) {
+  const handleTimelineSlotClick = async (slot: TimelineSlot) => {
+    if (slot.chunk.status === "failed") {
       return;
     }
-    isScrubbingRef.current = true;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    applyTimelineSeek(updateTimelineHover(event.clientX));
-  };
 
-  const handleTimelinePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const nextTime = updateTimelineHover(event.clientX);
-    if (isScrubbingRef.current) {
-      applyTimelineSeek(nextTime);
-    }
-  };
-
-  const handleTimelinePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isScrubbingRef.current) {
+    if (slot.chunk.status === "written") {
+      await activatePlaybackAtChunk(slot.chunk);
       return;
     }
-    isScrubbingRef.current = false;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    applyTimelineSeek(updateTimelineHover(event.clientX));
-  };
 
-  const handleTimelineKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (totalWrittenDuration <= 0) {
-      return;
-    }
-    const stepSeconds = event.shiftKey ? 10 : 5;
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      applyTimelineSeek(currentTimeSeconds + stepSeconds);
-    }
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      applyTimelineSeek(currentTimeSeconds - stepSeconds);
-    }
-    if (event.key === "Home") {
-      event.preventDefault();
-      applyTimelineSeek(0);
-    }
-    if (event.key === "End") {
-      event.preventDefault();
-      applyTimelineSeek(bufferedUntilSeconds);
-    }
+    await armPlaybackAtMissingChunk(slot.chunk);
   };
 
   if (loading) {
@@ -573,90 +749,106 @@ export function ReaderPage() {
                 {primaryButtonLabel}
               </button>
               <div className="text-sm text-stone-600">
-                {formatClock(currentTimeSeconds)} / {formatClock(totalWrittenDuration)}
+                {formatClock(currentTimeSeconds)} / {formatClock(renderedDurationSeconds)}
               </div>
             </div>
             <div className="text-right text-sm text-stone-600">
-              <div>Rendered: {totalWrittenDuration.toFixed(1)}s</div>
+              <div>Playable now: {renderedDurationSeconds.toFixed(1)}s</div>
               <div>Buffered: {bufferedUntilSeconds.toFixed(1)}s</div>
             </div>
           </div>
 
-          <div
-            aria-label="Rendered audio timeline"
-            aria-valuemax={Math.round(totalWrittenDuration * 10) / 10}
-            aria-valuemin={0}
-            aria-valuenow={Math.round(currentTimeSeconds * 10) / 10}
-            className={`relative h-16 rounded-[1.75rem] border border-stone-200 bg-stone-200/80 p-2 ${
-              totalWrittenDuration > 0 ? "cursor-pointer" : "cursor-not-allowed opacity-70"
-            }`}
-            onKeyDown={handleTimelineKeyDown}
-            onPointerCancel={handleTimelinePointerUp}
-            onPointerDown={handleTimelinePointerDown}
-            onPointerLeave={() => {
-              if (!isScrubbingRef.current) {
-                setHoveredChunkIndex(null);
-              }
-            }}
-            onPointerMove={handleTimelinePointerMove}
-            onPointerUp={handleTimelinePointerUp}
-            ref={timelineTrackRef}
-            role="slider"
-            tabIndex={0}
-          >
-            <div className="absolute inset-[0.55rem] overflow-hidden rounded-[1.25rem] bg-stone-300/70">
-              <div
-                className="absolute inset-y-0 left-0 bg-stone-400/60"
-                style={{ width: `${Math.min(bufferedPercent, 100)}%` }}
-              />
-              <div
-                className="absolute inset-y-0 left-0 bg-[var(--accent)]/85"
-                style={{ width: `${Math.min(playedPercent, 100)}%` }}
-              />
-              {renderedChunks.map((chunk) => {
-                const leftPercent =
-                  totalWrittenDuration > 0
-                    ? (chunk.start_seconds / totalWrittenDuration) * 100
-                    : 0;
-                const widthPercent =
-                  totalWrittenDuration > 0
-                    ? (chunk.duration_seconds / totalWrittenDuration) * 100
-                    : 0;
-                const isActive = activeChunk?.index === chunk.index;
-                const isHovered = hoveredChunk?.index === chunk.index;
+          <div className="rounded-[1.75rem] border border-stone-200 bg-stone-200/80 p-2">
+            <div
+              className="grid gap-1 rounded-[1.25rem] bg-stone-300/70 p-1"
+              style={{
+                gridTemplateColumns: `repeat(${Math.max(knownChunks.length, 1)}, minmax(0, 1fr))`,
+              }}
+            >
+              {timelineSlots.map((slot) => {
+                const isMissing = slot.state === "missing_expected";
+                const isReadyAfterGap = slot.state === "ready_after_gap";
+                const isPlayingSlot = slot.state === "playing";
+                const isPlayed = slot.state === "played";
+                const isFailed = slot.state === "failed";
+
                 return (
-                  <div
-                    className={`absolute inset-y-0 border-r border-white/80 ${
-                      isActive ? "bg-white/10" : ""
-                    } ${isHovered ? "bg-white/20" : ""}`}
-                    key={chunk.index}
-                    style={{
-                      left: `${leftPercent}%`,
-                      width: `${Math.max(widthPercent, 2)}%`,
-                    }}
-                    title={`Chunk ${chunk.index + 1} • ${formatClock(chunk.start_seconds)} - ${formatClock(chunk.start_seconds + chunk.duration_seconds)} • ${chunk.duration_seconds.toFixed(1)}s`}
-                  />
+                  <button
+                    aria-label={describeTimelineSlot(slot)}
+                    className={`relative h-12 overflow-hidden rounded-xl border text-left transition ${
+                      slot.isAnchor
+                        ? "border-stone-900/60 shadow-[0_0_0_1px_rgba(28,25,23,0.18)]"
+                        : "border-white/70"
+                    } ${isFailed ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    data-slot-state={slot.state}
+                    key={slot.chunk.index}
+                    onClick={() => void handleTimelineSlotClick(slot)}
+                    onFocus={() => setHoveredChunkIndex(slot.chunk.index)}
+                    onMouseEnter={() => setHoveredChunkIndex(slot.chunk.index)}
+                    onMouseLeave={() => setHoveredChunkIndex(null)}
+                    type="button"
+                  >
+                    <div
+                      className={`absolute inset-0 ${
+                        isFailed
+                          ? "bg-rose-200/90"
+                          : isPlayed
+                            ? "bg-[var(--accent)]/85"
+                            : "bg-stone-400/65"
+                      }`}
+                    />
+                    {isReadyAfterGap ? (
+                      <div className="absolute inset-0 bg-stone-400/65" />
+                    ) : null}
+                    {isMissing ? (
+                      <div
+                        className="absolute inset-0 opacity-85"
+                        style={{
+                          backgroundImage:
+                            "repeating-linear-gradient(-45deg, rgba(220,38,38,0.28) 0px, rgba(220,38,38,0.28) 6px, transparent 6px, transparent 12px)",
+                        }}
+                      />
+                    ) : null}
+                    {!isPlayed && !isFailed && slot.fillPercent > 0 ? (
+                      <div
+                        className="absolute inset-y-0 left-0 bg-[var(--accent)]/85"
+                        style={{ width: `${Math.min(slot.fillPercent, 100)}%` }}
+                      />
+                    ) : null}
+                    {isPlayingSlot ? (
+                      <div
+                        className="absolute inset-y-0 z-10 w-0.5 bg-stone-950/90"
+                        style={{ left: `${Math.min(slot.fillPercent, 100)}%` }}
+                      />
+                    ) : null}
+                    <div className="absolute inset-x-0 bottom-1 z-10 text-center text-[11px] font-semibold text-stone-900/90">
+                      {slot.chunk.index + 1}
+                    </div>
+                  </button>
                 );
               })}
-              <div
-                className="absolute inset-y-0 z-10 w-0.5 bg-stone-950/80"
-                style={{ left: `${Math.min(playedPercent, 100)}%` }}
-              />
             </div>
           </div>
 
           <div className="mt-4 grid gap-3 text-sm text-stone-700 md:grid-cols-[1.2fr_0.8fr]">
             <div className="rounded-2xl bg-white/70 p-4">
               <div className="mb-1 font-semibold">
-                {detailChunk ? `Chunk ${detailChunk.index + 1}` : "No chunk rendered yet"}
+                {detailSlot ? `Chunk ${detailSlot.chunk.index + 1}` : "No chunk selected"}
               </div>
-              {detailChunk ? (
+              {detailSlot ? (
                 <div className="space-y-1">
+                  <div>Status: {chunkStatusText(detailSlot.state)}</div>
                   <div>
-                    {formatClock(detailChunk.start_seconds)} -{" "}
-                    {formatClock(detailChunk.start_seconds + detailChunk.duration_seconds)}
+                    {detailSlot.chunk.duration_seconds > 0
+                      ? `${detailSlot.chunk.duration_seconds.toFixed(1)}s ready`
+                      : "Duration not ready yet"}
                   </div>
-                  <div>{detailChunk.duration_seconds.toFixed(1)}s</div>
+                  {detailSlot.state === "ready_after_gap" ? (
+                    <div>Ready, but blocked until earlier missing chunks arrive.</div>
+                  ) : null}
+                  {detailSlot.state === "missing_expected" ? (
+                    <div>This chunk is expected but has not arrived yet.</div>
+                  ) : null}
                 </div>
               ) : (
                 <div>Press play to arm playback and wait for the first rendered audio chunk.</div>
@@ -666,7 +858,7 @@ export function ReaderPage() {
               <div className="mb-1 font-semibold">Live status</div>
               <div>{websocketStatus === "open" && !isSocketStale ? "WS live" : "Fallback sync"}</div>
               <div>
-                {writtenChunkCount}/{job.chunks.length} chunks rendered
+                {writtenChunkCount}/{knownChunks.length} chunks rendered
               </div>
             </div>
           </div>
@@ -704,6 +896,13 @@ export function ReaderPage() {
               Appended chunks: {appendedChunksCount}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
+              Playback anchor: Chunk {playbackAnchorIndex + 1}
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Expected next chunk:{" "}
+              {expectedNextChunkIndex === null ? "none" : `Chunk ${expectedNextChunkIndex + 1}`}
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
               Playback intent: {playIntent ? "armed" : "paused"}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">Player state: {playerState}</div>
@@ -715,6 +914,12 @@ export function ReaderPage() {
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
               Stream primed: {isStreamPrimed ? "yes" : "no"}
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Ready after gap: {writtenAfterGapIndexes.size}
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Missing expected: {missingExpectedIndexes.size}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
               Buffered until: {bufferedUntilSeconds.toFixed(1)}s
@@ -735,7 +940,7 @@ export function ReaderPage() {
         <div className="panel rounded-[2rem] p-6">
           <h2 className="mb-3 text-lg font-semibold">Chunk status</h2>
           <div className="space-y-2">
-            {job.chunks.map((chunk) => (
+            {knownChunks.map((chunk) => (
               <div
                 className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white/60 px-4 py-3"
                 key={chunk.index}
