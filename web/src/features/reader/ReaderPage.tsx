@@ -12,6 +12,7 @@ const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
 const READER_POLL_INTERVAL_MS = 2_000;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 const TIMELINE_PLACEHOLDER_SECONDS = 4;
+const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
 
 type TimelineSlotState =
   | "played"
@@ -126,7 +127,7 @@ function describePlayerState(playerState: PlayerState, isAutoplayBlocked: boolea
     case "waiting_for_first_chunk":
       return "Waiting for first chunk…";
     case "stalled_waiting_for_next_chunk":
-      return "Buffering next chunk…";
+      return "Waiting for next chunk…";
     case "ready_paused":
       return "Ready to play.";
     case "playing":
@@ -568,6 +569,14 @@ export function ReaderPage() {
     const handleSeek = () => syncPlaybackState(true);
     const handleWaiting = () => syncPlaybackState(true, playIntent);
     const handleEnded = () => {
+      if (
+        !isJobTerminal &&
+        renderedDurationSeconds > 0 &&
+        audio.currentTime >= Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
+      ) {
+        syncPlaybackState(true, true);
+        return;
+      }
       setPlayIntent(false);
       syncPlaybackState(true, false);
     };
@@ -597,7 +606,7 @@ export function ReaderPage() {
       audio.removeEventListener("error", handleError);
       window.clearInterval(interval);
     };
-  }, [audioRef, isWaitingForData, job, playIntent, syncPlaybackState]);
+  }, [audioRef, isJobTerminal, isWaitingForData, job, playIntent, renderedDurationSeconds, syncPlaybackState]);
 
   useEffect(() => {
     if (pendingAnchorSeekSeconds === null) {

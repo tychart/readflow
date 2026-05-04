@@ -505,3 +505,102 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
   );
   expect(activateMock).toHaveBeenCalledTimes(1);
 });
+
+test("stays in buffering mode when playback reaches the end of the current contiguous run", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  let bufferedEnd = 60;
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get() {
+      return {
+        length: bufferedEnd > 0 ? 1 : 0,
+        start: () => 0,
+        end: () => bufferedEnd,
+      };
+    },
+  });
+
+  const chunks: Chunk[] = [
+    {
+      index: 0,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 0,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/0",
+    },
+    {
+      index: 1,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 4,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/1",
+    },
+    {
+      index: 2,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 8,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/2",
+    },
+    {
+      index: 3,
+      status: "queued",
+      duration_seconds: 0,
+      start_seconds: 0,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: null,
+    },
+  ];
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/activate")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    if (url.endsWith("/playback")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  const { container } = render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+  await user.click(screen.getByRole("button", { name: "Play" }));
+
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  act(() => {
+    bufferedEnd = 12;
+    if (audio) {
+      audio.currentTime = 12;
+      audio.dispatchEvent(new Event("ended"));
+    }
+  });
+
+  expect(await screen.findByText(/Waiting for next chunk/i)).toBeInTheDocument();
+  expect(container.querySelector(".animate-spin")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+});

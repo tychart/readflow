@@ -146,6 +146,9 @@ export function useMediaSourcePlayer({
     bufferedUntilSeconds: 0,
     currentTimeSeconds: 0,
   });
+  const playIntentRef = useRef(playIntent);
+  const isTerminalRef = useRef(isTerminal);
+  const renderedDurationRef = useRef(0);
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
@@ -177,6 +180,18 @@ export function useMediaSourcePlayer({
       }, 0) ?? 0,
     [manifest],
   );
+
+  useEffect(() => {
+    playIntentRef.current = playIntent;
+  }, [playIntent]);
+
+  useEffect(() => {
+    isTerminalRef.current = isTerminal;
+  }, [isTerminal]);
+
+  useEffect(() => {
+    renderedDurationRef.current = renderedDurationSeconds;
+  }, [renderedDurationSeconds]);
 
   const updatePlaybackState = useCallback((force = false) => {
     const audio = audioRef.current;
@@ -212,6 +227,15 @@ export function useMediaSourcePlayer({
 
     if (nextSnapshot.paused) {
       setIsActuallyPlaying(false);
+      const stoppedAtBoundary =
+        playIntentRef.current &&
+        !isTerminalRef.current &&
+        renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
+        nextSnapshot.currentTimeSeconds >=
+          Math.max(0, renderedDurationRef.current - PLAYABLE_EPSILON_SECONDS) &&
+        nextSnapshot.bufferedUntilSeconds <=
+          nextSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
+      setIsWaitingForData(stoppedAtBoundary);
       return;
     }
 
@@ -491,9 +515,8 @@ export function useMediaSourcePlayer({
       updatePlaybackState(true);
     };
     const handleEnded = () => {
-      setHasEnded(true);
+      setHasEnded(isTerminal);
       setIsActuallyPlaying(false);
-      setIsWaitingForData(false);
       updatePlaybackState(true);
     };
     const handlePlaying = () => {
@@ -533,7 +556,7 @@ export function useMediaSourcePlayer({
       audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("error", handleError);
     };
-  }, [updatePlaybackState]);
+  }, [isTerminal, updatePlaybackState]);
 
   useEffect(() => {
     if (!playIntent && !isActuallyPlaying && !isWaitingForData) {
