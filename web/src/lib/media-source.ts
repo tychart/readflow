@@ -32,6 +32,11 @@ interface AudioDiagnostics {
   networkState: number;
 }
 
+interface PlaybackSnapshot extends AudioDiagnostics {
+  bufferedUntilSeconds: number;
+  currentTimeSeconds: number;
+}
+
 async function fetchBuffer(url: string): Promise<ArrayBuffer> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -132,6 +137,13 @@ export function useMediaSourcePlayer({
   const appendQueueRef = useRef<QueuedChunk[]>([]);
   const appendedChunkIndexesRef = useRef<Set<number>>(new Set());
   const pendingChunkIndexesRef = useRef<Set<number>>(new Set());
+  const lastPlaybackSnapshotRef = useRef<PlaybackSnapshot>({
+    paused: true,
+    readyState: 0,
+    networkState: 0,
+    bufferedUntilSeconds: 0,
+    currentTimeSeconds: 0,
+  });
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
@@ -164,15 +176,50 @@ export function useMediaSourcePlayer({
     [manifest],
   );
 
-  const updatePlaybackState = useCallback(() => {
+  const updatePlaybackState = useCallback((force = false) => {
     const audio = audioRef.current;
-    setBufferedUntilSeconds(getBufferedEnd(audio));
-    setCurrentTimeSeconds(audio?.currentTime ?? 0);
-    setDiagnostics({
+    const nextSnapshot = {
+      bufferedUntilSeconds: getBufferedEnd(audio),
+      currentTimeSeconds: audio?.currentTime ?? 0,
       paused: audio?.paused ?? true,
       readyState: audio?.readyState ?? 0,
       networkState: audio?.networkState ?? 0,
+    } satisfies PlaybackSnapshot;
+    const previousSnapshot = lastPlaybackSnapshotRef.current;
+    const shouldCommit =
+      force ||
+      Math.abs(nextSnapshot.currentTimeSeconds - previousSnapshot.currentTimeSeconds) >= 0.05 ||
+      Math.abs(nextSnapshot.bufferedUntilSeconds - previousSnapshot.bufferedUntilSeconds) >=
+        0.05 ||
+      nextSnapshot.paused !== previousSnapshot.paused ||
+      nextSnapshot.readyState !== previousSnapshot.readyState ||
+      nextSnapshot.networkState !== previousSnapshot.networkState;
+
+    if (!shouldCommit) {
+      return;
+    }
+
+    lastPlaybackSnapshotRef.current = nextSnapshot;
+    setBufferedUntilSeconds(nextSnapshot.bufferedUntilSeconds);
+    setCurrentTimeSeconds(nextSnapshot.currentTimeSeconds);
+    setDiagnostics({
+      paused: nextSnapshot.paused,
+      readyState: nextSnapshot.readyState,
+      networkState: nextSnapshot.networkState,
     });
+
+    if (nextSnapshot.paused) {
+      setIsActuallyPlaying(false);
+      return;
+    }
+
+    if (
+      nextSnapshot.currentTimeSeconds >
+      previousSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS
+    ) {
+      setIsActuallyPlaying(true);
+      setIsWaitingForData(false);
+    }
   }, []);
 
   const attemptPlay = useCallback(
@@ -233,7 +280,7 @@ export function useMediaSourcePlayer({
           setAppendedChunksCount(appendedChunkIndexesRef.current.size);
           setLastPlayerError(null);
           setHasEnded(false);
-          updatePlaybackState();
+          updatePlaybackState(true);
         } catch (error) {
           pendingChunkIndexesRef.current.delete(nextChunk.index);
           setLastPlayerError(
@@ -271,6 +318,13 @@ export function useMediaSourcePlayer({
     appendedChunkIndexesRef.current = new Set();
     pendingChunkIndexesRef.current = new Set();
     processingQueueRef.current = false;
+    lastPlaybackSnapshotRef.current = {
+      paused: true,
+      readyState: 0,
+      networkState: 0,
+      bufferedUntilSeconds: 0,
+      currentTimeSeconds: 0,
+    };
     setBufferedUntilSeconds(0);
     setCurrentTimeSeconds(0);
     setIsReady(false);
@@ -292,7 +346,7 @@ export function useMediaSourcePlayer({
         if (!cancelled && activeStreamKeyRef.current === streamKey) {
           setIsReady(true);
           setLastPlayerError(null);
-          updatePlaybackState();
+          updatePlaybackState(true);
         }
       } catch (error) {
         if (!cancelled) {
@@ -355,9 +409,9 @@ export function useMediaSourcePlayer({
           return;
         }
         initSegmentAppendedRef.current = true;
-        setIsStreamPrimed(true);
+       setIsStreamPrimed(true);
         setLastPlayerError(null);
-        updatePlaybackState();
+        updatePlaybackState(true);
         void processQueue();
       } catch (error) {
         setLastPlayerError(
@@ -410,31 +464,31 @@ export function useMediaSourcePlayer({
       setIsAutoplayBlocked(false);
       setLastPlayerError(null);
       setHasEnded(false);
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handlePause = () => {
       setIsActuallyPlaying(false);
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handleWaiting = () => {
       setIsWaitingForData(true);
       setIsActuallyPlaying(false);
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handleProgress = () => {
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handleTimeUpdate = () => {
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handleSeeking = () => {
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handleEnded = () => {
       setHasEnded(true);
       setIsActuallyPlaying(false);
       setIsWaitingForData(false);
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handlePlaying = () => {
       setHasEnded(false);
@@ -442,12 +496,12 @@ export function useMediaSourcePlayer({
       setIsWaitingForData(false);
       setIsAutoplayBlocked(false);
       setLastPlayerError(null);
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
     const handleError = () => {
       setIsActuallyPlaying(false);
       setLastPlayerError("Audio playback failed");
-      updatePlaybackState();
+      updatePlaybackState(true);
     };
 
     audio.addEventListener("play", handlePlay);
@@ -474,6 +528,23 @@ export function useMediaSourcePlayer({
       audio.removeEventListener("error", handleError);
     };
   }, [updatePlaybackState]);
+
+  useEffect(() => {
+    if (!playIntent && !isActuallyPlaying && !isWaitingForData) {
+      return;
+    }
+
+    let frameId = 0;
+    const tick = () => {
+      updatePlaybackState();
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [isActuallyPlaying, isWaitingForData, playIntent, updatePlaybackState]);
 
   useEffect(() => {
     if (!playIntent || isTerminal || isAutoplayBlocked) {
@@ -559,14 +630,14 @@ export function useMediaSourcePlayer({
   const requestUserGesturePlay = useCallback(async () => {
     const played = await attemptPlay("user");
     if (!played) {
-      updatePlaybackState();
+      updatePlaybackState(true);
     }
     return played;
   }, [attemptPlay, updatePlaybackState]);
 
   const pausePlayback = useCallback(() => {
     audioRef.current?.pause();
-    updatePlaybackState();
+    updatePlaybackState(true);
   }, [updatePlaybackState]);
 
   const seekToSeconds = useCallback(
@@ -579,7 +650,7 @@ export function useMediaSourcePlayer({
       const clampedTarget = clampToBuffered(audio, cappedTarget);
       audio.currentTime = clampedTarget;
       setHasEnded(false);
-      updatePlaybackState();
+      updatePlaybackState(true);
       return clampedTarget;
     },
     [renderedDurationSeconds, updatePlaybackState],

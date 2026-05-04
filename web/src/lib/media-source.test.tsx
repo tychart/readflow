@@ -383,3 +383,76 @@ test("clamps custom timeline seeking to currently buffered audio", async () => {
 
   await waitFor(() => expect(audio?.currentTime).toBe(2));
 });
+
+test("keeps the custom player clock in sync while audio time advances live", async () => {
+  let bufferedEnd = 0;
+  let simulatedCurrentTime = 0;
+  const animationFrameCallbacks: FrameRequestCallback[] = [];
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+
+  const requestAnimationFrameSpy = vi
+    .spyOn(window, "requestAnimationFrame")
+    .mockImplementation((callback: FrameRequestCallback) => {
+      animationFrameCallbacks.push(callback);
+      return animationFrameCallbacks.length;
+    });
+  const cancelAnimationFrameSpy = vi
+    .spyOn(window, "cancelAnimationFrame")
+    .mockImplementation(() => {});
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 4;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness() {
+    const { audioRef, currentTimeSeconds } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0]),
+      playIntent: true,
+      isTerminal: false,
+    });
+
+    useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+      Object.defineProperty(audio, "currentTime", {
+        configurable: true,
+        get: () => simulatedCurrentTime,
+        set: (value: number) => {
+          simulatedCurrentTime = value;
+        },
+      });
+    }, [audioRef]);
+
+    return (
+      <div data-current-time={currentTimeSeconds.toFixed(1)}>
+        <audio ref={audioRef} />
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+
+  await waitFor(() => expect(requestAnimationFrameSpy).toHaveBeenCalled());
+
+  act(() => {
+    simulatedCurrentTime = 1.2;
+    const nextFrame = animationFrameCallbacks.shift();
+    nextFrame?.(performance.now());
+  });
+
+  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-current-time", "1.2"));
+
+  requestAnimationFrameSpy.mockRestore();
+  cancelAnimationFrameSpy.mockRestore();
+});
