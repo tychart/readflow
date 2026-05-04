@@ -227,7 +227,7 @@ export function useMediaSourcePlayer({
   const attemptPlay = useCallback(
     async (reason: "auto" | "user") => {
       const audio = audioRef.current;
-      if (!audio || !isReady || !isStreamPrimed || isTerminal) {
+      if (!audio || !isReady || !isStreamPrimed) {
         return false;
       }
       if (!hasBufferedAhead(audio, bufferedUntilSeconds)) {
@@ -254,7 +254,7 @@ export function useMediaSourcePlayer({
         return false;
       }
     },
-    [bufferedUntilSeconds, isReady, isStreamPrimed, isTerminal],
+    [bufferedUntilSeconds, isReady, isStreamPrimed],
   );
 
   const processQueue = useCallback(async () => {
@@ -553,7 +553,7 @@ export function useMediaSourcePlayer({
   }, [isActuallyPlaying, isWaitingForData, playIntent, updatePlaybackState]);
 
   useEffect(() => {
-    if (!playIntent || isTerminal || isAutoplayBlocked) {
+    if (!playIntent || isAutoplayBlocked) {
       return;
     }
     const audio = audioRef.current;
@@ -573,7 +573,6 @@ export function useMediaSourcePlayer({
     isAutoplayBlocked,
     isReady,
     isStreamPrimed,
-    isTerminal,
     isWaitingForData,
     playIntent,
   ]);

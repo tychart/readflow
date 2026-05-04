@@ -326,6 +326,8 @@ test("completed jobs stay local-only and can download rendered audio without bac
     websocketStatus: "closed",
     lastSocketError: null,
   });
+  const playMock = vi.mocked(HTMLMediaElement.prototype.play);
+  const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
 
   const createObjectUrlSpy = vi
     .spyOn(URL, "createObjectURL")
@@ -368,8 +370,14 @@ test("completed jobs stay local-only and can download rendered audio without bac
   expect(screen.getByText(/Reader is local-only/i)).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Play" }));
+  const playCallsAfterFirstPlay = playMock.mock.calls.length;
+  expect(playCallsAfterFirstPlay).toBeGreaterThanOrEqual(1);
   await user.click(screen.getByRole("button", { name: "Pause" }));
+  expect(pauseMock).toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: /download full audio/i }));
+  await user.click(screen.getByRole("button", { name: "Play" }));
+
+  expect(playMock.mock.calls.length).toBeGreaterThan(playCallsAfterFirstPlay);
 
   expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything());
   expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/pause", expect.anything());
