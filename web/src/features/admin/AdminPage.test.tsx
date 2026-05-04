@@ -55,6 +55,18 @@ test("renders admin telemetry and saves config", async () => {
 
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.endsWith("/api/jobs")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (url.endsWith("/api/voices")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (url.endsWith("/api/admin/state")) {
+      return {
+        ok: true,
+        json: async () => useAppStore.getState().adminState,
+      };
+    }
     if (url.endsWith("/api/admin/config")) {
       return {
         ok: true,

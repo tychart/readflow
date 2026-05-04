@@ -4,7 +4,6 @@ import { BrowserRouter } from "react-router-dom";
 import { AdminPage } from "../features/admin/AdminPage";
 import { JobsPage } from "../features/jobs/JobsPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
-import { useAppBootstrap } from "../hooks/useAppBootstrap";
 import { useAppStore } from "../state/store";
 
 function formatSocketMessageAge(timestamp: number | null) {
@@ -27,8 +26,12 @@ function ConnectionBadge() {
       ? "bg-emerald-100 text-emerald-800"
       : websocketStatus === "connecting" || websocketStatus === "reconnecting"
         ? "bg-amber-100 text-amber-900"
-        : "bg-rose-100 text-rose-800";
-  const label = isSocketStale
+        : websocketStatus === "closed" && !lastSocketError
+          ? "bg-stone-200 text-stone-700"
+          : "bg-rose-100 text-rose-800";
+  const label = websocketStatus === "closed" && !lastSocketError
+    ? "idle"
+    : isSocketStale
     ? "stale"
     : websocketStatus === "reconnecting"
       ? `reconnecting${reconnectAttempt ? ` #${reconnectAttempt}` : ""}`
@@ -48,8 +51,6 @@ function ConnectionBadge() {
 }
 
 function Shell() {
-  useAppBootstrap();
-
   return (
     <div className="app-shell px-4 py-6 md:px-8">
       <div className="mx-auto max-w-7xl">

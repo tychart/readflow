@@ -2,6 +2,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo
 import { useParams } from "react-router-dom";
 
 import { api } from "../../lib/api";
+import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest, JobStatus } from "../../types/api";
@@ -212,6 +213,27 @@ function describeTimelineSlot(slot: TimelineSlot) {
   return `Chunk ${chunkNumber} ${chunkStatusText(slot.state)}`;
 }
 
+function sanitizeDownloadName(input: string) {
+  return (
+    input
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "readflow-job"
+  );
+}
+
+function concatBuffers(buffers: Uint8Array[]) {
+  const totalLength = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const buffer of buffers) {
+    merged.set(buffer, offset);
+    offset += buffer.byteLength;
+  }
+  return merged;
+}
+
 export function ReaderPage() {
   const { jobId = "" } = useParams();
   const voices = useAppStore((state) => state.voices);
@@ -232,6 +254,8 @@ export function ReaderPage() {
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
   const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
   const [pendingAnchorSeekSeconds, setPendingAnchorSeekSeconds] = useState<number | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
@@ -243,6 +267,7 @@ export function ReaderPage() {
   const suppressSlotClickIndexRef = useRef<number | null>(null);
 
   const isJobTerminal = isTerminalStatus(job?.status);
+  useAppBootstrap(!loading && !!job && !isJobTerminal);
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
 
   useEffect(() => {
@@ -304,6 +329,23 @@ export function ReaderPage() {
     () => buildStreamManifest(manifest, contiguousReadyChunks),
     [contiguousReadyChunks, manifest],
   );
+  const downloadableChunks = useMemo(() => {
+    const contiguous: Chunk[] = [];
+    for (const chunk of knownChunks) {
+      if (chunk.index !== contiguous.length || chunk.status !== "written" || !chunk.segment_url) {
+        break;
+      }
+      contiguous.push(chunk);
+    }
+    return contiguous;
+  }, [knownChunks]);
+  const canDownloadRenderedAudio =
+    !!manifest?.init_segment_url && downloadableChunks.length > 0;
+  const isDownloadComplete =
+    !!job &&
+    isJobTerminal &&
+    downloadableChunks.length > 0 &&
+    downloadableChunks.length === knownChunks.length;
   const {
     audioRef,
     appendedChunksCount,
@@ -461,7 +503,7 @@ export function ReaderPage() {
 
   const syncPlaybackState = useCallback(
     (force = false, isPlayingOverride?: boolean) => {
-      if (!job || !audioRef.current) {
+      if (!job || !audioRef.current || isJobTerminal) {
         return;
       }
       const now = Date.now();
@@ -482,7 +524,7 @@ export function ReaderPage() {
           );
         });
     },
-    [audioRef, isWaitingForData, job, playIntent],
+    [audioRef, isJobTerminal, isWaitingForData, job, playIntent],
   );
 
   useEffect(() => {
@@ -594,6 +636,12 @@ export function ReaderPage() {
     if (!job) {
       return;
     }
+    if (isJobTerminal) {
+      setPlayIntent(true);
+      setError(null);
+      await requestUserGesturePlay();
+      return;
+    }
     setPlayIntent(true);
     setError(null);
     try {
@@ -615,6 +663,9 @@ export function ReaderPage() {
     }
     setPlayIntent(false);
     pausePlayback();
+    if (isJobTerminal) {
+      return;
+    }
     try {
       const nextJob = await api.pauseJob(job.id);
       setJob(nextJob);
@@ -630,6 +681,15 @@ export function ReaderPage() {
   const activatePlaybackAtChunk = useCallback(
     async (chunk: Chunk, startOffsetSeconds = 0) => {
       if (!job) {
+        return;
+      }
+      if (isJobTerminal) {
+        setPlaybackAnchorIndex(chunk.index);
+        setHoveredChunkIndex(chunk.index);
+        setPlayIntent(true);
+        setPendingAnchorSeekSeconds(startOffsetSeconds);
+        setError(null);
+        await requestUserGesturePlay();
         return;
       }
       setPlaybackAnchorIndex(chunk.index);
@@ -652,7 +712,7 @@ export function ReaderPage() {
         );
       }
     },
-    [job, requestUserGesturePlay],
+    [isJobTerminal, job, requestUserGesturePlay],
   );
 
   const armPlaybackAtMissingChunk = useCallback(
@@ -756,6 +816,47 @@ export function ReaderPage() {
     }
   };
 
+  const handleDownload = useCallback(async () => {
+    if (!job || !manifest?.init_segment_url || downloadableChunks.length === 0) {
+      return;
+    }
+
+    setDownloadError(null);
+    setIsDownloading(true);
+    try {
+      const initResponse = await fetch(manifest.init_segment_url);
+      if (!initResponse.ok) {
+        throw new Error(`Failed to fetch init segment: ${initResponse.status}`);
+      }
+      const initBuffer = new Uint8Array(await initResponse.arrayBuffer());
+      const segmentBuffers = await Promise.all(
+        downloadableChunks.map(async (chunk) => {
+          const response = await fetch(chunk.segment_url!);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch chunk ${chunk.index + 1}: ${response.status}`);
+          }
+          return new Uint8Array(await response.arrayBuffer());
+        }),
+      );
+      const mergedBuffer = concatBuffers([initBuffer, ...segmentBuffers]);
+      const blob = new Blob([mergedBuffer], { type: manifest.mime_type });
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `${sanitizeDownloadName(job.title ?? "readflow-job")}.mp4`;
+      link.click();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (downloadFailure) {
+      setDownloadError(
+        downloadFailure instanceof Error
+          ? downloadFailure.message
+          : "Unable to download rendered audio",
+      );
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [downloadableChunks, job, manifest]);
+
   const handleTimelineSlotClick = async (slot: TimelineSlot) => {
     if (suppressSlotClickIndexRef.current === slot.chunk.index) {
       suppressSlotClickIndexRef.current = null;
@@ -792,16 +893,20 @@ export function ReaderPage() {
   return (
     <div className="grid gap-6 xl:grid-cols-[1.3fr_0.9fr]">
       <div className="space-y-6">
-        {(websocketStatus !== "open" || isSocketStale || error || lastPlayerError) ? (
+        {((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) ||
+          error ||
+          lastPlayerError ||
+          downloadError) ? (
           <div className="panel rounded-[2rem] border border-amber-200 bg-amber-50/80 p-5 text-sm text-amber-950">
             <div className="mb-2 font-semibold uppercase tracking-[0.2em]">Reader warnings</div>
             <div className="space-y-2">
-              {websocketStatus !== "open" || isSocketStale ? (
+              {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
                 <div>Live updates degraded, using fallback sync…</div>
               ) : null}
               {error ? <div>{error}</div> : null}
               {lastPlayerError ? <div>{lastPlayerError}</div> : null}
               {lastSocketError ? <div>{lastSocketError}</div> : null}
+              {downloadError ? <div>{downloadError}</div> : null}
             </div>
           </div>
         ) : null}
@@ -857,9 +962,23 @@ export function ReaderPage() {
                 {formatClock(currentTimeSeconds)} / {formatClock(renderedDurationSeconds)}
               </div>
             </div>
-            <div className="text-right text-sm text-stone-600">
-              <div>Playable now: {renderedDurationSeconds.toFixed(1)}s</div>
-              <div>Buffered: {bufferedUntilSeconds.toFixed(1)}s</div>
+            <div className="flex items-center gap-3">
+              <button
+                className="rounded-full border border-stone-300 bg-white/80 px-4 py-3 text-sm font-semibold text-stone-700 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!canDownloadRenderedAudio || isDownloading}
+                onClick={() => void handleDownload()}
+                type="button"
+              >
+                {isDownloading
+                  ? "Preparing download…"
+                  : isDownloadComplete
+                    ? "Download full audio"
+                    : "Download rendered audio"}
+              </button>
+              <div className="text-right text-sm text-stone-600">
+                <div>Playable now: {renderedDurationSeconds.toFixed(1)}s</div>
+                <div>Buffered: {bufferedUntilSeconds.toFixed(1)}s</div>
+              </div>
             </div>
           </div>
 
@@ -967,7 +1086,13 @@ export function ReaderPage() {
             </div>
             <div className="rounded-2xl bg-white/70 p-4">
               <div className="mb-1 font-semibold">Live status</div>
-              <div>{websocketStatus === "open" && !isSocketStale ? "WS live" : "Fallback sync"}</div>
+              <div>
+                {isJobTerminal
+                  ? "Reader is local-only"
+                  : websocketStatus === "open" && !isSocketStale
+                    ? "WS live"
+                    : "Fallback sync"}
+              </div>
               <div>
                 {writtenChunkCount}/{knownChunks.length} chunks rendered
               </div>
@@ -994,7 +1119,7 @@ export function ReaderPage() {
           <summary className="cursor-pointer text-lg font-semibold">Live diagnostics</summary>
           <div className="mt-4 grid gap-3 text-sm text-stone-700 md:grid-cols-2">
             <div className="rounded-2xl bg-white/70 p-4">
-              Socket: {websocketStatus}
+              Socket: {isJobTerminal ? "idle" : websocketStatus}
               {isSocketStale ? " (stale)" : ""}
             </div>
             <div className="rounded-2xl bg-white/70 p-4">

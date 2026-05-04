@@ -1,13 +1,25 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { api } from "../../lib/api";
+import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useAppStore } from "../../state/store";
 import type { AdminConfig } from "../../types/api";
 
 export function AdminPage() {
+  useAppBootstrap(true);
+
   const adminState = useAppStore((state) => state.adminState);
   const setAdminState = useAppStore((state) => state.setAdminState);
   const [formState, setFormState] = useState<AdminConfig | null>(null);
+
+  useEffect(() => {
+    if (adminState) {
+      return;
+    }
+    void api.getAdminState().then((state) => {
+      setAdminState(state);
+    });
+  }, [adminState, setAdminState]);
 
   useEffect(() => {
     if (adminState) {
@@ -138,4 +150,3 @@ export function AdminPage() {
     </div>
   );
 }
-

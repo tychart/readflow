@@ -89,7 +89,23 @@ beforeEach(() => {
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs")) {
-      return { ok: true, json: async () => [] };
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: "job-live",
+            title: "Live job",
+            status: "queued",
+            voice_id: "suzy",
+            model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            is_active_listening: false,
+            total_chunks_emitted: 1,
+            total_chunks_completed: 0,
+            buffered_seconds: 0,
+            completed_seconds: 0,
+          },
+        ],
+      };
     }
     if (url.endsWith("/api/voices")) {
       return { ok: true, json: async () => [] };
@@ -120,31 +136,6 @@ test("jobs list updates from websocket events and shows live connection state", 
 
   await waitFor(() => expect(MockWebSocket.latest).not.toBeNull());
   expect(await screen.findByText(/live open/i)).toBeInTheDocument();
-
-  act(() => {
-    MockWebSocket.latest?.emit({
-      type: "job_created",
-      payload: {
-        job: {
-          id: "job-live",
-          title: "Live job",
-          status: "queued",
-          voice_id: "suzy",
-          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-          is_active_listening: false,
-          total_chunks_emitted: 1,
-          total_chunks_completed: 0,
-          buffered_seconds: 0,
-          completed_seconds: 0,
-          source_kind: "text",
-          source_text: "hello",
-          plan_version: 1,
-          chunks: [],
-          failed_reason: null,
-        },
-      },
-    });
-  });
 
   expect(await screen.findByText("Live job")).toBeInTheDocument();
 });

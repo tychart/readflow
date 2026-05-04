@@ -8,6 +8,14 @@ const STALE_AFTER_MS = 30_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 const RELEASE_GRACE_MS = 250;
 
+function mergeSnapshotJobs(
+  existingJobs: ReturnType<typeof useAppStore.getState>["jobs"],
+  snapshotJobs: ReturnType<typeof useAppStore.getState>["jobs"],
+) {
+  const snapshotIds = new Set(snapshotJobs.map((job) => job.id));
+  return [...snapshotJobs, ...existingJobs.filter((job) => !snapshotIds.has(job.id))];
+}
+
 interface SocketStatePatch {
   status?: ReturnType<typeof useAppStore.getState>["websocketStatus"];
   lastMessageAt?: number | null;
@@ -74,7 +82,7 @@ class LiveClient {
         return;
       }
       const store = this.store();
-      store.setJobs(jobs);
+      store.setJobs(mergeSnapshotJobs(store.jobs, jobs));
       store.setVoices(voices);
       store.setAdminState(adminState);
     } catch (error) {
@@ -265,6 +273,8 @@ class LiveClient {
     this.socket = null;
     this.setSocketState({
       status: "closed",
+      error: null,
+      lastMessageAt: null,
       reconnectAttempt: 0,
       isStale: false,
     });

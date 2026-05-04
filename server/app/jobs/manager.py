@@ -50,6 +50,8 @@ class JobManager:
 
     def activate_job(self, job_id: str) -> Job:
         job = self.get_job(job_id)
+        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            return job
         job.is_active_listening = True
         job.playback_state.is_playing = True
         job.playback_state.last_event_at = time()
@@ -60,6 +62,8 @@ class JobManager:
 
     def pause_job(self, job_id: str) -> Job:
         job = self.get_job(job_id)
+        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            return job
         job.is_active_listening = False
         job.playback_state.is_playing = False
         job.playback_state.last_event_at = time()
@@ -77,6 +81,8 @@ class JobManager:
 
     def update_playback(self, job_id: str, current_time_seconds: float, is_playing: bool) -> Job:
         job = self.get_job(job_id)
+        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            return job
         job.playback_state.current_time_seconds = current_time_seconds
         job.playback_state.is_playing = is_playing
         job.playback_state.last_event_at = time()

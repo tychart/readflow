@@ -320,6 +320,68 @@ test("shows waiting copy when play is armed before the first chunk exists and hy
   expect(screen.getByRole("button", { name: /pause/i })).toBeInTheDocument();
 });
 
+test("completed jobs stay local-only and can download rendered audio without backend playback churn", async () => {
+  const user = userEvent.setup();
+  seedStore({
+    websocketStatus: "closed",
+    lastSocketError: null,
+  });
+
+  const createObjectUrlSpy = vi
+    .spyOn(URL, "createObjectURL")
+    .mockReturnValue("blob:download-audio");
+  const revokeObjectUrlSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+  const anchorClickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(() => undefined);
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(2, "completed") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(2) };
+    }
+    if (url.endsWith("/api/jobs/job-1/chunks/init")) {
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    if (url.endsWith("/api/jobs/job-1/chunks/0")) {
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }
+    if (url.endsWith("/api/jobs/job-1/chunks/1")) {
+      return { ok: true, arrayBuffer: async () => new Uint8Array([2]).buffer };
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  });
+  global.fetch = fetchMock as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+  expect(screen.getByText(/Reader is local-only/i)).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Play" }));
+  await user.click(screen.getByRole("button", { name: "Pause" }));
+  await user.click(screen.getByRole("button", { name: /download full audio/i }));
+
+  expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything());
+  expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/pause", expect.anything());
+  expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/playback", expect.anything());
+  expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/chunks/init");
+  expect(anchorClickSpy).toHaveBeenCalled();
+
+  createObjectUrlSpy.mockRestore();
+  revokeObjectUrlSpy.mockRestore();
+  anchorClickSpy.mockRestore();
+});
+
 test("renders gap-aware slots and allows manual jump to a later ready chunk without auto-skipping", async () => {
   seedStore();
 

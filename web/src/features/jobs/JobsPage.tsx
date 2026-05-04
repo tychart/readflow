@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../lib/api";
+import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useAppStore } from "../../state/store";
 import type { JobSummary } from "../../types/api";
 import { JobCreateForm } from "./JobCreateForm";
@@ -24,12 +25,41 @@ export function JobsPage() {
   const setJobs = useAppStore((state) => state.setJobs);
   const websocketStatus = useAppStore((state) => state.websocketStatus);
   const [error, setError] = useState<string | null>(null);
+  const hasLocalMutationRef = useRef(false);
+  const hasLiveJobs = useMemo(
+    () => jobs.some((job) => job.status !== "completed" && job.status !== "failed"),
+    [jobs],
+  );
+
+  useAppBootstrap(hasLiveJobs);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .listJobs()
+      .then((nextJobs) => {
+        if (!cancelled && !hasLocalMutationRef.current) {
+          setJobs(nextJobs);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : "Unable to load jobs");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setJobs]);
 
   const handleCreateJob = async (formData: FormData) => {
     setError(null);
     try {
       const response = await api.createJob(formData);
-      setJobs([response.job, ...jobs]);
+      hasLocalMutationRef.current = true;
+      const currentJobs = useAppStore.getState().jobs;
+      setJobs([response.job, ...currentJobs.filter((job) => job.id !== response.job.id)]);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Unable to create job");
     }
@@ -50,7 +80,9 @@ export function JobsPage() {
         <div className="panel rounded-[2rem] p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-xl font-semibold">Live jobs</h2>
-            <span className="text-sm text-stone-600">WebSocket: {websocketStatus}</span>
+            <span className="text-sm text-stone-600">
+              WebSocket: {hasLiveJobs ? websocketStatus : "idle"}
+            </span>
           </div>
           <div className="space-y-3">
             {jobs.length === 0 ? (
@@ -83,4 +115,3 @@ export function JobsPage() {
     </div>
   );
 }
-
