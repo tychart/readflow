@@ -153,10 +153,12 @@ class JobManager:
         *,
         duration_seconds: float,
         segment_path: str,
+        wav_path: str,
     ) -> Job:
         chunk.status = ChunkStatus.WRITTEN
         chunk.duration_seconds = duration_seconds
         chunk.segment_path = segment_path
+        chunk.wav_path = wav_path
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         job.total_chunks_completed = len(job.written_chunks())

@@ -1,4 +1,6 @@
+import io
 import json
+import wave
 from typing import Any, cast
 
 
@@ -11,6 +13,35 @@ class _FakeWebSocket:
 
     async def send_text(self, payload: str) -> None:
         self.messages.append(json.loads(payload))
+
+
+def _build_wav_bytes(duration_frames: int = 2400, sample_rate: int = 24_000) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(b"\x00\x00" * duration_frames)
+    return buffer.getvalue()
+
+
+def _seed_written_chunk(services, job, index: int):
+    chunk = services.job_manager.add_planned_chunk(
+        job.id,
+        text=f"Chunk {index}",
+        char_start=index * 10,
+        char_end=index * 10 + 7,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+    stored = services.media_store.package_wav_chunk(job.id, chunk.index, _build_wav_bytes())
+    services.job_manager.mark_chunk_written(
+        chunk,
+        duration_seconds=stored.duration_seconds,
+        segment_path=stored.segment_path,
+        wav_path=stored.wav_path,
+    )
+    return chunk
 
 
 async def test_create_job_and_fetch_manifest(client, services):
@@ -117,3 +148,124 @@ async def test_scheduler_emits_chunk_ready_without_duplicate_job_updated(client,
     payload = cast(dict[str, Any], chunk_event["payload"])
     assert payload["mime_type"].startswith("audio/mp4")
     assert payload["init_segment_url"] == f"/api/jobs/{job_id}/chunks/init"
+
+
+async def test_download_job_audio_returns_full_m4a_for_completed_job(client, services):
+    job = services.job_manager.create_job(
+        source_text="Downloadable job.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Finished download",
+    )
+    _seed_written_chunk(services, job, 0)
+    job.planner_cursor.offset = -1
+    _seed_written_chunk(services, job, 1)
+
+    response = await client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mp4")
+    assert 'filename="finished-download.m4a"' in response.headers["content-disposition"]
+    assert len(response.content) > 0
+
+
+async def test_download_job_audio_returns_partial_contiguous_audio_for_in_progress_job(
+    client, services
+):
+    job = services.job_manager.create_job(
+        source_text="Partial download.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Partial download",
+    )
+    _seed_written_chunk(services, job, 0)
+    _seed_written_chunk(services, job, 1)
+
+    response = await client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert 'filename="partial-download-partial.m4a"' in response.headers["content-disposition"]
+    assert len(response.content) > 0
+
+
+async def test_download_job_audio_ignores_written_chunks_after_the_first_gap(client, services):
+    job = services.job_manager.create_job(
+        source_text="Gap download.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Gap download",
+    )
+    _seed_written_chunk(services, job, 0)
+    _seed_written_chunk(services, job, 1)
+    _seed_written_chunk(services, job, 2)
+    gap_chunk = services.job_manager.add_planned_chunk(
+        job.id,
+        text="Gap chunk",
+        char_start=30,
+        char_end=39,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+    assert gap_chunk.index == 3
+    services.job_manager.add_planned_chunk(
+        job.id,
+        text="Still missing",
+        char_start=40,
+        char_end=53,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+    _seed_written_chunk(services, job, 5)
+
+    response = await client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert 'filename="gap-download-partial.m4a"' in response.headers["content-disposition"]
+    assert len(response.content) > 0
+
+
+async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_ready(
+    client, services
+):
+    job = services.job_manager.create_job(
+        source_text="Nothing ready yet.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="No audio yet",
+    )
+    services.job_manager.add_planned_chunk(
+        job.id,
+        text="Chunk 0",
+        char_start=0,
+        char_end=7,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+
+    response = await client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No contiguous rendered audio is ready"
+
+
+async def test_delete_job_removes_export_source_files(client, services):
+    job = services.job_manager.create_job(
+        source_text="Delete this job.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Delete me",
+    )
+    _seed_written_chunk(services, job, 0)
+    wav_path = services.media_store.wav_path(job.id, 0)
+
+    assert wav_path.exists()
+
+    response = await client.delete(f"/api/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert not wav_path.parent.exists()

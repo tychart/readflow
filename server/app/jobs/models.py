@@ -62,6 +62,7 @@ class ChunkRecord:
     start_seconds: float = 0.0
     duration_seconds: float = 0.0
     segment_path: str | None = None
+    wav_path: str | None = None
     error: str | None = None
     created_at: float = field(default_factory=time)
     updated_at: float = field(default_factory=time)

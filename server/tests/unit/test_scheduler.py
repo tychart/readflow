@@ -83,6 +83,7 @@ def test_scheduler_batches_one_voice_at_a_time(services):
                 chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
                 init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
+                wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
                 allocated_vram_mb=0,

@@ -17,6 +17,7 @@ class RenderedChunkResult:
     chunk_index: int
     segment_path: str
     init_segment_path: str
+    wav_path: str
     duration_seconds: float
     reserved_vram_mb: int
     allocated_vram_mb: int
@@ -70,13 +71,14 @@ class SynthesisWorker:
                         chunk_index=chunk.index,
                         segment_path=stored.segment_path,
                         init_segment_path=stored.init_segment_path,
+                        wav_path=stored.wav_path,
                         duration_seconds=stored.duration_seconds,
                         reserved_vram_mb=result.reserved_vram_mb,
                         allocated_vram_mb=result.allocated_vram_mb,
                     )
                 )
             duration = monotonic() - start
-            last = packaged[-1] if packaged else RenderedChunkResult(0, "", "", 0.0, 0, 0)
+            last = packaged[-1] if packaged else RenderedChunkResult(0, "", "", "", 0.0, 0, 0)
             self._telemetry.record_batch(
                 batch_size=len(packaged),
                 duration_seconds=duration,

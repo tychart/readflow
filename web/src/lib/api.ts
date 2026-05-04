@@ -25,6 +25,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+function parseDownloadFilename(contentDisposition: string | null, fallback: string) {
+  if (!contentDisposition) {
+    return fallback;
+  }
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+  return fallback;
+}
+
 export const api = {
   listJobs: () => request<JobSummary[]>(apiPath("/jobs")),
   getJob: (jobId: string) => request<JobDetail>(apiPath(`/jobs/${jobId}`)),
@@ -50,6 +65,28 @@ export const api = {
         is_playing: isPlaying,
       }),
     }),
+  downloadJobAudio: async (jobId: string) => {
+    const response = await fetch(apiPath(`/jobs/${jobId}/download`));
+    if (!response.ok) {
+      let detail = `Request failed: ${response.status}`;
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        if (payload.detail) {
+          detail = payload.detail;
+        }
+      } catch {
+        // Ignore non-JSON error bodies and keep the status-based fallback.
+      }
+      throw new Error(detail);
+    }
+    return {
+      blob: await response.blob(),
+      filename: parseDownloadFilename(
+        response.headers.get("content-disposition"),
+        `readflow-job-${jobId}.m4a`,
+      ),
+    };
+  },
   listVoices: () => request<Voice[]>(apiPath("/voices")),
   getAdminState: () => request<AdminState>(apiPath("/admin/state")),
   updateAdminConfig: (config: Partial<AdminConfig>) =>

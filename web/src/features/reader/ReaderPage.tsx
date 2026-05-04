@@ -213,27 +213,6 @@ function describeTimelineSlot(slot: TimelineSlot) {
   return `Chunk ${chunkNumber} ${chunkStatusText(slot.state)}`;
 }
 
-function sanitizeDownloadName(input: string) {
-  return (
-    input
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || "readflow-job"
-  );
-}
-
-function concatBuffers(buffers: Uint8Array[]) {
-  const totalLength = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-  const merged = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const buffer of buffers) {
-    merged.set(buffer, offset);
-    offset += buffer.byteLength;
-  }
-  return merged;
-}
-
 export function ReaderPage() {
   const { jobId = "" } = useParams();
   const voices = useAppStore((state) => state.voices);
@@ -339,8 +318,7 @@ export function ReaderPage() {
     }
     return contiguous;
   }, [knownChunks]);
-  const canDownloadRenderedAudio =
-    !!manifest?.init_segment_url && downloadableChunks.length > 0;
+  const canDownloadRenderedAudio = downloadableChunks.length > 0;
   const isDownloadComplete =
     !!job &&
     isJobTerminal &&
@@ -817,33 +795,18 @@ export function ReaderPage() {
   };
 
   const handleDownload = useCallback(async () => {
-    if (!job || !manifest?.init_segment_url || downloadableChunks.length === 0) {
+    if (!job || downloadableChunks.length === 0) {
       return;
     }
 
     setDownloadError(null);
     setIsDownloading(true);
     try {
-      const initResponse = await fetch(manifest.init_segment_url);
-      if (!initResponse.ok) {
-        throw new Error(`Failed to fetch init segment: ${initResponse.status}`);
-      }
-      const initBuffer = new Uint8Array(await initResponse.arrayBuffer());
-      const segmentBuffers = await Promise.all(
-        downloadableChunks.map(async (chunk) => {
-          const response = await fetch(chunk.segment_url!);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch chunk ${chunk.index + 1}: ${response.status}`);
-          }
-          return new Uint8Array(await response.arrayBuffer());
-        }),
-      );
-      const mergedBuffer = concatBuffers([initBuffer, ...segmentBuffers]);
-      const blob = new Blob([mergedBuffer], { type: manifest.mime_type });
+      const { blob, filename } = await api.downloadJobAudio(job.id);
       const downloadUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = downloadUrl;
-      link.download = `${sanitizeDownloadName(job.title ?? "readflow-job")}.mp4`;
+      link.download = filename;
       link.click();
       URL.revokeObjectURL(downloadUrl);
     } catch (downloadFailure) {
@@ -855,7 +818,7 @@ export function ReaderPage() {
     } finally {
       setIsDownloading(false);
     }
-  }, [downloadableChunks, job, manifest]);
+  }, [downloadableChunks.length, job]);
 
   const handleTimelineSlotClick = async (slot: TimelineSlot) => {
     if (suppressSlotClickIndexRef.current === slot.chunk.index) {
@@ -971,9 +934,11 @@ export function ReaderPage() {
               >
                 {isDownloading
                   ? "Preparing download…"
+                  : !canDownloadRenderedAudio
+                    ? "Download not ready"
                   : isDownloadComplete
                     ? "Download full audio"
-                    : "Download rendered audio"}
+                    : "Download rendered audio so far"}
               </button>
               <div className="text-right text-sm text-stone-600">
                 <div>Playable now: {renderedDurationSeconds.toFixed(1)}s</div>

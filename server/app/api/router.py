@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from starlette.websockets import WebSocketDisconnect
 
 from app.core.services import AppServices
+from app.jobs.models import ChunkStatus, Job, JobStatus
 from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
@@ -44,6 +47,21 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             vram_soft_limit_mb=runtime.vram_soft_limit_mb,
             vram_hard_limit_mb=runtime.vram_hard_limit_mb,
         )
+
+    def contiguous_export_wav_paths(job: Job) -> list[str]:
+        wav_paths: list[str] = []
+        for expected_index, chunk in enumerate(sorted(job.chunks, key=lambda item: item.index)):
+            if chunk.index != expected_index:
+                break
+            if chunk.status != ChunkStatus.WRITTEN or not chunk.wav_path:
+                break
+            wav_paths.append(chunk.wav_path)
+        return wav_paths
+
+    def sanitize_download_name(value: str | None) -> str:
+        raw = (value or "readflow-job").strip().lower()
+        sanitized = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+        return sanitized[:80] or "readflow-job"
 
     @router.get("/jobs", response_model=list[JobSummaryResponse])
     async def list_jobs(app_services: AppServices = Depends(services)) -> list[JobSummaryResponse]:
@@ -130,6 +148,32 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         if not path.exists():
             raise HTTPException(status_code=404, detail="Chunk not ready")
         return FileResponse(path, media_type=app_services.settings.chunk_mime_type)
+
+    @router.get("/jobs/{job_id}/download")
+    async def download_job_audio(
+        job_id: str, app_services: AppServices = Depends(services)
+    ) -> FileResponse:
+        try:
+            job = app_services.job_manager.get_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        wav_paths = contiguous_export_wav_paths(job)
+        if not wav_paths:
+            raise HTTPException(status_code=409, detail="No contiguous rendered audio is ready")
+
+        export_path = app_services.media_store.build_export_file(job_id, wav_paths)
+        is_full_export = job.status == JobStatus.COMPLETED and len(wav_paths) == len(job.chunks)
+        filename = sanitize_download_name(job.title)
+        if not is_full_export:
+            filename = f"{filename}-partial"
+
+        return FileResponse(
+            export_path,
+            media_type="audio/mp4",
+            filename=f"{filename}.m4a",
+            background=BackgroundTask(export_path.unlink, missing_ok=True),
+        )
 
     @router.post("/jobs/{job_id}/activate", response_model=JobDetailResponse)
     async def activate_job(

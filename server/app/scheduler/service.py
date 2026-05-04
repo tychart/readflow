@@ -138,6 +138,7 @@ class SchedulerService:
                 chunk,
                 duration_seconds=result.duration_seconds,
                 segment_path=result.segment_path,
+                wav_path=result.wav_path,
             )
             message_type = "job_completed" if job.status == JobStatus.COMPLETED else "chunk_ready"
             await self._hub.broadcast(

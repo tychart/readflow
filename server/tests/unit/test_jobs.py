@@ -55,12 +55,14 @@ def test_completed_jobs_ignore_playback_lifecycle_mutations():
     chunk.status = ChunkStatus.WRITTEN
     chunk.duration_seconds = 3.0
     chunk.segment_path = "/tmp/job-1-0.m4s"
+    chunk.wav_path = "/tmp/job-1-0.wav"
     job.planner_cursor.offset = -1
 
     completed = manager.mark_chunk_written(
         chunk,
         duration_seconds=3.0,
         segment_path="/tmp/job-1-0.m4s",
+        wav_path="/tmp/job-1-0.wav",
     )
     assert completed.status == JobStatus.COMPLETED
 
