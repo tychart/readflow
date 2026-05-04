@@ -342,6 +342,10 @@ export function useMediaSourcePlayer({
     const handleSourceOpen = async () => {
       try {
         const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+        // Each chunk is packaged as its own fragmented MP4, so we need sequence mode
+        // to make MSE place segments back-to-back in append order instead of trusting
+        // each fragment's internal timestamps independently.
+        sourceBuffer.mode = "sequence";
         sourceBufferRef.current = sourceBuffer;
         if (!cancelled && activeStreamKeyRef.current === streamKey) {
           setIsReady(true);

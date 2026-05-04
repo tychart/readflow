@@ -136,6 +136,76 @@ test("appends init and media chunks in ascending index order", async () => {
   expect(appendedMarkers).toEqual([9, 1, 2]);
 });
 
+test("uses sequence mode so independently packaged chunks play in append order", async () => {
+  let bufferedEnd = 0;
+  let sourceBufferMode = "segments";
+
+  class SequenceAwareSourceBuffer extends EventTarget {
+    public updating = false;
+    public mode: AppendMode = "segments";
+
+    appendBuffer() {
+      sourceBufferMode = this.mode;
+      this.updating = true;
+      queueMicrotask(() => {
+        this.updating = false;
+        this.dispatchEvent(new Event("updateend"));
+      });
+    }
+  }
+
+  class SequenceAwareMediaSource extends EventTarget {
+    public readyState = "closed";
+
+    constructor() {
+      super();
+      queueMicrotask(() => {
+        this.readyState = "open";
+        this.dispatchEvent(new Event("sourceopen"));
+      });
+    }
+
+    addSourceBuffer() {
+      return new SequenceAwareSourceBuffer() as unknown as SourceBuffer;
+    }
+  }
+
+  Object.defineProperty(window, "MediaSource", {
+    writable: true,
+    value: SequenceAwareMediaSource,
+  });
+  installBufferedAudioState(() => bufferedEnd);
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 2;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness() {
+    const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0]),
+      playIntent: false,
+      isTerminal: false,
+    });
+    return (
+      <div data-appended={String(appendedChunksCount)}>
+        <audio ref={audioRef} />
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+
+  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "1"));
+  expect(sourceBufferMode).toBe("sequence");
+});
+
 test("does not recreate the media source when the manifest object changes but the stream key stays the same", async () => {
   let bufferedEnd = 0;
   const appendedMarkers: number[] = [];
