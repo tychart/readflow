@@ -9,6 +9,7 @@ import type { Chunk, JobDetail, JobManifest, JobStatus } from "../../types/api";
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
 const READER_POLL_INTERVAL_MS = 2_000;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
+const TIMELINE_PLACEHOLDER_SECONDS = 4;
 
 type TimelineSlotState =
   | "played"
@@ -23,6 +24,7 @@ interface TimelineSlot {
   state: TimelineSlotState;
   fillPercent: number;
   isAnchor: boolean;
+  visualDurationSeconds: number;
 }
 
 interface StreamEventPayload {
@@ -355,6 +357,8 @@ export function ReaderPage() {
         state,
         fillPercent: activeProgress.fillByIndex.get(chunk.index) ?? (state === "played" ? 100 : 0),
         isAnchor: chunk.index === playbackAnchorIndex,
+        visualDurationSeconds:
+          chunk.duration_seconds > 0 ? chunk.duration_seconds : TIMELINE_PLACEHOLDER_SECONDS,
       };
     });
   }, [
@@ -759,74 +763,76 @@ export function ReaderPage() {
           </div>
 
           <div className="rounded-[1.75rem] border border-stone-200 bg-stone-200/80 p-2">
-            <div
-              className="grid gap-1 rounded-[1.25rem] bg-stone-300/70 p-1"
-              style={{
-                gridTemplateColumns: `repeat(${Math.max(knownChunks.length, 1)}, minmax(0, 1fr))`,
-              }}
-            >
-              {timelineSlots.map((slot) => {
-                const isMissing = slot.state === "missing_expected";
-                const isReadyAfterGap = slot.state === "ready_after_gap";
-                const isPlayingSlot = slot.state === "playing";
-                const isPlayed = slot.state === "played";
-                const isFailed = slot.state === "failed";
+            <div className="rounded-[1.25rem] bg-stone-300/70 p-1">
+              <div className="flex items-stretch gap-px overflow-hidden rounded-[1rem] bg-white/45">
+                {timelineSlots.map((slot) => {
+                  const isMissing = slot.state === "missing_expected";
+                  const isReadyAfterGap = slot.state === "ready_after_gap";
+                  const isPlayingSlot = slot.state === "playing";
+                  const isPlayed = slot.state === "played";
+                  const isFailed = slot.state === "failed";
 
-                return (
-                  <button
-                    aria-label={describeTimelineSlot(slot)}
-                    className={`relative h-12 overflow-hidden rounded-xl border text-left transition ${
-                      slot.isAnchor
-                        ? "border-stone-900/60 shadow-[0_0_0_1px_rgba(28,25,23,0.18)]"
-                        : "border-white/70"
-                    } ${isFailed ? "cursor-not-allowed" : "cursor-pointer"}`}
-                    data-slot-state={slot.state}
-                    key={slot.chunk.index}
-                    onClick={() => void handleTimelineSlotClick(slot)}
-                    onFocus={() => setHoveredChunkIndex(slot.chunk.index)}
-                    onMouseEnter={() => setHoveredChunkIndex(slot.chunk.index)}
-                    onMouseLeave={() => setHoveredChunkIndex(null)}
-                    type="button"
-                  >
-                    <div
-                      className={`absolute inset-0 ${
-                        isFailed
-                          ? "bg-rose-200/90"
-                          : isPlayed
-                            ? "bg-[var(--accent)]/85"
-                            : "bg-stone-400/65"
-                      }`}
-                    />
-                    {isReadyAfterGap ? (
-                      <div className="absolute inset-0 bg-stone-400/65" />
-                    ) : null}
-                    {isMissing ? (
+                  return (
+                    <button
+                      aria-label={describeTimelineSlot(slot)}
+                      className={`group relative h-12 flex-1 overflow-hidden border-y border-transparent text-left transition first:rounded-l-[0.95rem] last:rounded-r-[0.95rem] ${
+                        slot.isAnchor
+                          ? "z-10 border-stone-900/60 shadow-[0_0_0_1px_rgba(28,25,23,0.18)]"
+                          : ""
+                      } ${isFailed ? "cursor-not-allowed" : "cursor-pointer"}`}
+                      data-slot-state={slot.state}
+                      key={slot.chunk.index}
+                      onClick={() => void handleTimelineSlotClick(slot)}
+                      onFocus={() => setHoveredChunkIndex(slot.chunk.index)}
+                      onMouseEnter={() => setHoveredChunkIndex(slot.chunk.index)}
+                      onMouseLeave={() => setHoveredChunkIndex(null)}
+                      style={{
+                        flexGrow: slot.visualDurationSeconds,
+                        flexBasis: 0,
+                      }}
+                      type="button"
+                    >
                       <div
-                        className="absolute inset-0 opacity-85"
-                        style={{
-                          backgroundImage:
-                            "repeating-linear-gradient(-45deg, rgba(220,38,38,0.28) 0px, rgba(220,38,38,0.28) 6px, transparent 6px, transparent 12px)",
-                        }}
+                        className={`absolute inset-0 ${
+                          isFailed
+                            ? "bg-rose-200/90"
+                            : isPlayed
+                              ? "bg-[var(--accent)]/85"
+                              : "bg-stone-400/65"
+                        }`}
                       />
-                    ) : null}
-                    {!isPlayed && !isFailed && slot.fillPercent > 0 ? (
-                      <div
-                        className="absolute inset-y-0 left-0 bg-[var(--accent)]/85"
-                        style={{ width: `${Math.min(slot.fillPercent, 100)}%` }}
-                      />
-                    ) : null}
-                    {isPlayingSlot ? (
-                      <div
-                        className="absolute inset-y-0 z-10 w-0.5 bg-stone-950/90"
-                        style={{ left: `${Math.min(slot.fillPercent, 100)}%` }}
-                      />
-                    ) : null}
-                    <div className="absolute inset-x-0 bottom-1 z-10 text-center text-[11px] font-semibold text-stone-900/90">
-                      {slot.chunk.index + 1}
-                    </div>
-                  </button>
-                );
-              })}
+                      {isReadyAfterGap ? (
+                        <div className="absolute inset-0 bg-stone-400/65" />
+                      ) : null}
+                      {isMissing ? (
+                        <div
+                          className="absolute inset-0 opacity-85"
+                          style={{
+                            backgroundImage:
+                              "repeating-linear-gradient(-45deg, rgba(220,38,38,0.28) 0px, rgba(220,38,38,0.28) 6px, transparent 6px, transparent 12px)",
+                          }}
+                        />
+                      ) : null}
+                      {!isPlayed && !isFailed && slot.fillPercent > 0 ? (
+                        <div
+                          className="absolute inset-y-0 left-0 bg-[var(--accent)]/85"
+                          style={{ width: `${Math.min(slot.fillPercent, 100)}%` }}
+                        />
+                      ) : null}
+                      {isPlayingSlot ? (
+                        <div
+                          className="absolute inset-y-0 z-10 w-0.5 bg-stone-950/90"
+                          style={{ left: `${Math.min(slot.fillPercent, 100)}%` }}
+                        />
+                      ) : null}
+                      <div className="absolute inset-y-2 right-0 z-10 w-px bg-white/65" />
+                      <div className="absolute inset-x-0 top-1 z-10 text-center text-[10px] font-semibold text-stone-900/55 transition group-hover:text-stone-950/80 group-focus-visible:text-stone-950/80">
+                        {slot.chunk.index + 1}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
