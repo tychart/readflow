@@ -428,6 +428,10 @@ export function ReaderPage() {
     playerState === "stalled_waiting_for_next_chunk";
   const primaryButtonLabel =
     playIntent && !isAutoplayBlocked ? "Pause" : isAutoplayBlocked ? "Resume" : "Play";
+  const hasReachedTerminalPlaybackEnd =
+    isJobTerminal &&
+    renderedDurationSeconds > 0 &&
+    currentTimeSeconds >= Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS);
 
   useEffect(() => {
     manifestRef.current = manifest;
@@ -559,9 +563,17 @@ export function ReaderPage() {
     }
 
     const handlePlay = () => {
+      if (isJobTerminal) {
+        setPlayIntent(true);
+      }
       syncPlaybackState(true, true);
     };
     const handlePause = () => {
+      if (isJobTerminal) {
+        setPlayIntent(false);
+        syncPlaybackState(true, false);
+        return;
+      }
       if (!playIntent) {
         syncPlaybackState(true, false);
       }
@@ -770,6 +782,20 @@ export function ReaderPage() {
     [contiguousReadyIndexSet, seekToSeconds, streamStartByIndex],
   );
 
+  const resumeTerminalPlaybackAfterSeek = useCallback(() => {
+    if (!isJobTerminal || playIntent || !hasReachedTerminalPlaybackEnd) {
+      return;
+    }
+    setPlayIntent(true);
+    setError(null);
+    void requestUserGesturePlay();
+  }, [
+    hasReachedTerminalPlaybackEnd,
+    isJobTerminal,
+    playIntent,
+    requestUserGesturePlay,
+  ]);
+
   const handleTimelinePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>, slot: TimelineSlot) => {
       if (event.button !== 0) {
@@ -780,6 +806,7 @@ export function ReaderPage() {
       if (!didSeek) {
         return;
       }
+      resumeTerminalPlaybackAfterSeek();
       suppressSlotClickIndexRef.current = slot.chunk.index;
       seekingPointerIdRef.current = event.pointerId;
       if (typeof target.setPointerCapture === "function") {
@@ -787,7 +814,7 @@ export function ReaderPage() {
       }
       event.preventDefault();
     },
-    [seekWithinTimelineSlot],
+    [resumeTerminalPlaybackAfterSeek, seekWithinTimelineSlot],
   );
 
   const handleTimelinePointerMove = useCallback(
@@ -860,6 +887,7 @@ export function ReaderPage() {
 
     if (contiguousReadyIndexSet.has(slot.chunk.index)) {
       seekToSeconds(streamStartByIndex.get(slot.chunk.index) ?? 0);
+      resumeTerminalPlaybackAfterSeek();
       return;
     }
 

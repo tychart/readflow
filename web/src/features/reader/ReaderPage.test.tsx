@@ -387,6 +387,53 @@ test("completed jobs stay local-only and can download rendered audio without bac
   anchorClickSpy.mockRestore();
 });
 
+test("completed jobs sync the play button when local playback resumes after reaching the end", async () => {
+  const user = userEvent.setup();
+  seedStore({
+    websocketStatus: "closed",
+    lastSocketError: null,
+  });
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(2, "completed") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(2) };
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  const { container } = render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Play" }));
+  expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+
+  act(() => {
+    if (audio) {
+      audio.currentTime = 8;
+      audio.dispatchEvent(new Event("ended"));
+    }
+  });
+
+  await waitFor(() => expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument());
+
+  await user.click(screen.getByRole("button", { name: "Chunk 1 played" }));
+
+  await waitFor(() => expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument());
+});
+
 test("renders gap-aware slots and allows manual jump to a later ready chunk without auto-skipping", async () => {
   seedStore();
 
