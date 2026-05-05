@@ -603,4 +603,35 @@ test("stays in buffering mode when playback reaches the end of the current conti
   expect(await screen.findByText(/Waiting for next chunk/i)).toBeInTheDocument();
   expect(container.querySelector(".animate-spin")).not.toBeNull();
   expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+
+  const completedChunks: Chunk[] = [
+    ...chunks.slice(0, 3),
+    {
+      index: 3,
+      status: "written",
+      duration_seconds: 0.5,
+      start_seconds: 12,
+      plan_version: 1,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/3",
+    },
+  ];
+
+  act(() => {
+    useAppStore.getState().applyEvent({
+      type: "job_completed",
+      payload: {
+        job: buildReaderJobWithChunks(completedChunks, "completed"),
+        chunk_index: 3,
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
+      },
+    });
+  });
+
+  await waitFor(() =>
+    expect(screen.queryByText(/Waiting for next chunk/i)).not.toBeInTheDocument(),
+  );
+  expect(container.querySelector(".animate-spin")).toBeNull();
+  expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
 });

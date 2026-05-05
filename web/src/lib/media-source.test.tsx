@@ -534,3 +534,81 @@ test("keeps the custom player clock in sync while audio time advances live", asy
   requestAnimationFrameSpy.mockRestore();
   cancelAnimationFrameSpy.mockRestore();
 });
+
+test("shows waiting for data when playback stalls at the rendered boundary without a waiting event", async () => {
+  let bufferedEnd = 0;
+  let simulatedCurrentTime = 0;
+
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 4;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness() {
+    const { audioRef, isWaitingForData, playerState } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0, 1]),
+      playbackAnchorIndex: 0,
+      playIntent: true,
+      isTerminal: false,
+    });
+
+    useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+      Object.defineProperty(audio, "currentTime", {
+        configurable: true,
+        get: () => simulatedCurrentTime,
+        set: (value: number) => {
+          simulatedCurrentTime = value;
+        },
+      });
+      Object.defineProperty(audio, "paused", {
+        configurable: true,
+        get: () => false,
+      });
+    }, [audioRef]);
+
+    return (
+      <div data-state={playerState} data-waiting={isWaitingForData ? "yes" : "no"}>
+        <audio ref={audioRef} />
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  act(() => {
+    simulatedCurrentTime = 3.9;
+    audio?.dispatchEvent(new Event("play"));
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+
+  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-state", "playing"));
+
+  act(() => {
+    simulatedCurrentTime = 4;
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute(
+      "data-state",
+      "stalled_waiting_for_next_chunk",
+    ),
+  );
+  expect(container.firstChild).toHaveAttribute("data-waiting", "yes");
+});

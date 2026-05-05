@@ -619,6 +619,25 @@ export function ReaderPage() {
     setPendingAnchorSeekSeconds(null);
   }, [isStreamPrimed, pendingAnchorSeekSeconds, renderedDurationSeconds, seekToSeconds]);
 
+  useEffect(() => {
+    if (
+      !isJobTerminal ||
+      !playIntent ||
+      isActuallyPlaying ||
+      renderedDurationSeconds <= 0 ||
+      currentTimeSeconds < Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
+    ) {
+      return;
+    }
+    setPlayIntent(false);
+  }, [
+    currentTimeSeconds,
+    isActuallyPlaying,
+    isJobTerminal,
+    playIntent,
+    renderedDurationSeconds,
+  ]);
+
   const handlePlay = async () => {
     if (!job) {
       return;

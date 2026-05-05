@@ -60,6 +60,30 @@ function hasBufferedAhead(audio: HTMLAudioElement | null, bufferedUntilSeconds: 
   return bufferedUntilSeconds > (audio.currentTime ?? 0) + PLAYABLE_EPSILON_SECONDS;
 }
 
+function isStoppedAtRenderedBoundary(
+  snapshot: PlaybackSnapshot,
+  previousSnapshot: PlaybackSnapshot,
+  playIntent: boolean,
+  isTerminal: boolean,
+  renderedDurationSeconds: number,
+) {
+  if (!playIntent || isTerminal || renderedDurationSeconds <= PLAYABLE_EPSILON_SECONDS) {
+    return false;
+  }
+
+  const reachedRenderedEnd =
+    snapshot.currentTimeSeconds >=
+    Math.max(0, renderedDurationSeconds - PLAYABLE_EPSILON_SECONDS);
+  const hasFutureBufferedAudio =
+    snapshot.bufferedUntilSeconds >
+    snapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
+  const advancedSinceLastSnapshot =
+    snapshot.currentTimeSeconds >
+    previousSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
+
+  return reachedRenderedEnd && !hasFutureBufferedAudio && !advancedSinceLastSnapshot;
+}
+
 function appendBuffer(sourceBuffer: SourceBuffer, payload: ArrayBuffer) {
   return new Promise<void>((resolve, reject) => {
     const handleUpdateEnd = () => {
@@ -193,6 +217,13 @@ export function useMediaSourcePlayer({
     renderedDurationRef.current = renderedDurationSeconds;
   }, [renderedDurationSeconds]);
 
+  useEffect(() => {
+    if (!isTerminal) {
+      return;
+    }
+    setIsWaitingForData(false);
+  }, [isTerminal]);
+
   const updatePlaybackState = useCallback((force = false) => {
     const audio = audioRef.current;
     const nextSnapshot = {
@@ -225,17 +256,23 @@ export function useMediaSourcePlayer({
       networkState: nextSnapshot.networkState,
     });
 
+    const stoppedAtBoundary = isStoppedAtRenderedBoundary(
+      nextSnapshot,
+      previousSnapshot,
+      playIntentRef.current,
+      isTerminalRef.current,
+      renderedDurationRef.current,
+    );
+
     if (nextSnapshot.paused) {
       setIsActuallyPlaying(false);
-      const stoppedAtBoundary =
-        playIntentRef.current &&
-        !isTerminalRef.current &&
-        renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
-        nextSnapshot.currentTimeSeconds >=
-          Math.max(0, renderedDurationRef.current - PLAYABLE_EPSILON_SECONDS) &&
-        nextSnapshot.bufferedUntilSeconds <=
-          nextSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
       setIsWaitingForData(stoppedAtBoundary);
+      return;
+    }
+
+    if (stoppedAtBoundary) {
+      setIsActuallyPlaying(false);
+      setIsWaitingForData(true);
       return;
     }
 
@@ -605,24 +642,50 @@ export function useMediaSourcePlayer({
       setPlayerState("error");
       return;
     }
+    if (
+      isTerminal &&
+      renderedDurationSeconds > PLAYABLE_EPSILON_SECONDS &&
+      currentTimeSeconds >= Math.max(0, renderedDurationSeconds - PLAYABLE_EPSILON_SECONDS) &&
+      !isActuallyPlaying
+    ) {
+      setPlayerState("ended");
+      return;
+    }
     if (playIntent) {
       if (!isStreamPrimed || renderedDurationSeconds <= PLAYABLE_EPSILON_SECONDS) {
         setPlayerState("waiting_for_first_chunk");
+        return;
+      }
+      const stalledAtRenderedBoundary = isStoppedAtRenderedBoundary(
+        {
+          bufferedUntilSeconds,
+          currentTimeSeconds,
+          paused: diagnostics.paused,
+          readyState: diagnostics.readyState,
+          networkState: diagnostics.networkState,
+        },
+        lastPlaybackSnapshotRef.current,
+        true,
+        isTerminal,
+        renderedDurationSeconds,
+      );
+      if (isWaitingForData || stalledAtRenderedBoundary) {
+        if (!isWaitingForData && stalledAtRenderedBoundary) {
+          setIsWaitingForData(true);
+        }
+        setPlayerState(
+          currentTimeSeconds <= PLAYABLE_EPSILON_SECONDS
+            ? "waiting_for_first_chunk"
+            : "stalled_waiting_for_next_chunk",
+        );
         return;
       }
       if (isActuallyPlaying) {
         setPlayerState("playing");
         return;
       }
-      if (
-        isWaitingForData ||
-        bufferedUntilSeconds <= currentTimeSeconds + PLAYABLE_EPSILON_SECONDS
-      ) {
-        setPlayerState(
-          currentTimeSeconds <= PLAYABLE_EPSILON_SECONDS
-            ? "waiting_for_first_chunk"
-            : "stalled_waiting_for_next_chunk",
-        );
+      if (bufferedUntilSeconds <= currentTimeSeconds + PLAYABLE_EPSILON_SECONDS) {
+        setPlayerState("ready_paused");
         return;
       }
       setPlayerState("ready_paused");
@@ -644,6 +707,9 @@ export function useMediaSourcePlayer({
   }, [
     bufferedUntilSeconds,
     currentTimeSeconds,
+    diagnostics.networkState,
+    diagnostics.paused,
+    diagnostics.readyState,
     hasEnded,
     isActuallyPlaying,
     isStreamPrimed,
