@@ -102,6 +102,19 @@ That means future agents should preserve the current core Qwen call pattern:
 
 Do not refactor the provider toward some different wrapper abstraction unless the user asks for that.
 
+### 4. Prefer simple, stable playback fixes over clever browser-event guesswork
+
+A lot of the recent work in this repo was about the custom streaming player. The user is explicitly fine with architectural changes during development if they make the system simpler and more reliable.
+
+Practical implication for future agents:
+
+- do not keep layering UI-only conditions on top of flaky media event behavior
+- if playback state is wrong, fix it at the player/controller layer first
+- treat user intent (`playIntent`) and actual media state as separate but synchronized concerns
+- when the browser is inconsistent, prefer explicit local state transitions triggered by known user actions
+
+The user cares more about a stable, debuggable implementation than preserving a previous abstraction.
+
 ## Current Architecture Snapshot
 
 ## Repo layout
@@ -189,6 +202,79 @@ Frontend stack:
 - Vite
 - Tailwind CSS v4
 - Zustand
+
+## Reader / Player Architecture
+
+This became one of the most iterated parts of the codebase. Future agents should understand the intended split before touching it.
+
+Key files:
+
+- `web/src/features/reader/ReaderPage.tsx`
+- `web/src/lib/media-source.ts`
+- `web/src/features/reader/timeline.ts`
+
+Current architecture:
+
+- `ReaderPage` owns reader-level state, user intent, timeline interactions, and server synchronization
+- `useMediaSourcePlayer` owns the hidden `<audio>` element, `MediaSource`, `SourceBuffer`, append queue, and low-level playback state
+- the visible player is fully custom; the native audio controls are hidden
+
+Important design rules:
+
+- the browser keeps one appendable MSE stream per active job/anchor
+- the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
+- `playIntent` is user intent, not identical to “the browser is currently making sound”
+- real playback state comes from the hook and must stay synchronized with the custom controls
+
+### Gap-aware playback model
+
+The frontend intentionally supports the backend finishing chunks out of order.
+
+Implemented behavior:
+
+- timeline can show later written chunks even if earlier chunks are still missing
+- automatic playback only follows the contiguous written run from the current playback anchor
+- if chunks `1,2,3,6` exist, normal playback stops after `3` and waits for `4`
+- chunks `4` and `5` show as expected-but-missing
+- chunk `6` shows as ready-after-gap, but is not auto-played
+- clicking a later ready chunk is allowed and creates a new playback anchor
+
+This is intentional. Do not “simplify” it back to auto-skipping gaps unless the user explicitly asks.
+
+### Timeline rendering model
+
+The user strongly preferred the more continuous-looking playbar over the earlier equal-width chunk-slot version.
+
+Current visual behavior:
+
+- written chunks use real duration-based sizing
+- missing/unrendered chunks use fixed placeholder sizing
+- the bar should still feel like one continuous timeline rather than a row of disconnected boxes
+- seeking within a playable chunk is granular and based on exact click/drag position
+
+If changing the playbar, preserve that overall feel unless the user asks for a redesign.
+
+### Completed-job local playback rules
+
+Completed jobs behave differently from in-progress jobs.
+
+Implemented behavior:
+
+- completed jobs are local-only from the reader’s perspective
+- play/pause/playback heartbeats should not keep talking to the backend for completed jobs
+- download remains available
+- local playback after completion still needs to keep the custom play/pause button honest
+
+Important historical lesson:
+
+- reaching the end of a completed job should be treated as a real ended/paused state
+- if the user then seeks on the timeline, that explicit seek may need to re-arm local playback intent immediately rather than waiting for inconsistent browser follow-up events
+
+If you see bugs where the hidden audio plays but the button still says `Play`, or where the button says `Pause` after ending, look at the synchronization between:
+
+- terminal-job audio events in `ReaderPage`
+- `playIntent`
+- explicit timeline seek handlers
 
 ## How the system works
 
@@ -352,18 +438,17 @@ Frontend uses relative API URLs:
 - `/api/...`
 - `/api/ws`
 
+Current dev-server behavior:
+
+- `web/vite.config.ts` defines an HTTP proxy for `/api`
+- `web/vite.config.ts` defines a WebSocket proxy for `/api/ws`
+- local dev is intended to work as a same-origin frontend talking to the backend through Vite
+
 Important caveat:
 
-- `web/vite.config.ts` does **not** currently define a dev proxy for `/api`
-
-Implication:
-
-- tests pass
-- backend can run alone
-- frontend can run alone
-- but a normal same-origin full-stack browser dev workflow is not yet fully polished
-
-Future agents should not overlook this. It is currently the biggest practical dev-experience gap in the repo.
+- if proxy behavior changes, remember that HTTP and WS proxying are both required
+- do not “fix” WS problems by hardcoding backend URLs into the frontend runtime unless the user explicitly wants that
+- the preferred architecture is relative frontend paths with proxy/reverse-proxy ownership of upstream routing
 
 ## Testing Strategy and Expectations
 
@@ -520,11 +605,22 @@ At one point in this conversation:
 
 Do not immediately assume the provider code is broken if real-model tests fail. Check CUDA visibility first.
 
-### 3. Frontend full-stack dev still needs same-origin help
+### 3. WebSocket and transport ownership matter
 
-The repo does not yet include a Vite `/api` proxy.
+The frontend transport layer went through several iterations.
 
-Do not write docs or status updates implying that `npm run dev` + `uvicorn` automatically gives a working full browser stack without extra setup.
+Important lessons:
+
+- keep frontend API and WS URLs relative (`/api/...`, `/api/ws`)
+- let Vite or the eventual reverse proxy own upstream routing
+- avoid hardcoded backend-origin fallbacks in frontend runtime code
+- keep WebSocket connection ownership centralized rather than scattering socket lifecycles across components
+
+If debugging WS issues, inspect:
+
+- `web/vite.config.ts`
+- `web/src/hooks/useAppBootstrap.ts`
+- `web/src/lib/live-client.ts`
 
 ### 4. Runtime state is ephemeral
 
@@ -544,6 +640,25 @@ The implemented behavior is:
 
 Do not mutate completed audio retroactively unless the user explicitly wants a new model.
 
+### 6. MSE/player bugs are often state-model bugs, not codec bugs
+
+Recent playback bugs were often caused by stale or mismatched state, not by the media container itself.
+
+Examples:
+
+- waiting/loading UI not appearing because the hook only trusted browser media events
+- completed-job seek/play button drift because local playback restarted without re-arming `playIntent`
+- waiting state staying visible after completion because terminal transition cleanup was incomplete
+
+Before assuming ffmpeg/MSE packaging is broken, inspect the interaction between:
+
+- `playerState`
+- `playIntent`
+- `isWaitingForData`
+- `isActuallyPlaying`
+- `currentTimeSeconds`
+- terminal/completed-job transitions
+
 ## Current User-Facing Pages
 
 Jobs page:
@@ -560,6 +675,9 @@ Reader page:
 - monitor buffer progress
 - switch future voice
 - inspect chunk statuses
+- use a custom segmented timeline
+- support gap-aware playback and manual jump-to-later-ready chunks
+- allow download of rendered contiguous audio
 
 Admin page:
 
@@ -582,6 +700,10 @@ Future agents should know that the following were created or materially changed 
 - async `httpx`/ASGI server test harness
 - root `README.md`
 - current `Makefile` testing workflow
+- Vite HTTP/WS proxy for same-origin local dev
+- custom streaming reader/player with gap-aware playback
+- server-side `.m4a` export for contiguous rendered audio
+- completed-job local-only playback behavior
 
 ## Agent Workflow Checklist
 
@@ -623,7 +745,7 @@ Likely next steps, unless the user changes direction:
 2. persist jobs and chunk metadata
 3. add temp media cleanup/retention
 4. improve admin telemetry depth
-5. improve reader UX and chunk highlighting
+5. continue hardening reader/player edge cases
 6. expand deployment story for a single-host install
 7. add a better documented GPU validation workflow
 
