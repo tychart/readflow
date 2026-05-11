@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "ReadFlow backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "flash-attn==2.8.3",
   "fastapi>=0.115.12",
   "pydantic>=2.11.4",
   "pydantic-settings>=2.9.1",
@@ -15,6 +14,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cuda = [
+  "flash-attn==2.8.3"
+]
 dev = [
   "httpx>=0.28.1",
   "pyright>=1.1.400",
@@ -30,6 +32,15 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [
+  { requirement = "torch", match-runtime = true },
+  "packaging",
+  "wheel",
+  "setuptools",
+  "ninja"
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -58,12 +69,3 @@ venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
 reportMissingImports = false
-
-[tool.uv.extra-build-dependencies]
-flash-attn = [
-  "packaging",
-  "wheel",
-  "setuptools",
-  "ninja",
-  "torch"
-]

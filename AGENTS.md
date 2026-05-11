@@ -6,7 +6,7 @@ It is intentionally more operational and opinionated than `README.md`. Use it to
 
 - what the user asked for
 - what was actually implemented
-- which architectural decisions are intentional and should not be “cleaned up” casually
+- which architectural decisions are intentional and should not be "cleaned up" casually
 - how to test changes safely
 - where the sharp edges are
 
@@ -223,7 +223,7 @@ Important design rules:
 
 - the browser keeps one appendable MSE stream per active job/anchor
 - the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
-- `playIntent` is user intent, not identical to “the browser is currently making sound”
+- `playIntent` is user intent, not identical to "the browser is currently making sound"
 - real playback state comes from the hook and must stay synchronized with the custom controls
 
 ### Gap-aware playback model
@@ -239,7 +239,7 @@ Implemented behavior:
 - chunk `6` shows as ready-after-gap, but is not auto-played
 - clicking a later ready chunk is allowed and creates a new playback anchor
 
-This is intentional. Do not “simplify” it back to auto-skipping gaps unless the user explicitly asks.
+This is intentional. Do not "simplify" it back to auto-skipping gaps unless the user explicitly asks.
 
 ### Timeline rendering model
 
@@ -260,7 +260,7 @@ Completed jobs behave differently from in-progress jobs.
 
 Implemented behavior:
 
-- completed jobs are local-only from the reader’s perspective
+- completed jobs are local-only from the reader's perspective
 - play/pause/playback heartbeats should not keep talking to the backend for completed jobs
 - download remains available
 - local playback after completion still needs to keep the custom play/pause button honest
@@ -311,13 +311,13 @@ Current batch grouping dimensions:
 - `voice_id`
 - rough chunk length bucket
 
-That `voice_id` grouping is deliberate. It was added to keep the real Qwen provider aligned with the user’s proven benchmark pattern: one voice-clone prompt shape repeated across a batch.
+That `voice_id` grouping is deliberate. It was added to keep the real Qwen provider aligned with the user's proven benchmark pattern: one voice-clone prompt shape repeated across a batch.
 
 ## Exact Qwen Integration Contract
 
 This is one of the most important parts of the repo.
 
-The current implementation in `server/app/synthesis/provider.py` is intentionally shaped around the user’s working scripts.
+The current implementation in `server/app/synthesis/provider.py` is intentionally shaped around the user's working scripts.
 
 ### Model loading
 
@@ -326,7 +326,12 @@ Current real load path:
 - model id: `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
 - `device_map="cuda:0"`
 - `dtype=torch.bfloat16`
-- `attn_implementation="flash_attention_2"`
+- `attn_implementation`: resolved at load time - `flash_attention_2` when `flash_attn` is installed,
+  otherwise `sdpa` (SDPA fallback for development / non-CUDA machines)
+
+The `attn_implementation` is resolved once via `_resolve_attn_implementation()` which attempts
+an import of `flash_attn`. This makes the provider work without flash-attn on dev machines while
+still using the fastest path in production containers.
 
 ### Voice prompt creation
 
@@ -447,7 +452,7 @@ Current dev-server behavior:
 Important caveat:
 
 - if proxy behavior changes, remember that HTTP and WS proxying are both required
-- do not “fix” WS problems by hardcoding backend URLs into the frontend runtime unless the user explicitly wants that
+- do not "fix" WS problems by hardcoding backend URLs into the frontend runtime unless the user explicitly wants that
 - the preferred architecture is relative frontend paths with proxy/reverse-proxy ownership of upstream routing
 
 ## Testing Strategy and Expectations
@@ -520,7 +525,7 @@ Important operational note:
 
 - the real-model suite will fail immediately if `torch.cuda.is_available()` is false in the launching shell
 - that failure is expected and correct
-- do not “fix” that by weakening validation unless the user explicitly asks
+- do not "fix" that by weakening validation unless the user explicitly asks
 
 ## CI
 
@@ -594,6 +599,27 @@ Do not casually perturb:
 - `flash-attn` pin
 - build dependency configuration
 - Qwen runtime dependency graph
+
+**`flash-attn` is now an optional dependency (`[project.optional-dependencies] cuda`)**.
+Normal `uv sync` does not pull it. The QwenProvider falls back to SDPA when it is absent.
+This means daily development, testing, and CI do not trigger a flash-attn compile.
+
+Production / GPU installs use either:
+- `uv sync --extra cuda` on a compatible machine (GCC ≤ 14)
+- `docker build -f server/Dockerfile` which compiles flash-attn inside a CUDA 12.8 + Ubuntu 24.04 container with GCC 13
+
+The Docker build targets SM 86 (RTX 30xx) via `FLASH_ATTN_CUDA_ARCHS=86` to minimize compile time.
+It only recompiles flash-attn when `pyproject.toml`, `uv.lock`, or the CUDA base image changes.
+
+### 1b. Docker build is the recommended path for Fedora 44+
+
+Fedora 44 ships GCC 15+, which CUDA 12.8 does not support. The Docker container isolates
+the compatible toolchain so the user never needs to downgrade their system compiler.
+
+Do not remove or significantly change `server/Dockerfile` without understanding:
+- the builder stage uses `nvidia/cuda:12.8.1-devel-ubuntu24.04`
+- `FLASH_ATTN_CUDA_ARCHS=86` pins compilation to Ampere
+- The layer cache strategy means pyproject.toml/uv.lock changes are the only thing that triggers flash-attn rebuild
 
 ### 2. CUDA visibility can differ by shell/session
 
@@ -746,7 +772,7 @@ Likely next steps, unless the user changes direction:
 3. add temp media cleanup/retention
 4. improve admin telemetry depth
 5. continue hardening reader/player edge cases
-6. expand deployment story for a single-host install
+6. expand deployment story for a single-host install (Docker is now in place)
 7. add a better documented GPU validation workflow
 
 ## Bottom Line for Future Agents
@@ -756,7 +782,8 @@ If you only remember a few things, remember these:
 - preserve the boring, centralized architecture
 - keep backend scheduling/chunking logic on the server
 - keep the frontend thin
-- keep the official Qwen integration aligned with the user’s validated scripts
-- do not casually trigger a `flash-attn` rebuild
+- keep the official Qwen integration aligned with the user's validated scripts
+- `flash-attn` is optional — provider falls back to SDPA when absent
+- the Docker build (`server/Dockerfile`) is the canonical production path
 - keep tests green and run them often
 - do not undo the async server test harness without very good reason

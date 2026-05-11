@@ -1,0 +1,45 @@
+# ── Git / CI ──────────────────────────────────
+.git
+.gitignore
+.github
+
+# ── IDE / editor ──────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# ── Python artifacts ─────────────────────────
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+dist
+build
+*.egg
+
+# ── Virtual environments (builder creates its own) ──
+.venv
+venv
+
+# ── Cache / temp ──────────────────────────────
+.pytest_cache
+.ruff_cache
+.tox
+htmlcov
+
+# ── OS noise ──────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs / state ──────────────────────────────
+*.log
+*.pid
+
+# ── Test voices (not shipped in container) ────
+voices
+
+# ── Tests (not needed at runtime) ─────────────
+tests

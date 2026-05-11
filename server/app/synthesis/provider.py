@@ -103,6 +103,25 @@ class QwenProvider:
         self._model: Any | None = None
         self._loaded_model_id: str | None = None
         self._prompt_cache: dict[str, Any] = {}
+        self._attn_implementation: str | None = None  # resolved once at load time
+
+    def _resolve_attn_implementation(self) -> str:
+        """Decide which attention implementation to use.
+
+        FlashAttention 2 gives the best throughput but is optional —
+        when it is absent (development machines, CI, or non-GPU builds)
+        the provider falls back to PyTorch's SDPA path so the app still
+        works end-to-end with the fake provider or a CPU-only install.
+        """
+        if self._attn_implementation is not None:
+            return self._attn_implementation
+        try:
+            import flash_attn  # noqa: F401
+
+            self._attn_implementation = "flash_attention_2"
+        except ImportError:
+            self._attn_implementation = "sdpa"
+        return self._attn_implementation
 
     def validate_environment(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()
@@ -152,6 +171,11 @@ class QwenProvider:
                 raise SynthesisOOMError(str(exc)) from exc
             raise
 
+    @property
+    def attn_implementation(self) -> str:
+        """Return the attention implementation this provider is using."""
+        return self._resolve_attn_implementation()
+
     async def memory_stats(self) -> tuple[int, int]:
         return await self._call_in_worker(self._memory_stats_sync)
 
@@ -169,7 +193,7 @@ class QwenProvider:
             model_id,
             device_map="cuda:0",
             dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            attn_implementation=self._resolve_attn_implementation(),
         )
         self._loaded_model_id = model_id
         self._prompt_cache = {}

@@ -225,12 +225,21 @@ This architecture is simple on purpose, but that simplicity has consequences.
 - One synthesis loop means no horizontal scaling inside one process
 - Jobs disappear when the process restarts
 - Runtime config changes are in memory, not persisted
-- Long first-time setup because `flash-attn` may compile for a very long time
 - Browser manual dev is not yet one-command smooth because there is no dev proxy
 
 ### Setup implication: `flash-attn`
 
-The first `uv sync --extra dev` on a fresh machine can take a long time because `flash-attn==2.8.3` may compile locally. On the target machine this can easily be tens of minutes, and you should avoid casually changing that dependency unless you are prepared to rebuild it.
+`flash-attn` is an **optional** CUDA extension that speeds up the attention layer.
+When it is absent the provider falls back to PyTorch's SDPA implementation,
+so the app works on development machines without CUDA.
+
+On the target machine with CUDA:
+
+- `uv sync --extra cuda` compiles flash-attn for your GPU architecture (about 30–60 min)
+- or build the pre-built Docker image below, which compiles flash-attn only once during the first build
+- on Fedora 44+ the system GCC is too new for CUDA 12.8, so use the Docker path
+
+If you change `flash-attn`, `torch`, or the CUDA base image, the container build layer that compiles flash-attn will be invalidated and recompilation is required.
 
 ## Requirements
 
@@ -242,14 +251,63 @@ The first `uv sync --extra dev` on a fresh machine can take a long time because 
 - `npm`
 - `ffmpeg`
 
-### For the real Qwen runtime
+### For the real Qwen runtime (native install)
 
 - NVIDIA GPU
 - working CUDA stack visible to PyTorch
+- GCC ≤ 14 (CUDA 12.8 limitation)
 - enough VRAM for `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
-- successful `uv sync --extra dev`
+- successful `uv sync --extra cuda`
+
+### For the real Qwen runtime (Docker)
+
+- Docker (or Podman with NVIDIA container runtime)
+- enough VRAM for `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
 
 If `torch.cuda.is_available()` is false in your current shell, the real provider and the real-model test suite will fail immediately by design.
+
+## Container Deployment
+
+The recommended path for production or any machine where GCC is too new for CUDA is a
+single Docker image that bundles a pre-compiled flash-attn wheel.
+
+### Build
+
+```bash
+make docker-build
+```
+
+This:
+
+1. Compiles flash-attn inside a CUDA 12.8 + Ubuntu 24.04 container with GCC 13
+2. Targets only SM 86 (RTX 30xx) to minimize compile time
+3. Produces a lean runtime image with no build tools
+
+First build takes about an hour (flash-attn compilation). Subsequent builds are instant
+unless `pyproject.toml`, `uv.lock`, the CUDA base image, or `FLASH_ATTN_CUDA_ARCHS` changes.
+
+### Run
+
+```bash
+make docker-run
+```
+
+This runs the container with GPU access, shared IPC namespace (required for PyTorch), and port 8000 mapped.
+
+With Podman:
+
+```bash
+podman run --rm --security-opt=label=disable --device nvidia.com/gpu=all \
+    --ipc=host -p 8000:8000 readflow-server:cuda
+```
+
+### Development workflow
+
+| Activity | Command |
+|---|---|
+| Day-to-day dev (no GPU) | `uv sync --extra dev && uv run uvicorn main:app --reload` |
+| Real-model test (native) | `uv sync --extra cuda` then `uv run pytest` |
+| Build production image | `make docker-build && make docker-run` |
 
 ## Installation
 
