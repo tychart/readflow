@@ -29,6 +29,11 @@ from app.schemas.api import (
     job_to_summary,
 )
 
+SUPPORTED_MODEL_IDS: set[str] = {
+    "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+}
+
 
 def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     router = APIRouter(prefix="/api")
@@ -72,6 +77,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         text: str | None = Form(default=None),
         title: str | None = Form(default=None),
         voice_id: str | None = Form(default=None),
+        model_id: str | None = Form(default=None),
         language: str | None = Form(default=None),
         file: UploadFile | None = File(default=None),
         app_services: AppServices = Depends(services),
@@ -90,10 +96,16 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             app_services.voice_registry.get_voice(voice)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        selected_model = model_id or app_services.settings.runtime.default_model_id
+        if selected_model not in SUPPORTED_MODEL_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported model '{selected_model}'. Supported models: {', '.join(sorted(SUPPORTED_MODEL_IDS))}",
+            )
         job = app_services.job_manager.create_job(
             source_text=payload_text,
             source_kind=source_kind,
-            model_id=app_services.settings.runtime.default_model_id,
+            model_id=selected_model,
             voice_id=voice,
             language=language or app_services.settings.runtime.default_language,
             title=title,

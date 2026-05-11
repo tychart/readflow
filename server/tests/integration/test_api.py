@@ -252,6 +252,26 @@ async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_
     assert response.json()["detail"] == "No contiguous rendered audio is ready"
 
 
+async def test_create_job_with_custom_model_id(client, services):
+    response = await client.post(
+        "/api/jobs",
+        data={"text": "Hello world.", "voice_id": "howard", "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base"},
+    )
+    assert response.status_code == 200
+    job = response.json()["job"]
+    assert job["voice_id"] == "howard"
+    assert job["model_id"] == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+
+async def test_create_job_rejects_invalid_model_id(client, services):
+    response = await client.post(
+        "/api/jobs",
+        data={"text": "Hello world.", "voice_id": "suzy", "model_id": "nonexistent-model"},
+    )
+    assert response.status_code == 400
+    assert "Unsupported model" in response.json()["detail"]
+
+
 async def test_delete_job_removes_export_source_files(client, services):
     job = services.job_manager.create_job(
         source_text="Delete this job.",
