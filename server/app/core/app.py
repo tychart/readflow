@@ -35,6 +35,11 @@ def create_app() -> FastAPI:
         await services.model_manager.unload()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+    @app.get("/health")
+    async def health_check() -> dict[str, str]:
+        return {"status": "ok"}
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
