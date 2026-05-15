@@ -81,7 +81,7 @@ function buildManifestFromChunks(chunks: Chunk[]) {
 
 function seedStore(overrides?: Partial<ReturnType<typeof useAppStore.getState>>) {
   useAppStore.setState({
-    jobs: [],
+    jobs: {},
     voices: [
       { id: "suzy", display_name: "Suzy", description: null },
       { id: "howard", display_name: "Howard", description: null },

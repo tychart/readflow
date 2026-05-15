@@ -1,25 +1,24 @@
 import { create } from "zustand";
 
+import type { Voice } from "../types/api";
 import type {
   AdminState,
   JobDetail,
   JobSummary,
-  Voice,
-  WebSocketStatus,
   WsEnvelope,
-} from "../types/api";
+} from "../types/events";
 
 interface AppStore {
-  jobs: JobSummary[];
+  jobs: Record<string, JobSummary>;
   voices: Voice[];
   adminState: AdminState | null;
-  websocketStatus: WebSocketStatus;
+  websocketStatus: "connecting" | "open" | "reconnecting" | "closed" | "error";
   lastSocketMessageAt: number | null;
   lastSocketError: string | null;
   reconnectAttempt: number;
   isSocketStale: boolean;
   lastEvent: WsEnvelope | null;
-  setJobs: (jobs: JobSummary[]) => void;
+  setJobs: (jobs: Record<string, JobSummary>) => void;
   setVoices: (voices: Voice[]) => void;
   setAdminState: (adminState: AdminState) => void;
   setSocketState: (state: {
@@ -32,57 +31,23 @@ interface AppStore {
   applyEvent: (event: WsEnvelope) => void;
 }
 
-function upsertJob(jobs: JobSummary[], nextJob: JobSummary): JobSummary[] {
-  const remaining = jobs.filter((job) => job.id !== nextJob.id);
-  return [nextJob, ...remaining];
-}
-
-function isAdminConfigPayload(payload: unknown): payload is AdminState["config"] {
-  if (typeof payload !== "object" || payload === null) {
-    return false;
-  }
-
-  const candidate = payload as Record<string, unknown>;
-  return (
-    typeof candidate.idle_unload_seconds === "number" &&
-    typeof candidate.max_prebuffer_seconds === "number" &&
-    typeof candidate.target_buffer_seconds === "number" &&
-    Array.isArray(candidate.batch_candidates_small_model) &&
-    Array.isArray(candidate.batch_candidates_large_model) &&
-    typeof candidate.vram_soft_limit_mb === "number" &&
-    typeof candidate.vram_hard_limit_mb === "number"
-  );
-}
-
 function toSummary(job: JobDetail): JobSummary {
-  const {
-    id,
-    title,
-    status,
-    voice_id,
-    model_id,
-    is_active_listening,
-    total_chunks_emitted,
-    total_chunks_completed,
-    buffered_seconds,
-    completed_seconds,
-  } = job;
   return {
-    id,
-    title,
-    status,
-    voice_id,
-    model_id,
-    is_active_listening,
-    total_chunks_emitted,
-    total_chunks_completed,
-    buffered_seconds,
-    completed_seconds,
+    id: job.id,
+    title: job.title,
+    status: job.status,
+    voice_id: job.voice_id,
+    model_id: job.model_id,
+    is_active_listening: job.is_active_listening,
+    total_chunks_emitted: job.total_chunks_emitted,
+    total_chunks_completed: job.total_chunks_completed,
+    buffered_seconds: job.buffered_seconds,
+    completed_seconds: job.completed_seconds,
   };
 }
 
 export const useAppStore = create<AppStore>((set) => ({
-  jobs: [],
+  jobs: {},
   voices: [],
   adminState: null,
   websocketStatus: "connecting",
@@ -95,15 +60,33 @@ export const useAppStore = create<AppStore>((set) => ({
   setVoices: (voices) => set({ voices }),
   setAdminState: (adminState) => set({ adminState }),
   setSocketState: ({ status, lastMessageAt, error, reconnectAttempt, isStale }) =>
-    set((state) => ({
-      websocketStatus: status ?? state.websocketStatus,
-      lastSocketMessageAt:
-        lastMessageAt === undefined ? state.lastSocketMessageAt : lastMessageAt,
-      lastSocketError: error === undefined ? state.lastSocketError : error,
-      reconnectAttempt:
-        reconnectAttempt === undefined ? state.reconnectAttempt : reconnectAttempt,
-      isSocketStale: isStale === undefined ? state.isSocketStale : isStale,
-    })),
+    set((state) => {
+      const newState = { ...state };
+      let changed = false;
+
+      if (status !== undefined && status !== state.websocketStatus) {
+        newState.websocketStatus = status;
+        changed = true;
+      }
+      if (lastMessageAt !== undefined && lastMessageAt !== state.lastSocketMessageAt) {
+        newState.lastSocketMessageAt = lastMessageAt;
+        changed = true;
+      }
+      if (error !== undefined && error !== state.lastSocketError) {
+        newState.lastSocketError = error;
+        changed = true;
+      }
+      if (reconnectAttempt !== undefined && reconnectAttempt !== state.reconnectAttempt) {
+        newState.reconnectAttempt = reconnectAttempt;
+        changed = true;
+      }
+      if (isStale !== undefined && isStale !== state.isSocketStale) {
+        newState.isSocketStale = isStale;
+        changed = true;
+      }
+
+      return changed ? newState : state;
+    }),
   applyEvent: (event) =>
     set((state) => {
       if (
@@ -112,33 +95,27 @@ export const useAppStore = create<AppStore>((set) => ({
         event.type === "job_completed" ||
         event.type === "chunk_ready"
       ) {
-        const job = event.payload.job as JobDetail | undefined;
-        if (job) {
-          return {
-            jobs: upsertJob(state.jobs, toSummary(job)),
-            lastEvent: event,
-          };
-        }
+        return {
+          jobs: { ...state.jobs, [event.payload.job.id]: toSummary(event.payload.job) },
+          lastEvent: event,
+        };
       }
 
       if (event.type === "telemetry" && state.adminState) {
         return {
           adminState: {
             ...state.adminState,
-            telemetry: event.payload.telemetry as AdminState["telemetry"],
+            telemetry: event.payload.telemetry,
           },
           lastEvent: event,
         };
       }
 
       if (event.type === "admin_config_updated" && state.adminState) {
-        const nextConfig = isAdminConfigPayload(event.payload)
-          ? event.payload
-          : state.adminState.config;
         return {
           adminState: {
             ...state.adminState,
-            config: nextConfig,
+            config: event.payload,
           },
           lastEvent: event,
         };
@@ -148,25 +125,25 @@ export const useAppStore = create<AppStore>((set) => ({
         return {
           adminState: {
             ...state.adminState,
-            scheduler: event.payload as unknown as AdminState["scheduler"],
+            scheduler: event.payload,
           },
           lastEvent: event,
         };
       }
 
       if (event.type === "model_state" && state.adminState) {
+        const telemetry = state.adminState.telemetry;
         return {
           adminState: {
             ...state.adminState,
-            telemetry: {
-              ...state.adminState.telemetry,
-              model_state: String(event.payload.state ?? state.adminState.telemetry.model_state),
-            },
+            telemetry: telemetry
+              ? { ...telemetry, model_state: event.payload.state }
+              : null,
           },
           lastEvent: event,
         };
       }
 
-      return { lastEvent: event };
+      return state;
     }),
 }));

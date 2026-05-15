@@ -47,7 +47,7 @@ class MockWebSocket extends EventTarget {
 
 function seedStore() {
   useAppStore.setState({
-    jobs: [],
+    jobs: {},
     voices: [],
     adminState: {
       config: {

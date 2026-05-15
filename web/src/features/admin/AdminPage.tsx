@@ -37,7 +37,7 @@ export function AdminPage() {
     setAdminState({ ...adminState, config: nextConfig });
   };
 
-  const recentBatch = adminState.telemetry.recent_batches[0];
+  const recentBatch = adminState.telemetry?.recent_batches[0];
 
   return (
     <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
@@ -121,7 +121,9 @@ export function AdminPage() {
             </div>
             <div className="rounded-3xl bg-white/70 p-5">
               <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Model state</div>
-              <div className="mt-2 text-4xl font-semibold">{adminState.telemetry.model_state}</div>
+              <div className="mt-2 text-4xl font-semibold">
+                {adminState.telemetry?.model_state ?? "—"}
+              </div>
             </div>
           </div>
         </div>

@@ -1,7 +1,5 @@
 export type JobStatus = "queued" | "rendering" | "paused" | "playing" | "completed" | "failed";
 export type ChunkStatus = "planned" | "queued" | "rendering" | "written" | "stale" | "failed";
-export type WebSocketStatus = "connecting" | "open" | "reconnecting" | "closed" | "error";
-
 export interface Chunk {
   index: number;
   status: ChunkStatus;
@@ -60,39 +58,6 @@ export interface SchedulerState {
   batch_candidates: number[];
 }
 
-export interface AdminState {
-  config: AdminConfig;
-  scheduler: SchedulerState;
-  telemetry: {
-    queue_depth: number;
-    model_state: string;
-    idle_deadline: number | null;
-    oom_count: number;
-    recent_batches: Array<{
-      batch_size: number;
-      duration_seconds: number;
-      reserved_vram_mb: number;
-      allocated_vram_mb: number;
-      at: number;
-    }>;
-    recent_events: Array<{
-      type: string;
-      payload: Record<string, unknown>;
-      at: number;
-    }>;
-  };
-}
-
-export interface WsEnvelope {
-  type:
-    | "job_created"
-    | "job_updated"
-    | "job_completed"
-    | "chunk_ready"
-    | "scheduler_state"
-    | "model_state"
-    | "telemetry"
-    | "admin_config_updated"
-    | "pong";
-  payload: Record<string, unknown>;
-}
+// Re-export types that moved to events.ts to keep existing imports working
+export type { AdminState, TelemetrySnapshot as AdminStateTelemetry } from "./events";
+export type { WsEnvelope } from "./events";

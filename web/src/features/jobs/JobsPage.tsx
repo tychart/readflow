@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useShallow } from "zustand/shallow";
 
 import { api } from "../../lib/api";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
@@ -21,7 +22,9 @@ function StatusBadge({ status }: { status: JobSummary["status"] }) {
 }
 
 export function JobsPage() {
-  const jobs = useAppStore((state) => state.jobs);
+  const jobs = useAppStore(
+    useShallow((state) => Object.values(state.jobs)),
+  );
   const setJobs = useAppStore((state) => state.setJobs);
   const websocketStatus = useAppStore((state) => state.websocketStatus);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +42,11 @@ export function JobsPage() {
       .listJobs()
       .then((nextJobs) => {
         if (!cancelled && !hasLocalMutationRef.current) {
-          setJobs(nextJobs);
+          const jobsMap: Record<string, JobSummary> = {};
+          for (const job of nextJobs) {
+            jobsMap[job.id] = job;
+          }
+          setJobs(jobsMap);
         }
       })
       .catch((loadError) => {
@@ -59,7 +66,7 @@ export function JobsPage() {
       const response = await api.createJob(formData);
       hasLocalMutationRef.current = true;
       const currentJobs = useAppStore.getState().jobs;
-      setJobs([response.job, ...currentJobs.filter((job) => job.id !== response.job.id)]);
+      setJobs({ ...currentJobs, [response.job.id]: response.job });
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Unable to create job");
     }

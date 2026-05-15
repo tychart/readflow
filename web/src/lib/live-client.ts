@@ -1,7 +1,7 @@
 import { api } from "./api";
 import { websocketUrl } from "./transport";
 import { useAppStore } from "../state/store";
-import type { WsEnvelope } from "../types/api";
+import type { JobSummary, WsEnvelope } from "../types/api";
 
 const HEARTBEAT_MS = 15_000;
 const STALE_AFTER_MS = 30_000;
@@ -9,11 +9,14 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 const RELEASE_GRACE_MS = 250;
 
 function mergeSnapshotJobs(
-  existingJobs: ReturnType<typeof useAppStore.getState>["jobs"],
-  snapshotJobs: ReturnType<typeof useAppStore.getState>["jobs"],
-) {
-  const snapshotIds = new Set(snapshotJobs.map((job) => job.id));
-  return [...snapshotJobs, ...existingJobs.filter((job) => !snapshotIds.has(job.id))];
+  existingJobs: Record<string, JobSummary>,
+  snapshotJobs: JobSummary[],
+): Record<string, JobSummary> {
+  const merged: Record<string, JobSummary> = { ...existingJobs };
+  for (const job of snapshotJobs) {
+    merged[job.id] = job;
+  }
+  return merged;
 }
 
 interface SocketStatePatch {

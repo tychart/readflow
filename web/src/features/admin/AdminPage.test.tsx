@@ -7,7 +7,7 @@ import { useAppStore } from "../../state/store";
 test("renders admin telemetry and saves config", async () => {
   const user = userEvent.setup();
   useAppStore.setState({
-    jobs: [],
+    jobs: {},
     voices: [],
     websocketStatus: "open",
     lastSocketMessageAt: Date.now(),
