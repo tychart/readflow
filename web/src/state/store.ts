@@ -31,6 +31,42 @@ interface AppStore {
   applyEvent: (event: WsEnvelope) => void;
 }
 
+function jobsEqual(
+  a: Record<string, JobSummary>,
+  b: Record<string, JobSummary>,
+): boolean {
+  if (a === b) return true;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+function shallowArrayEqual<T>(a: T[], b: T[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function adminStateEqual(
+  a: AdminState | null,
+  b: AdminState | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    JSON.stringify(a.config) === JSON.stringify(b.config) &&
+    JSON.stringify(a.scheduler) === JSON.stringify(b.scheduler) &&
+    JSON.stringify(a.telemetry) === JSON.stringify(b.telemetry)
+  );
+}
+
 function toSummary(job: JobDetail): JobSummary {
   return {
     id: job.id,
@@ -56,9 +92,9 @@ export const useAppStore = create<AppStore>((set) => ({
   reconnectAttempt: 0,
   isSocketStale: false,
   lastEvent: null,
-  setJobs: (jobs) => set({ jobs }),
-  setVoices: (voices) => set({ voices }),
-  setAdminState: (adminState) => set({ adminState }),
+  setJobs: (jobs) => set((state) => (jobsEqual(state.jobs, jobs) ? state : { jobs })),
+  setVoices: (voices) => set((state) => (shallowArrayEqual(state.voices, voices) ? state : { voices })),
+  setAdminState: (adminState) => set((state) => (adminStateEqual(state.adminState, adminState) ? state : { adminState })),
   setSocketState: ({ status, lastMessageAt, error, reconnectAttempt, isStale }) =>
     set((state) => {
       const newState = { ...state };

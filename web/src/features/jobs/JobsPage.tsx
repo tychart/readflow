@@ -58,7 +58,8 @@ export function JobsPage() {
     return () => {
       cancelled = true;
     };
-  }, [setJobs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setJobs is a stable Zustand selector
+  }, []);
 
   const handleCreateJob = async (formData: FormData) => {
     setError(null);

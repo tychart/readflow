@@ -20,7 +20,7 @@ function mergeSnapshotJobs(
 }
 
 interface SocketStatePatch {
-  status?: ReturnType<typeof useAppStore.getState>["websocketStatus"];
+  status?: "connecting" | "open" | "reconnecting" | "closed" | "error";
   lastMessageAt?: number | null;
   error?: string | null;
   reconnectAttempt?: number;

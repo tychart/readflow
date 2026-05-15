@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
 import type { Voice } from "../../types/api";
@@ -20,40 +20,52 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
   const [modelId, setModelId] = useState(MODEL_OPTIONS[0].value);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const voiceIdRef = useRef(voiceId);
+  voiceIdRef.current = voiceId;
 
   useEffect(() => {
-    void api.listVoices().then((nextVoices) => {
-      setVoices(nextVoices);
-      if (nextVoices.length > 0 && !voiceId) {
-        setVoiceId(nextVoices[0].id);
-      }
-    });
-  }, [voiceId]);
+    let isCancelled = false;
+    void api
+      .listVoices()
+      .then((nextVoices) => {
+        if (isCancelled) return;
+        setVoices(nextVoices);
+        if (nextVoices.length > 0 && !voiceIdRef.current) {
+          setVoiceId(nextVoices[0].id);
+        }
+      });
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    const formData = new FormData();
-    if (title) {
-      formData.append("title", title);
-    }
-    if (text.trim()) {
-      formData.append("text", text.trim());
-    }
-    if (file) {
-      formData.append("file", file);
-    }
-    formData.append("voice_id", voiceId);
-    formData.append("model_id", modelId);
-    setSubmitting(true);
-    try {
-      await onSubmit(formData);
-      setText("");
-      setTitle("");
-      setFile(null);
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const handleSubmit = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      const formData = new FormData();
+      if (title) {
+        formData.append("title", title);
+      }
+      if (text.trim()) {
+        formData.append("text", text.trim());
+      }
+      if (file) {
+        formData.append("file", file);
+      }
+      formData.append("voice_id", voiceId);
+      formData.append("model_id", modelId);
+      setSubmitting(true);
+      try {
+        await onSubmit(formData);
+        setText("");
+        setTitle("");
+        setFile(null);
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [title, text, file, voiceId, modelId, onSubmit],
+  );
 
   return (
     <form className="panel rounded-[2rem] p-6" onSubmit={handleSubmit}>
@@ -118,15 +130,16 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
             placeholder="Paste long-form text here"
           />
         </div>
-        <label className="rounded-2xl border border-dashed border-stone-400 bg-white/40 px-4 py-4 text-sm">
-          <span className="font-semibold">Upload .txt instead</span>
+        <div className="rounded-2xl border border-dashed border-stone-400 bg-white/40 px-4 py-4">
+          <span className="mb-2 block text-sm font-semibold">Upload .txt instead</span>
           <input
-            className="mt-2 block"
+            aria-label="Upload text file"
+            className="block"
             type="file"
             accept=".txt"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
-        </label>
+        </div>
         <button
           className="rounded-full bg-[var(--accent)] px-5 py-3 font-semibold text-white disabled:opacity-50"
           disabled={submitting || (!text.trim() && !file)}

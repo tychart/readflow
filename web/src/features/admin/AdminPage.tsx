@@ -5,6 +5,11 @@ import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useAppStore } from "../../state/store";
 import type { AdminConfig } from "../../types/api";
 
+const NUMBER_INPUT_PROPS = {
+  className: "mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3",
+  mode: "uncontrolled" as const,
+} as const;
+
 export function AdminPage() {
   useAppBootstrap(true);
 
@@ -28,16 +33,22 @@ export function AdminPage() {
   }, [adminState]);
 
   if (!adminState || !formState) {
-    return <div className="panel rounded-[2rem] p-8">Loading admin state…</div>;
+    return <div aria-label="Loading" className="panel rounded-[2rem] p-8">Loading admin state…</div>;
   }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    const nextConfig = await api.updateAdminConfig(formState);
-    setAdminState({ ...adminState, config: nextConfig });
+    try {
+      const nextConfig = await api.updateAdminConfig(formState);
+      setAdminState({ ...adminState, config: nextConfig });
+    } catch (error) {
+      console.error("Failed to update config:", error);
+    }
   };
 
   const recentBatch = adminState.telemetry?.recent_batches[0];
+
+  const batchProps = { className: "rounded-2xl bg-white/70 p-4" } as const;
 
   return (
     <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
@@ -50,8 +61,9 @@ export function AdminPage() {
           <label className="text-sm font-medium">
             Idle unload seconds
             <input
-              className="mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+              {...NUMBER_INPUT_PROPS}
               type="number"
+              min="0"
               value={formState.idle_unload_seconds}
               onChange={(event) =>
                 setFormState({ ...formState, idle_unload_seconds: Number(event.target.value) })
@@ -61,8 +73,9 @@ export function AdminPage() {
           <label className="text-sm font-medium">
             Target buffer seconds
             <input
-              className="mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+              {...NUMBER_INPUT_PROPS}
               type="number"
+              min="0"
               value={formState.target_buffer_seconds}
               onChange={(event) =>
                 setFormState({ ...formState, target_buffer_seconds: Number(event.target.value) })
@@ -72,8 +85,9 @@ export function AdminPage() {
           <label className="text-sm font-medium">
             Max prebuffer seconds
             <input
-              className="mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+              {...NUMBER_INPUT_PROPS}
               type="number"
+              min="0"
               value={formState.max_prebuffer_seconds}
               onChange={(event) =>
                 setFormState({ ...formState, max_prebuffer_seconds: Number(event.target.value) })
@@ -83,8 +97,9 @@ export function AdminPage() {
           <label className="text-sm font-medium">
             VRAM soft limit
             <input
-              className="mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+              {...NUMBER_INPUT_PROPS}
               type="number"
+              min="0"
               value={formState.vram_soft_limit_mb}
               onChange={(event) => setFormState({ ...formState, vram_soft_limit_mb: Number(event.target.value) })}
             />
@@ -131,19 +146,19 @@ export function AdminPage() {
           <h2 className="mb-4 text-xl font-semibold">Recent batch</h2>
           {recentBatch ? (
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-2xl bg-white/70 p-4">Batch size: {recentBatch.batch_size}</div>
-              <div className="rounded-2xl bg-white/70 p-4">
+              <div {...batchProps}>Batch size: {recentBatch.batch_size}</div>
+              <div {...batchProps}>
                 Reserved VRAM: {recentBatch.reserved_vram_mb} MB
               </div>
-              <div className="rounded-2xl bg-white/70 p-4">
+              <div {...batchProps}>
                 Allocated VRAM: {recentBatch.allocated_vram_mb} MB
               </div>
-              <div className="rounded-2xl bg-white/70 p-4">
+              <div {...batchProps}>
                 Duration: {recentBatch.duration_seconds.toFixed(2)}s
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl border border-dashed border-stone-300 px-4 py-8 text-stone-600">
+            <div aria-label="No batches yet" className="rounded-2xl border border-dashed border-stone-300 px-4 py-8 text-stone-600">
               No batches yet.
             </div>
           )}

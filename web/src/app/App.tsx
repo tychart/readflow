@@ -1,12 +1,21 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { BrowserRouter } from "react-router-dom";
+import { useShallow } from "zustand/shallow";
 
 import { AdminPage } from "../features/admin/AdminPage";
 import { JobsPage } from "../features/jobs/JobsPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
 import { useAppStore } from "../state/store";
 
-function formatSocketMessageAge(timestamp: number | null) {
+interface ConnectionBadgeState {
+  websocketStatus: string;
+  lastSocketMessageAt: number | null;
+  lastSocketError: string | null;
+  reconnectAttempt: number;
+  isSocketStale: boolean;
+}
+
+function formatSocketMessageAge(timestamp: number | null): string {
   if (!timestamp) {
     return "no live events yet";
   }
@@ -15,11 +24,17 @@ function formatSocketMessageAge(timestamp: number | null) {
 }
 
 function ConnectionBadge() {
-  const websocketStatus = useAppStore((state) => state.websocketStatus);
-  const lastSocketMessageAt = useAppStore((state) => state.lastSocketMessageAt);
-  const lastSocketError = useAppStore((state) => state.lastSocketError);
-  const reconnectAttempt = useAppStore((state) => state.reconnectAttempt);
-  const isSocketStale = useAppStore((state) => state.isSocketStale);
+  const { websocketStatus, lastSocketMessageAt, lastSocketError, reconnectAttempt, isSocketStale } = useAppStore(
+    useShallow(
+      (state): ConnectionBadgeState => ({
+        websocketStatus: state.websocketStatus,
+        lastSocketMessageAt: state.lastSocketMessageAt,
+        lastSocketError: state.lastSocketError,
+        reconnectAttempt: state.reconnectAttempt,
+        isSocketStale: state.isSocketStale,
+      }),
+    ),
+  );
 
   const tone =
     websocketStatus === "open" && !isSocketStale
@@ -29,6 +44,7 @@ function ConnectionBadge() {
         : websocketStatus === "closed" && !lastSocketError
           ? "bg-stone-200 text-stone-700"
           : "bg-rose-100 text-rose-800";
+
   const label = websocketStatus === "closed" && !lastSocketError
     ? "idle"
     : isSocketStale
@@ -39,6 +55,7 @@ function ConnectionBadge() {
 
   return (
     <div
+      aria-label={`Connection status: ${label}. Last message ${formatSocketMessageAge(lastSocketMessageAt)}`}
       aria-live="polite"
       className={`rounded-3xl px-4 py-3 text-right text-sm ${tone}`}
       title={lastSocketError ?? "Live connection diagnostics"}

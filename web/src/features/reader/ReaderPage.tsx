@@ -1,5 +1,6 @@
 import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { useShallow } from "zustand/shallow";
 
 import { api } from "../../lib/api";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
@@ -42,7 +43,10 @@ interface ActiveChunkProgress {
   playedIndexes: Set<number>;
 }
 
-function formatRelativeTime(timestamp: number | null) {
+/**
+ * Formats a timestamp as a relative time string.
+ */
+function formatRelativeTime(timestamp: number | null): string {
   if (!timestamp) {
     return "never";
   }
@@ -50,26 +54,38 @@ function formatRelativeTime(timestamp: number | null) {
   return deltaSeconds === 0 ? "just now" : `${deltaSeconds}s ago`;
 }
 
-function formatClock(seconds: number) {
+/**
+ * Formats seconds into a MM:SS clock string.
+ */
+function formatClock(seconds: number): string {
   const totalSeconds = Math.max(0, Math.floor(seconds));
   const minutes = Math.floor(totalSeconds / 60);
   const remainder = totalSeconds % 60;
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
-function isTerminalStatus(status: JobStatus | undefined) {
+/**
+ * Checks if a job status is terminal (completed or failed).
+ */
+function isTerminalStatus(status: JobStatus | undefined): boolean {
   return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
 }
 
-function sortChunks(chunks: Chunk[]) {
+/**
+ * Sorts chunks by their index in ascending order.
+ */
+function sortChunks(chunks: Chunk[]): Chunk[] {
   return [...chunks].sort((left, right) => left.index - right.index);
 }
 
+/**
+ * Builds a manifest from a stream event payload, preserving existing data.
+ */
 function buildManifestFromEvent(
   job: JobDetail,
   previousManifest: JobManifest | null,
   payload?: StreamEventPayload,
-) {
+): JobManifest | null {
   const nextMimeType = payload?.mime_type ?? previousManifest?.mime_type ?? null;
   const nextInitSegmentUrl =
     payload && "init_segment_url" in payload
@@ -87,7 +103,10 @@ function buildManifestFromEvent(
   } satisfies JobManifest;
 }
 
-function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null) {
+/**
+ * Merges chunks from job or manifest, preferring manifest data.
+ */
+function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null): Chunk[] {
   if (manifest) {
     return sortChunks(manifest.chunks);
   }
@@ -97,7 +116,10 @@ function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null) {
   return [];
 }
 
-function chunkStatusText(state: TimelineSlotState) {
+/**
+ * Returns a human-readable status text for a timeline slot.
+ */
+function chunkStatusText(state: TimelineSlotState): string {
   switch (state) {
     case "played":
       return "played";
@@ -116,7 +138,10 @@ function chunkStatusText(state: TimelineSlotState) {
   }
 }
 
-function describePlayerState(playerState: PlayerState, isAutoplayBlocked: boolean) {
+/**
+ * Describes the current player state for display to the user.
+ */
+function describePlayerState(playerState: PlayerState, isAutoplayBlocked: boolean): string {
   if (isAutoplayBlocked) {
     return "Playback blocked by browser; press play to resume.";
   }
@@ -141,7 +166,14 @@ function describePlayerState(playerState: PlayerState, isAutoplayBlocked: boolea
   }
 }
 
-function statusTone(playerState: PlayerState, isAutoplayBlocked: boolean, hasError: boolean) {
+/**
+ * Returns the CSS tone class for the player status display.
+ */
+function statusTone(
+  playerState: PlayerState,
+  isAutoplayBlocked: boolean,
+  hasError: boolean,
+): string {
   if (hasError) {
     return "border-rose-200 bg-rose-50/80 text-rose-900";
   }
@@ -156,6 +188,9 @@ function statusTone(playerState: PlayerState, isAutoplayBlocked: boolean, hasErr
   return "border-emerald-200 bg-emerald-50/80 text-emerald-950";
 }
 
+/**
+ * Builds a stream manifest from contiguous ready chunks, re-normalizing start times.
+ */
 function buildStreamManifest(
   fullManifest: JobManifest | null,
   contiguousReadyChunks: Chunk[],
@@ -181,6 +216,9 @@ function buildStreamManifest(
   };
 }
 
+/**
+ * Derives progress information for the currently playing chunk.
+ */
 function deriveActiveChunkProgress(
   contiguousReadyChunks: Chunk[],
   currentTimeSeconds: number,
@@ -209,19 +247,44 @@ function deriveActiveChunkProgress(
   return { activeChunkIndex, fillByIndex, playedIndexes };
 }
 
-function describeTimelineSlot(slot: TimelineSlot) {
+/**
+ * Generates an accessible description for a timeline slot.
+ */
+function describeTimelineSlot(slot: TimelineSlot): string {
   const chunkNumber = slot.chunk.index + 1;
   return `Chunk ${chunkNumber} ${chunkStatusText(slot.state)}`;
 }
 
+interface ReaderPageStoreState {
+  voices: ReturnType<typeof useAppStore.getState>["voices"];
+  lastEvent: ReturnType<typeof useAppStore.getState>["lastEvent"];
+  websocketStatus: ReturnType<typeof useAppStore.getState>["websocketStatus"];
+  lastSocketMessageAt: ReturnType<typeof useAppStore.getState>["lastSocketMessageAt"];
+  lastSocketError: ReturnType<typeof useAppStore.getState>["lastSocketError"];
+  isSocketStale: ReturnType<typeof useAppStore.getState>["isSocketStale"];
+}
+
 export function ReaderPage() {
   const { jobId = "" } = useParams();
-  const voices = useAppStore((state) => state.voices);
-  const lastEvent = useAppStore((state) => state.lastEvent);
-  const websocketStatus = useAppStore((state) => state.websocketStatus);
-  const lastSocketMessageAt = useAppStore((state) => state.lastSocketMessageAt);
-  const lastSocketError = useAppStore((state) => state.lastSocketError);
-  const isSocketStale = useAppStore((state) => state.isSocketStale);
+  const {
+    voices,
+    lastEvent,
+    websocketStatus,
+    lastSocketMessageAt,
+    lastSocketError,
+    isSocketStale,
+  } = useAppStore(
+    useShallow(
+      (state): ReaderPageStoreState => ({
+        voices: state.voices,
+        lastEvent: state.lastEvent,
+        websocketStatus: state.websocketStatus,
+        lastSocketMessageAt: state.lastSocketMessageAt,
+        lastSocketError: state.lastSocketError,
+        isSocketStale: state.isSocketStale,
+      }),
+    ),
+  );
 
   const [job, setJob] = useState<JobDetail | null>(null);
   const [manifest, setManifest] = useState<JobManifest | null>(null);
@@ -916,7 +979,10 @@ export function ReaderPage() {
           error ||
           lastPlayerError ||
           downloadError) ? (
-          <div className="panel rounded-[2rem] border border-amber-200 bg-amber-50/80 p-5 text-sm text-amber-950">
+          <div
+            aria-live="polite"
+            className="panel rounded-[2rem] border border-amber-200 bg-amber-50/80 p-5 text-sm text-amber-950"
+          >
             <div className="mb-2 font-semibold uppercase tracking-[0.2em]">Reader warnings</div>
             <div className="space-y-2">
               {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
@@ -951,6 +1017,7 @@ export function ReaderPage() {
           <audio aria-hidden="true" className="hidden" ref={audioRef} />
 
           <div
+            aria-label={`Playback status: ${liveStatus}`}
             className={`mb-5 rounded-3xl border px-4 py-3 text-sm ${statusTone(
               playerState,
               isAutoplayBlocked,
@@ -1120,11 +1187,15 @@ export function ReaderPage() {
             </div>
           </div>
 
-          <label className="mb-2 mt-5 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600">
+          <label
+            className="mb-2 mt-5 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600"
+            htmlFor="voice-change-select"
+          >
             Voice for future chunks
           </label>
           <select
             className="w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+            id="voice-change-select"
             onChange={(event) => void handleVoiceChange(event.target.value)}
             value={job.voice_id}
           >
