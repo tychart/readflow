@@ -3,14 +3,14 @@ from app.core.config import RuntimeConfig
 from app.jobs.models import Job
 
 
-def test_planner_prefers_sentence_boundaries_for_startup_chunk():
-    planner = ChunkPlanner(RuntimeConfig(chunk_startup_target_chars=80))
+def test_planner_prefers_sentence_boundaries():
+    planner = ChunkPlanner(RuntimeConfig(chunk_target_chars=120))
     job = Job(
         id="job-1",
         title="Example",
         source_kind="text",
         source_text=(
-            "First sentence is compact. "
+            "This is a longer first sentence that should be captured completely. "
             "Second sentence is slightly longer, but should still be held "
             "for the next chunk.\n\nThird paragraph starts here."
         ),
@@ -23,19 +23,17 @@ def test_planner_prefers_sentence_boundaries_for_startup_chunk():
 
     assert first is not None
     assert second is not None
-    assert first.text == "First sentence is compact."
+    assert first.text == "This is a longer first sentence that should be captured completely."
     assert second.text.startswith("Second sentence")
 
 
-def test_planner_enters_steady_state_after_first_three_chunks():
+def test_planner_produces_uniform_chunk_sizes():
     planner = ChunkPlanner(
         RuntimeConfig(
-            chunk_startup_target_chars=50,
-            chunk_safety_target_chars=90,
-            chunk_steady_target_chars=180,
+            chunk_target_chars=180,
         )
     )
-    text = " ".join(f"Sentence {index}." for index in range(1, 41))
+    text = " ".join(f"Sentence {index}." for index in range(1, 81))
     job = Job(
         id="job-2",
         title="Example",
@@ -49,11 +47,6 @@ def test_planner_enters_steady_state_after_first_three_chunks():
 
     assert all(chunk is not None for chunk in chunks)
     first = chunks[0]
-    second = chunks[1]
-    fourth = chunks[3]
-
-    assert first is not None
-    assert second is not None
-    assert fourth is not None
-    assert len(first.text) <= 60
-    assert len(fourth.text) >= len(second.text)
+    last = chunks[-1]
+    assert len(first.text) >= 70
+    assert len(last.text) >= 70

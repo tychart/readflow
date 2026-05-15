@@ -22,9 +22,7 @@ class RuntimeConfig(BaseModel):
     default_model_id: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     default_voice_id: str = "suzy"
     default_language: str = "English"
-    chunk_startup_target_chars: int = 140
-    chunk_safety_target_chars: int = 260
-    chunk_steady_target_chars: int = 700
+    chunk_target_chars: int = 700
     estimated_chars_per_second: float = 18.0
     recent_events_limit: int = 50
 

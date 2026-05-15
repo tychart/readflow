@@ -42,7 +42,7 @@ class ChunkPlanner:
             job.planner_cursor.offset = -1
             return None
 
-        char_end = self._find_boundary(remaining, target_chars, startup_mode=emitted == 0)
+        char_end = self._find_boundary(remaining, target_chars)
         chunk_text = remaining[:char_end].strip()
         if not chunk_text:
             job.planner_cursor.offset = -1
@@ -68,14 +68,9 @@ class ChunkPlanner:
         )
 
     def _target_chars(self, job: Job) -> int:
-        emitted = job.planner_cursor.chunks_emitted
-        if emitted == 0:
-            return self._config.chunk_startup_target_chars
-        if emitted < 3:
-            return self._config.chunk_safety_target_chars
-        return self._config.chunk_steady_target_chars
+        return self._config.chunk_target_chars
 
-    def _find_boundary(self, text: str, target_chars: int, *, startup_mode: bool) -> int:
+    def _find_boundary(self, text: str, target_chars: int) -> int:
         if len(text) <= target_chars:
             return len(text)
 
@@ -84,7 +79,7 @@ class ChunkPlanner:
             self._last_boundary(text, target_chars, r"(?<=[.!?])\s+"),
             self._last_boundary(text, target_chars, r"(?<=[,;:])\s+"),
         ]
-        minimum_boundary = 20 if startup_mode else max(40, int(target_chars * 0.45))
+        minimum_boundary = max(40, int(target_chars * 0.45))
         for candidate in candidates:
             if candidate is not None and candidate >= minimum_boundary:
                 return candidate

@@ -109,17 +109,16 @@ class SchedulerService:
     async def _render_next_batch(self, ranked_chunks: list[ChunkRecord]) -> None:
         if not ranked_chunks:
             return
-        grouped: dict[tuple[str, str, str, str], list[ChunkRecord]] = defaultdict(list)
+        grouped: dict[tuple[str, str, str], list[ChunkRecord]] = defaultdict(list)
         for chunk in ranked_chunks:
             job = self._job_manager.get_job(chunk.job_id)
             key = (
                 job.model_id,
                 job.language,
                 chunk.voice_id,
-                self._length_bucket(chunk),
             )
             grouped[key].append(chunk)
-        (model_id, _language, _voice_id, _bucket), chunks = next(iter(grouped.items()))
+        (model_id, _language, _voice_id), chunks = next(iter(grouped.items()))
         reserved_vram, _allocated = await self._model_manager.memory_stats()
         batch_size = self._choose_batch_size(len(chunks), reserved_vram)
         batch = chunks[:batch_size]
@@ -153,13 +152,7 @@ class SchedulerService:
                 ).model_dump()
             )
 
-    def _length_bucket(self, chunk: ChunkRecord) -> str:
-        length = len(chunk.text)
-        if length < 150:
-            return "short"
-        if length < 500:
-            return "medium"
-        return "long"
+
 
     def _choose_batch_size(self, available: int, reserved_vram_mb: int) -> int:
         candidates = list(self._config.batch_candidates_small_model)
