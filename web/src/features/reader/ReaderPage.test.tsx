@@ -21,6 +21,7 @@ function buildReaderJob(
     total_chunks_completed: chunkCount,
     buffered_seconds: chunkCount * 4,
     completed_seconds: 0,
+    active_chunk_version: {} as Record<number, number>,
     source_kind: "text",
     source_text: "A reader page test.",
     plan_version: 1,
@@ -30,8 +31,13 @@ function buildReaderJob(
       duration_seconds: 4,
       start_seconds: index * 4,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: `/api/jobs/job-1/chunks/${index}`,
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     })),
     failed_reason: null,
   };
@@ -47,8 +53,13 @@ function buildManifest(chunkCount: number) {
       duration_seconds: 4,
       start_seconds: index * 4,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: `/api/jobs/job-1/chunks/${index}`,
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     })),
   };
 }
@@ -67,15 +78,25 @@ function buildReaderJobWithChunks(
     buffered_seconds: chunks
       .filter((chunk) => chunk.status === "written")
       .reduce((total, chunk) => total + chunk.duration_seconds, 0),
+    total_versioned_chunks: chunks.length,
+    total_versioned_completed: writtenChunkCount,
     chunks,
   };
 }
 
 function buildManifestFromChunks(chunks: Chunk[]) {
+  const enriched = chunks.map((c) => ({
+    ...c,
+    version: c.version ?? 0,
+    deprecated: c.deprecated ?? false,
+    reprocessing: c.reprocessing ?? false,
+    char_start: c.char_start ?? 0,
+    char_end: c.char_end ?? 0,
+  }));
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
-    chunks,
+    chunks: enriched,
   };
 }
 
@@ -444,8 +465,13 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       duration_seconds: 4,
       start_seconds: 0,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/0",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 1,
@@ -453,8 +479,13 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       duration_seconds: 4,
       start_seconds: 4,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/1",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 2,
@@ -462,8 +493,13 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       duration_seconds: 4,
       start_seconds: 8,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/2",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 3,
@@ -471,8 +507,13 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       duration_seconds: 0,
       start_seconds: 0,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: null,
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 4,
@@ -480,8 +521,13 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       duration_seconds: 0,
       start_seconds: 0,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: null,
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 5,
@@ -489,8 +535,13 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       duration_seconds: 4,
       start_seconds: 20,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/5",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 
@@ -576,8 +627,13 @@ test("stays in buffering mode when playback reaches the end of the current conti
       duration_seconds: 4,
       start_seconds: 0,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/0",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 1,
@@ -585,8 +641,13 @@ test("stays in buffering mode when playback reaches the end of the current conti
       duration_seconds: 4,
       start_seconds: 4,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/1",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 2,
@@ -594,8 +655,13 @@ test("stays in buffering mode when playback reaches the end of the current conti
       duration_seconds: 4,
       start_seconds: 8,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/2",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 3,
@@ -603,8 +669,13 @@ test("stays in buffering mode when playback reaches the end of the current conti
       duration_seconds: 0,
       start_seconds: 0,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: null,
+      deprecated: false,
+      reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 

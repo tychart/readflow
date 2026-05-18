@@ -1,4 +1,11 @@
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
@@ -6,7 +13,7 @@ import { api } from "../../lib/api";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
-import type { Chunk, JobDetail, JobManifest, JobStatus } from "../../types/api";
+import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
 import { calculateChunkSeekTargetSeconds } from "./timeline";
 
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
@@ -29,6 +36,9 @@ interface TimelineSlot {
   fillPercent: number;
   isAnchor: boolean;
   visualDurationSeconds: number;
+  version: number;
+  deprecated: boolean;
+  reprocessing: boolean;
 }
 
 interface StreamEventPayload {
@@ -189,6 +199,56 @@ function statusTone(
 }
 
 /**
+ * Extracts the text for a chunk from the job source text.
+ */
+function getChunkText(chunk: Chunk, sourceText: string): string {
+  return sourceText.slice(chunk.char_start, chunk.char_end);
+}
+
+/**
+ * Derives the active version map from chunks, preferring highest version per index.
+ */
+function deriveActiveVersions(chunks: Chunk[]): Map<number, number> {
+  const versions = new Map<number, number>();
+  for (const chunk of chunks) {
+    const existing = versions.get(chunk.index);
+    if (existing === undefined || chunk.version > existing) {
+      versions.set(chunk.index, chunk.version);
+    }
+  }
+  return versions;
+}
+
+/**
+ * Gets the latest version number for a chunk index from a chunk list.
+ */
+function getLatestVersion(chunks: Chunk[], index: number): number {
+  let max = -1;
+  for (const chunk of chunks) {
+    if (chunk.index === index && chunk.version > max) {
+      max = chunk.version;
+    }
+  }
+  return max;
+}
+
+/**
+ * Checks if a chunk is in a reprocessing or pending state.
+ */
+function isReprocessing(status: ChunkStatus): boolean {
+  return status === "planned" || status === "queued" || status === "rendering" || status === "reprocessing";
+}
+
+/**
+ * Gets the retry count for a chunk (version number = number of reprocessing attempts).
+ */
+function getRetryCount(status: ChunkStatus, version: number): number {
+  if (status === "max_retries_exceeded") return 3;
+  return version; // V0 = original, V1 = 1 retry, etc.
+}
+
+/**
+ * Builds a stream manifest from contiguous ready chunks, re-normalizing start times.
  * Builds a stream manifest from contiguous ready chunks, re-normalizing start times.
  */
 function buildStreamManifest(
@@ -299,6 +359,12 @@ export function ReaderPage() {
   const [pendingAnchorSeekSeconds, setPendingAnchorSeekSeconds] = useState<number | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  // Versioning & reprocessing state
+  const [activeVersions, setActiveVersions] = useState<Map<number, number>>(new Map());
+  const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
+  const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<number | null>(null);
+  const [reprocessError, setReprocessError] = useState<string | null>(null);
 
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
@@ -312,6 +378,29 @@ export function ReaderPage() {
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
+
+  // Sync activeVersions from job.active_chunk_version or derive from chunks
+  useEffect(() => {
+    if (!knownChunks.length) {
+      setActiveVersions(new Map());
+      return;
+    }
+    // Check if job has active_chunk_version (non-empty)
+    const versions = new Map<number, number>();
+    const av = job?.active_chunk_version;
+    if (av && Object.keys(av).length > 0) {
+      for (const [idx, ver] of Object.entries(av)) {
+        versions.set(Number(idx), ver);
+      }
+    } else {
+      // Derive from chunks (pick highest version per index)
+      const derived = deriveActiveVersions(knownChunks);
+      for (const [idx, ver] of derived) {
+        versions.set(idx, ver);
+      }
+    }
+    setActiveVersions(versions);
+  }, [knownChunks, job?.active_chunk_version]);
 
   useEffect(() => {
     if (knownChunks.length === 0) {
@@ -341,32 +430,54 @@ export function ReaderPage() {
     return contiguous;
   }, [anchoredChunks]);
 
-  const firstGapChunk = useMemo(
-    () => anchoredChunks.find((chunk) => chunk.status !== "written") ?? null,
-    [anchoredChunks],
-  );
-  const expectedNextChunkIndex = firstGapChunk?.index ?? null;
+  // Derive active chunks (one per index, using active version)
+  const activeChunks = useMemo(() => {
+    const result: Chunk[] = [];
+    for (const chunk of knownChunks) {
+      const activeVer = activeVersions.get(chunk.index);
+      if (activeVer !== undefined && chunk.version === activeVer && !result.some((c) => c.index === chunk.index)) {
+        result.push(chunk);
+      }
+    }
+    return result;
+  }, [knownChunks, activeVersions]);
+
+  // Recompute version-aware indexes using active chunks
+  const activeContiguousReadyIndexes = useMemo(() => {
+    const set = new Set<number>();
+    for (const chunk of contiguousReadyChunks) {
+      const activeVer = activeVersions.get(chunk.index);
+      if (activeVer !== undefined && chunk.version === activeVer) {
+        set.add(chunk.index);
+      }
+    }
+    return set;
+  }, [contiguousReadyChunks, activeVersions]);
+
+  // Version-aware gap detection using active chunks only
+  const activeFirstGapChunk = useMemo(() => {
+    return activeChunks.find((chunk) => chunk.status !== "written") ?? null;
+  }, [activeChunks]);
+  const expectedNextChunkIndex = activeFirstGapChunk?.index ?? null;
   const writtenAfterGapIndexes = useMemo(
     () =>
       new Set(
-        anchoredChunks
-          .filter(
-            (chunk) =>
-              chunk.index >= (expectedNextChunkIndex ?? Number.POSITIVE_INFINITY) &&
-              chunk.status === "written",
-          )
-          .map((chunk) => chunk.index),
+        activeChunks.filter(
+          (chunk) =>
+            chunk.index >= (expectedNextChunkIndex ?? Number.POSITIVE_INFINITY) &&
+            chunk.status === "written",
+        ).map((chunk) => chunk.index),
       ),
-    [anchoredChunks, expectedNextChunkIndex],
+    [activeChunks, expectedNextChunkIndex],
   );
   const missingExpectedIndexes = useMemo(
     () =>
       new Set(
-        anchoredChunks
+        activeChunks
           .filter((chunk) => chunk.status !== "written" && chunk.status !== "failed")
           .map((chunk) => chunk.index),
       ),
-    [anchoredChunks],
+    [activeChunks],
   );
   const streamManifest = useMemo(
     () => buildStreamManifest(manifest, contiguousReadyChunks),
@@ -416,10 +527,6 @@ export function ReaderPage() {
     () => deriveActiveChunkProgress(contiguousReadyChunks, currentTimeSeconds),
     [contiguousReadyChunks, currentTimeSeconds],
   );
-  const contiguousReadyIndexSet = useMemo(
-    () => new Set(contiguousReadyChunks.map((chunk) => chunk.index)),
-    [contiguousReadyChunks],
-  );
   const streamStartByIndex = useMemo(() => {
     let runningStart = 0;
     const starts = new Map<number, number>();
@@ -431,10 +538,12 @@ export function ReaderPage() {
   }, [contiguousReadyChunks]);
 
   const timelineSlots = useMemo<TimelineSlot[]>(() => {
-    const contiguousReadyIndexes = new Set(contiguousReadyChunks.map((chunk) => chunk.index));
-    return knownChunks.map((chunk) => {
+    return activeChunks.map((chunk) => {
+      const activeVer = activeVersions.get(chunk.index) ?? 0;
       let state: TimelineSlotState;
       if (chunk.status === "failed") {
+        state = "failed";
+      } else if (chunk.status === "max_retries_exceeded") {
         state = "failed";
       } else if (activeProgress.activeChunkIndex === chunk.index) {
         state = "playing";
@@ -442,7 +551,7 @@ export function ReaderPage() {
         state = "played";
       } else if (chunk.index < playbackAnchorIndex && chunk.status === "written") {
         state = "ready";
-      } else if (contiguousReadyIndexes.has(chunk.index)) {
+      } else if (activeContiguousReadyIndexes.has(chunk.index)) {
         state = "ready";
       } else if (writtenAfterGapIndexes.has(chunk.index)) {
         state = "ready_after_gap";
@@ -450,6 +559,8 @@ export function ReaderPage() {
         state = "missing_expected";
       } else if (chunk.status === "written") {
         state = "ready";
+      } else if (isReprocessing(chunk.status)) {
+        state = "missing_expected";
       } else {
         state = "missing_expected";
       }
@@ -461,17 +572,21 @@ export function ReaderPage() {
         isAnchor: chunk.index === playbackAnchorIndex,
         visualDurationSeconds:
           chunk.duration_seconds > 0 ? chunk.duration_seconds : TIMELINE_PLACEHOLDER_SECONDS,
+        version: chunk.version,
+        deprecated: chunk.deprecated,
+        reprocessing: chunk.reprocessing,
       };
     });
   }, [
     activeProgress.activeChunkIndex,
     activeProgress.fillByIndex,
     activeProgress.playedIndexes,
-    contiguousReadyChunks,
-    knownChunks,
+    activeChunks,
+    activeContiguousReadyIndexes,
     missingExpectedIndexes,
     playbackAnchorIndex,
     writtenAfterGapIndexes,
+    activeVersions,
   ]);
 
   const detailSlot = useMemo(() => {
@@ -481,7 +596,8 @@ export function ReaderPage() {
     return timelineSlots.find((slot) => slot.chunk.index === activeProgress.activeChunkIndex) ?? null;
   }, [activeProgress.activeChunkIndex, hoveredChunkIndex, timelineSlots]);
 
-  const writtenChunkCount = knownChunks.filter((chunk) => chunk.status === "written").length;
+  const writtenChunkCount = activeChunks.filter((chunk) => chunk.status === "written").length;
+  const totalChunksInJob = job?.total_chunks_emitted ?? knownChunks.length;
   const shouldUsePollingFallback =
     !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
   const liveStatus = describePlayerState(playerState, isAutoplayBlocked);
@@ -596,6 +712,17 @@ export function ReaderPage() {
     setError(null);
     setLastRefreshAt(Date.now());
     setLastRefreshReason(`ws:${lastEvent.type}`);
+
+    // Auto-switch to new version when chunk_ready arrives
+    if (lastEvent.type === "chunk_ready" && "chunk_index" in payload) {
+      const chunkIndex = payload.chunk_index as number;
+      setActiveVersions((prev) => {
+        const next = new Map(prev);
+        // The new version is now ready — set active version to the latest
+        next.set(chunkIndex, (next.get(chunkIndex) ?? 0) + 1);
+        return next;
+      });
+    }
 
     if (
       lastEvent.type === "chunk_ready" &&
@@ -824,7 +951,7 @@ export function ReaderPage() {
 
   const seekWithinTimelineSlot = useCallback(
     (slot: TimelineSlot, element: HTMLButtonElement, clientX: number) => {
-      if (!contiguousReadyIndexSet.has(slot.chunk.index) || slot.chunk.duration_seconds <= 0) {
+      if (!activeContiguousReadyIndexes.has(slot.chunk.index) || slot.chunk.duration_seconds <= 0) {
         return false;
       }
       const rect = element.getBoundingClientRect();
@@ -842,7 +969,7 @@ export function ReaderPage() {
       );
       return true;
     },
-    [contiguousReadyIndexSet, seekToSeconds, streamStartByIndex],
+    [activeContiguousReadyIndexes, seekToSeconds, streamStartByIndex],
   );
 
   const resumeTerminalPlaybackAfterSeek = useCallback(() => {
@@ -912,6 +1039,65 @@ export function ReaderPage() {
     }
   };
 
+  // Versioning & reprocessing handlers
+  const handleReprocess = useCallback(
+    async (chunkIndex: number, newText?: string) => {
+      if (!job) return;
+      try {
+        setReprocessingChunkIndex(chunkIndex);
+        setReprocessError(null);
+        setEditingChunkIndex(null);
+        const nextJob = await api.reprocessChunk(job.id, chunkIndex, {
+          new_text: newText,
+          new_voice_id: undefined,
+        });
+        setJob(nextJob);
+        setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+        setError(null);
+        // Refresh after a short delay to catch the first scheduler update
+        setTimeout(() => refreshReaderState("reprocess"), 1000);
+      } catch (err) {
+        setReprocessError(err instanceof Error ? err.message : "Reprocessing failed");
+      } finally {
+        setReprocessingChunkIndex(null);
+      }
+    },
+    [job, refreshReaderState],
+  );
+
+  const handleVersionChange = useCallback(
+    async (chunkIndex: number, version: number) => {
+      if (!job) return;
+      try {
+        const nextJob = await api.setActiveVersion(job.id, chunkIndex, version);
+        setJob(nextJob);
+        setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+        setError(null);
+        setReprocessError(null);
+      } catch (err) {
+        setReprocessError(err instanceof Error ? err.message : "Version switch failed");
+      }
+    },
+    [job],
+  );
+
+  const handleStartEdit = useCallback((chunk: Chunk) => {
+    const text = job ? getChunkText(chunk, job.source_text) : "";
+    setEditText(text);
+    setEditingChunkIndex(chunk.index);
+  }, [job?.source_text]);
+
+  const handleSaveEdit = useCallback(() => {
+    if (editingChunkIndex !== null) {
+      void handleReprocess(editingChunkIndex, editText);
+    }
+  }, [editingChunkIndex, editText, handleReprocess]);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingChunkIndex(null);
+    setEditText("");
+  }, []);
+
   const handleDownload = useCallback(async () => {
     if (!job || downloadableChunks.length === 0) {
       return;
@@ -945,10 +1131,12 @@ export function ReaderPage() {
     }
 
     if (slot.chunk.status === "failed") {
+      // Allow clicking on failed chunks to show detail panel with retry option
+      setHoveredChunkIndex(slot.chunk.index);
       return;
     }
 
-    if (contiguousReadyIndexSet.has(slot.chunk.index)) {
+    if (activeContiguousReadyIndexes.has(slot.chunk.index)) {
       seekToSeconds(streamStartByIndex.get(slot.chunk.index) ?? 0);
       resumeTerminalPlaybackAfterSeek();
       return;
@@ -959,6 +1147,8 @@ export function ReaderPage() {
       return;
     }
 
+    // For reprocessing or missing chunks, show the detail panel
+    setHoveredChunkIndex(slot.chunk.index);
     await armPlaybackAtMissingChunk(slot.chunk);
   };
 
@@ -1079,6 +1269,7 @@ export function ReaderPage() {
                   const isPlayingSlot = slot.state === "playing";
                   const isPlayed = slot.state === "played";
                   const isFailed = slot.state === "failed";
+                  const isReprocessingSlot = slot.reprocessing;
 
                   return (
                     <button
@@ -1110,13 +1301,15 @@ export function ReaderPage() {
                             ? "bg-rose-200/90"
                             : isPlayed
                               ? "bg-[var(--accent)]/85"
-                              : "bg-stone-400/65"
+                              : isReprocessingSlot
+                                ? "bg-stone-400/50"
+                                : "bg-stone-400/65"
                         }`}
                       />
                       {isReadyAfterGap ? (
                         <div className="absolute inset-0 bg-stone-400/65" />
                       ) : null}
-                      {isMissing ? (
+                      {isMissing && !isReprocessingSlot ? (
                         <div
                           className="absolute inset-0 opacity-85"
                           style={{
@@ -1125,7 +1318,17 @@ export function ReaderPage() {
                           }}
                         />
                       ) : null}
-                      {!isPlayed && !isFailed && slot.fillPercent > 0 ? (
+                      {isReprocessingSlot ? (
+                        <div
+                          className="absolute inset-0 animate-pulse"
+                          style={{
+                            backgroundColor: isPlayed
+                              ? "rgba(120, 160, 140, 0.15)"
+                              : "rgba(180, 180, 180, 0.15)",
+                          }}
+                        />
+                      ) : null}
+                      {!isPlayed && !isFailed && slot.fillPercent > 0 && !isReprocessingSlot ? (
                         <div
                           className="absolute inset-y-0 left-0 bg-[var(--accent)]/85"
                           style={{ width: `${Math.min(slot.fillPercent, 100)}%` }}
@@ -1138,6 +1341,20 @@ export function ReaderPage() {
                         />
                       ) : null}
                       <div className="absolute inset-y-2 right-0 z-10 w-px bg-white/65" />
+                      {/* Reload icon for reprocessing chunks */}
+                      {isReprocessingSlot ? (
+                        <div className="absolute inset-y-0 left-0 z-10 flex items-center justify-center">
+                          <span className="text-lg leading-none" title="Reprocessing">↻</span>
+                        </div>
+                      ) : null}
+                      {/* Version badge when reprocessing */}
+                      {isReprocessingSlot ? (
+                        <div className="absolute inset-x-0 bottom-0 z-10 flex justify-center">
+                          <span className="rounded-full bg-stone-500/70 px-1.5 py-px text-[8px] font-bold text-white">
+                            V{slot.chunk.version}
+                          </span>
+                        </div>
+                      ) : null}
                       <div className="absolute inset-x-0 top-1 z-10 text-center text-[10px] font-semibold text-stone-900/55 transition group-hover:text-stone-950/80 group-focus-visible:text-stone-950/80">
                         {slot.chunk.index + 1}
                       </div>
@@ -1148,32 +1365,143 @@ export function ReaderPage() {
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 text-sm text-stone-700 md:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-2xl bg-white/70 p-4">
-              <div className="mb-1 font-semibold">
-                {detailSlot ? `Chunk ${detailSlot.chunk.index + 1}` : "No chunk selected"}
-              </div>
-              {detailSlot ? (
-                <div className="space-y-1">
-                  <div>Status: {chunkStatusText(detailSlot.state)}</div>
-                  <div>
-                    {detailSlot.chunk.duration_seconds > 0
-                      ? `${detailSlot.chunk.duration_seconds.toFixed(1)}s ready`
-                      : "Duration not ready yet"}
+          <div className="mt-4 grid gap-3 text-sm text-stone-700 md:grid-cols-[1.4fr_0.8fr]">
+            {/* Chunk detail panel */}
+            {detailSlot ? (
+              (() => {
+                const chunk = detailSlot.chunk;
+                const chunkText = job ? getChunkText(chunk, job.source_text) : "";
+                const isEditing = editingChunkIndex === chunk.index;
+                const allVersions = knownChunks.filter((c) => c.index === chunk.index);
+                const maxVersion = getLatestVersion(knownChunks, chunk.index);
+                const retryCount = getRetryCount(chunk.status, chunk.version);
+                const maxRetriesReached = chunk.status === "max_retries_exceeded" || maxVersion >= 3;
+
+                const chunkDetailContent = (
+                  <div className="rounded-2xl bg-white/70 p-4 space-y-3">
+                    {/* Header: chunk number + version dropdown */}
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold">Chunk {chunk.index + 1}</div>
+                      {allVersions.length > 1 ? (
+                        <select
+                          className="rounded-lg border border-stone-300 bg-white/80 px-2 py-1 text-xs"
+                          value={activeVersions.get(chunk.index) ?? chunk.version}
+                          onChange={(e) => handleVersionChange(chunk.index, Number(e.target.value))}
+                        >
+                          {allVersions.map((v) => (
+                            <option key={v.version} value={v.version} disabled={v.deprecated}>
+                              V{v.version} {v.status === "written" ? "✓" : v.status}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+
+                    {/* Text display / edit */}
+                    <div className="rounded-xl bg-stone-100/80 p-3">
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <textarea
+                            className="w-full resize-none rounded-lg border border-stone-300 bg-white p-2 text-sm leading-relaxed"
+                            rows={3}
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white"
+                              onClick={handleSaveEdit}
+                            >
+                              Save &amp; Reprocess
+                            </button>
+                            <button
+                              className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold text-stone-600"
+                              onClick={handleCancelEdit}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <p className="max-h-20 overflow-y-auto text-sm leading-relaxed text-stone-700">
+                            {chunkText || "(empty text)"}
+                          </p>
+                          <button
+                            className="mt-1 text-xs text-stone-500 hover:text-stone-800"
+                            onClick={() => handleStartEdit(chunk)}
+                          >
+                            Edit text
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Status info */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="rounded-full bg-stone-200/80 px-2 py-0.5">{chunkStatusText(detailSlot.state)}</span>
+                      {chunk.duration_seconds > 0 ? (
+                        <span className="text-stone-600">{chunk.duration_seconds.toFixed(1)}s</span>
+                      ) : null}
+                      <span className="text-stone-500">V{chunk.version}</span>
+                    </div>
+
+                    {/* Reprocess button */}
+                    {!maxRetriesReached && (chunk.status === "written" || chunk.status === "failed" || detailSlot.state === "failed") ? (
+                      <button
+                        className={`w-full rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                          reprocessingChunkIndex === chunk.index
+                            ? "bg-stone-300 text-stone-600"
+                            : "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                        }`}
+                        onClick={() => isEditing ? handleSaveEdit() : void handleReprocess(chunk.index)}
+                        disabled={reprocessingChunkIndex === chunk.index}
+                      >
+                        {reprocessingChunkIndex === chunk.index
+                          ? "Reprocessing…"
+                          : chunk.status === "failed" || detailSlot.state === "failed"
+                            ? `Retry (${retryCount}/3)`
+                            : `Reprocess (${retryCount}/3)`}
+                      </button>
+                    ) : null}
+
+                    {maxRetriesReached ? (
+                      <div className="rounded-lg bg-rose-100/80 px-3 py-2 text-xs text-rose-700">
+                        Max retries exceeded (3/3)
+                      </div>
+                    ) : null}
+
+                    {/* Version-specific info */}
+                    {detailSlot.state === "ready_after_gap" ? (
+                      <div className="text-xs text-amber-600">Ready, but blocked until earlier missing chunks arrive.</div>
+                    ) : null}
+                    {detailSlot.state === "missing_expected" && !detailSlot.reprocessing ? (
+                      <div className="text-xs text-amber-600">This chunk is expected but has not arrived yet.</div>
+                    ) : null}
+                    {detailSlot.reprocessing ? (
+                      <div className="text-xs text-stone-500">New version being rendered. Current version remains playable.</div>
+                    ) : null}
+
+                    {reprocessError ? (
+                      <div className="rounded-lg bg-rose-100/80 px-3 py-2 text-xs text-rose-700">{reprocessError}</div>
+                    ) : null}
                   </div>
-                  {detailSlot.state === "ready_after_gap" ? (
-                    <div>Ready, but blocked until earlier missing chunks arrive.</div>
-                  ) : null}
-                  {detailSlot.state === "missing_expected" ? (
-                    <div>This chunk is expected but has not arrived yet.</div>
-                  ) : null}
+                );
+
+                return chunkDetailContent;
+              })()
+            ) : (
+              <div className="rounded-2xl bg-white/70 p-4">
+                <div className="font-semibold">No chunk selected</div>
+                <div className="text-sm text-stone-600">
+                  Press play to arm playback and wait for the first rendered audio chunk.
                 </div>
-              ) : (
-                <div>Press play to arm playback and wait for the first rendered audio chunk.</div>
-              )}
-            </div>
+              </div>
+            )}
+
+            {/* Live status panel */}
             <div className="rounded-2xl bg-white/70 p-4">
-              <div className="mb-1 font-semibold">Live status</div>
+              <div className="mb-2 font-semibold">Live status</div>
               <div>
                 {isJobTerminal
                   ? "Reader is local-only"
@@ -1182,7 +1510,10 @@ export function ReaderPage() {
                     : "Fallback sync"}
               </div>
               <div>
-                {writtenChunkCount}/{knownChunks.length} chunks rendered
+                {writtenChunkCount}/{activeChunks.length} chunks rendered
+              </div>
+              <div>
+                {totalChunksInJob} total chunks emitted
               </div>
             </div>
           </div>
@@ -1268,18 +1599,54 @@ export function ReaderPage() {
         <div className="panel rounded-[2rem] p-6">
           <h2 className="mb-3 text-lg font-semibold">Chunk status</h2>
           <div className="space-y-2">
-            {knownChunks.map((chunk) => (
-              <div
-                className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white/60 px-4 py-3"
-                key={chunk.index}
-              >
-                <span>Chunk {chunk.index + 1}</span>
-                <span className="text-sm text-stone-600">
-                  {chunk.status}{" "}
-                  {chunk.duration_seconds ? `• ${chunk.duration_seconds.toFixed(1)}s` : ""}
-                </span>
-              </div>
-            ))}
+            {activeChunks.map((chunk) => {
+              const allVersions = knownChunks.filter((c) => c.index === chunk.index);
+              return (
+                <div
+                  className="rounded-2xl border border-stone-200 bg-white/60 px-4 py-3"
+                  key={chunk.index}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">Chunk {chunk.index + 1}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        chunk.status === "written" ? "bg-emerald-100 text-emerald-700" :
+                        chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-rose-100 text-rose-700" :
+                        chunk.status === "reprocessing" ? "bg-amber-100 text-amber-700" :
+                        "bg-stone-100 text-stone-600"
+                      }`}>
+                        {chunk.status}
+                      </span>
+                      <span className="text-xs text-stone-500">V{chunk.version}</span>
+                      {chunk.duration_seconds > 0 ? (
+                        <span className="text-xs text-stone-500">• {chunk.duration_seconds.toFixed(1)}s</span>
+                      ) : null}
+                      {chunk.reprocessing ? (
+                        <span className="text-xs text-stone-400">↻ reprocessing</span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {allVersions.map((v) => (
+                        <button
+                          key={v.version}
+                          className={`rounded px-1.5 py-0.5 text-xs ${
+                            v.version === chunk.version
+                              ? "bg-[var(--accent)] text-white"
+                              : v.deprecated
+                                ? "text-stone-400 line-through"
+                                : "text-stone-600 hover:bg-stone-100"
+                          }`}
+                          onClick={() => handleVersionChange(chunk.index, v.version)}
+                          disabled={v.deprecated}
+                        >
+                          V{v.version}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

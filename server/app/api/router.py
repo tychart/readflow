@@ -15,6 +15,8 @@ from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
     AdminStateResponse,
+    ChunkReprocessRequest,
+    ChunkVersionRequest,
     CreateJobResponse,
     JobDetailResponse,
     JobManifestResponse,
@@ -142,6 +144,84 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                 for chunk in sorted(job.chunks, key=lambda item: item.index)
             ],
         )
+
+    @router.post("/jobs/{job_id}/chunks/{chunk_index}/reprocess", response_model=JobDetailResponse)
+    async def reprocess_chunk(
+        job_id: str,
+        chunk_index: int,
+        request: ChunkReprocessRequest,
+        app_services: AppServices = Depends(services),
+    ) -> JobDetailResponse:
+        """Reprocess a specific chunk, optionally with new text/voice."""
+        try:
+            job = app_services.job_manager.get_job(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Job not found") from None
+
+        # Check if chunk exists
+        chunk = None
+        for c in job.chunks:
+            if c.index == chunk_index:
+                chunk = c
+                break
+        if chunk is None:
+            raise HTTPException(status_code=404, detail="Chunk not found") from None
+
+        # Revive completed/failed jobs
+        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            app_services.job_manager.reactivate_job(job_id)
+
+        # Check retry limit (max 3 total attempts including original = versions 0,1,2,3)
+        latest_version = job.get_latest_chunk_version(chunk_index)
+        if latest_version >= 3:
+            raise HTTPException(status_code=409, detail="Maximum retry attempts exceeded")
+
+        # Determine text and voice for the new version
+        text = request.new_text if request.new_text is not None else chunk.text
+        voice = request.new_voice_id if request.new_voice_id is not None else job.voice_id
+
+        job = app_services.job_manager.add_versioned_chunk(
+            job_id,
+            text=text,
+            char_start=chunk.char_start,
+            char_end=chunk.char_end,
+            plan_version=job.plan_version,
+            voice_id=voice,
+            parent_index=chunk_index,
+            retries=latest_version,
+        )
+
+        detail = job_to_detail(job)
+        await app_services.hub.broadcast(
+            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+        )
+        return JobDetailResponse(**detail.model_dump())
+
+    @router.post(
+        "/jobs/{job_id}/chunks/{chunk_index}/set-active-version",
+        response_model=JobDetailResponse,
+    )
+    async def set_active_chunk_version(
+        job_id: str,
+        chunk_index: int,
+        request: ChunkVersionRequest,
+        app_services: AppServices = Depends(services),
+    ) -> JobDetailResponse:
+        """Set the active version for a chunk index."""
+        try:
+            job = app_services.job_manager.get_job(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Job not found") from None
+
+        job = app_services.job_manager.set_active_chunk_version(
+            job_id, chunk_index, request.version
+        )
+
+        detail = job_to_detail(job)
+        await app_services.hub.broadcast(
+            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+        )
+        return JobDetailResponse(**detail.model_dump())
 
     @router.get("/jobs/{job_id}/chunks/init")
     async def get_init_segment(

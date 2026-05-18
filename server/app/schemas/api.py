@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.jobs.models import ChunkRecord, Job
+from app.jobs.models import ChunkRecord, ChunkStatus, Job
 
 
 class ChunkResponse(BaseModel):
@@ -13,8 +13,11 @@ class ChunkResponse(BaseModel):
     duration_seconds: float
     start_seconds: float
     plan_version: int
+    version: int = 0
     voice_id: str
     segment_url: str | None
+    deprecated: bool = False
+    reprocessing: bool = False
 
 
 class JobSummaryResponse(BaseModel):
@@ -56,6 +59,15 @@ class VoiceResponse(BaseModel):
 
 class UpdateVoiceRequest(BaseModel):
     voice_id: str
+
+
+class ChunkReprocessRequest(BaseModel):
+    new_text: str | None = None
+    new_voice_id: str | None = None
+
+
+class ChunkVersionRequest(BaseModel):
+    version: int
 
 
 class PlaybackUpdateRequest(BaseModel):
@@ -118,8 +130,11 @@ def chunk_to_response(job: Job, chunk: ChunkRecord) -> ChunkResponse:
         duration_seconds=chunk.duration_seconds,
         start_seconds=chunk.start_seconds,
         plan_version=chunk.plan_version,
+        version=chunk.version,
         voice_id=chunk.voice_id,
         segment_url=segment_url,
+        deprecated=chunk.deprecated,
+        reprocessing=chunk.reprocessing,
     )
 
 

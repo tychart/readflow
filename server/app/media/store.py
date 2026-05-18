@@ -33,16 +33,20 @@ class MediaStore:
     def init_segment_path(self, job_id: str) -> Path:
         return self.job_dir(job_id) / "init.mp4"
 
-    def segment_path(self, job_id: str, chunk_index: int) -> Path:
-        return self.job_dir(job_id) / f"{chunk_index:05d}.m4s"
+    def segment_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
+        suffix = f"_v{version}" if version > 0 else ""
+        return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.m4s"
 
-    def wav_path(self, job_id: str, chunk_index: int) -> Path:
-        return self.job_dir(job_id) / f"{chunk_index:05d}.wav"
+    def wav_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
+        suffix = f"_v{version}" if version > 0 else ""
+        return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.wav"
 
-    def package_wav_chunk(self, job_id: str, chunk_index: int, wav_bytes: bytes) -> PackagedChunk:
+    def package_wav_chunk(
+        self, job_id: str, chunk_index: int, wav_bytes: bytes, version: int = 0
+    ) -> PackagedChunk:
         job_dir = self.job_dir(job_id)
-        wav_path = self.wav_path(job_id, chunk_index)
-        mp4_path = job_dir / f"{chunk_index:05d}.mp4"
+        wav_path = self.wav_path(job_id, chunk_index, version)
+        mp4_path = job_dir / f"{chunk_index:05d}_v{version}.mp4"
         wav_path.write_bytes(wav_bytes)
         self._run_ffmpeg(wav_path, mp4_path)
         payload = mp4_path.read_bytes()
@@ -50,7 +54,7 @@ class MediaStore:
         init_path = self.init_segment_path(job_id)
         if not init_path.exists():
             init_path.write_bytes(segments.init_segment)
-        segment_path = self.segment_path(job_id, chunk_index)
+        segment_path = self.segment_path(job_id, chunk_index, version)
         segment_path.write_bytes(segments.media_segment)
         duration = self._wav_duration_seconds(wav_path)
         mp4_path.unlink(missing_ok=True)

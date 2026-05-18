@@ -1,13 +1,24 @@
 export type JobStatus = "queued" | "rendering" | "paused" | "playing" | "completed" | "failed";
-export type ChunkStatus = "planned" | "queued" | "rendering" | "written" | "stale" | "failed";
+export type ChunkStatus =
+  | "planned"
+  | "queued"
+  | "rendering"
+  | "written"
+  | "stale"
+  | "failed"
+  | "reprocessing"
+  | "max_retries_exceeded";
 export interface Chunk {
   index: number;
   status: ChunkStatus;
   duration_seconds: number;
   start_seconds: number;
   plan_version: number;
+  version: number;
   voice_id: string;
   segment_url: string | null;
+  deprecated: boolean;
+  reprocessing: boolean;
 }
 
 export interface JobSummary {

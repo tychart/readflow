@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from time import time
 from uuid import uuid4
 
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
+from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, ChunkStatus
 
 
 class JobManager:
@@ -162,8 +162,11 @@ class JobManager:
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         job.total_chunks_completed = len(job.written_chunks())
+        job.total_versioned_completed = len(job.versioned_written_chunks())
         self._recalculate_timeline(job)
-        if job.planner_cursor.exhausted and not job.pending_chunks():
+        # Check completion using versioned counts
+        versioned_pending = job.versioned_pending_chunks()
+        if job.planner_cursor.exhausted and not versioned_pending:
             job.status = JobStatus.COMPLETED
             job.is_active_listening = False
         elif job.is_active_listening:
@@ -186,7 +189,11 @@ class JobManager:
     def renderable_chunks(self) -> Iterable[ChunkRecord]:
         for job in self.list_jobs():
             for chunk in job.chunks:
-                if chunk.status == ChunkStatus.PLANNED and chunk.plan_version == job.plan_version:
+                if (
+                    chunk.status == ChunkStatus.PLANNED
+                    and chunk.plan_version == job.plan_version
+                    and not chunk.deprecated
+                ):
                     yield chunk
 
     def queue_depth(self) -> int:
@@ -205,6 +212,75 @@ class JobManager:
                 running_start += chunk.duration_seconds
         job.buffered_seconds = max(0.0, running_start - job.playback_state.current_time_seconds)
         job.completed_seconds = max(job.completed_seconds, job.playback_state.current_time_seconds)
+
+    def add_versioned_chunk(
+        self,
+        job_id: str,
+        *,
+        text: str,
+        char_start: int,
+        char_end: int,
+        plan_version: int,
+        voice_id: str,
+        parent_index: int,
+        retries: int = 0,
+    ) -> Job:
+        """Add a new version of a chunk. Marks lower versions as deprecated."""
+        job = self.get_job(job_id)
+        latest_version = job.get_latest_chunk_version(parent_index)
+        new_version = latest_version + 1
+
+        # Mark all existing versions of this chunk as deprecated
+        job.mark_all_chunk_versions_deprecated(parent_index)
+
+        # Create the new versioned chunk
+        chunk = ChunkRecord(
+            job_id=job_id,
+            index=parent_index,
+            text=text,
+            voice_id=voice_id,
+            language=job.language,
+            plan_version=plan_version,
+            char_start=char_start,
+            char_end=char_end,
+            version=new_version,
+            parent_chunk_index=parent_index,
+            status=ChunkStatus.PLANNED,
+            reprocessing=True,
+        )
+        job.chunks.append(chunk)
+        job.total_chunks_emitted = len(job.chunks)
+
+        # Set as active version
+        job.set_active_chunk_version(parent_index, new_version)
+        job.total_versioned_chunks = len({c.index for c in job.chunks})
+        job.updated_at = time()
+        return job
+
+    def set_active_chunk_version(self, job_id: str, chunk_index: int, version: int) -> Job:
+        """Set the active version for a chunk index."""
+        job = self.get_job(job_id)
+        job.set_active_chunk_version(chunk_index, version)
+
+        # Ensure the active version is not deprecated
+        for chunk in job.chunks:
+            if chunk.index == chunk_index and chunk.version == version:
+                chunk.deprecated = False
+                break
+
+        job.updated_at = time()
+        return job
+
+    def reactivate_job(self, job_id: str) -> Job:
+        """Reactivate a completed or failed job so it can be reprocessed."""
+        job = self.get_job(job_id)
+        if job.status not in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            return job
+        job.status = JobStatus.QUEUED
+        job.is_active_listening = False
+        job.playback_state.is_playing = False
+        job.updated_at = time()
+        return job
 
     def _contiguous_written_seconds(self, job: Job) -> float:
         running = 0.0

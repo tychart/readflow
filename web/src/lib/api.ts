@@ -104,6 +104,23 @@ export const api = {
       }),
     }),
 
+  /** Reprocess a specific chunk, optionally with new text/voice. */
+  reprocessChunk: (jobId: string, chunkIndex: number, options?: {
+    new_text?: string;
+    new_voice_id?: string;
+  }) =>
+    request<JobDetail>(apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/reprocess`), {
+      method: "POST",
+      body: JSON.stringify(options ?? {}),
+    }),
+
+  /** Set the active version for a chunk index. */
+  setActiveVersion: (jobId: string, chunkIndex: number, version: number) =>
+    request<JobDetail>(apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/set-active-version`), {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+
   /** Downloads the rendered audio for a job. */
   downloadJobAudio: async (jobId: string) => {
     const response = await fetch(apiPath(`/jobs/${jobId}/download`));
