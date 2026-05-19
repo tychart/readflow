@@ -1,10 +1,18 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, vi } from "vitest";
 
 import { ReaderPage } from "./ReaderPage";
 import { useAppStore } from "../../state/store";
 import type { Chunk } from "../../types/api";
+
+const originalFetch = global.fetch;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  global.fetch = originalFetch;
+});
 
 function buildReaderJob(
   chunkCount: number,
@@ -36,8 +44,6 @@ function buildReaderJob(
       segment_url: `/api/jobs/job-1/chunks/${index}`,
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     })),
     failed_reason: null,
   };
@@ -58,8 +64,6 @@ function buildManifest(chunkCount: number) {
       segment_url: `/api/jobs/job-1/chunks/${index}`,
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     })),
   };
 }
@@ -90,8 +94,6 @@ function buildManifestFromChunks(chunks: Chunk[]) {
     version: c.version ?? 0,
     deprecated: c.deprecated ?? false,
     reprocessing: c.reprocessing ?? false,
-    char_start: c.char_start ?? 0,
-    char_end: c.char_end ?? 0,
   }));
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
@@ -239,41 +241,46 @@ test("refreshes when a relevant websocket event arrives without page reload", as
   expect(manifestFetchCount).toBe(1);
 });
 
-test("polling fallback updates the reader while the socket is stale", async () => {
-  seedStore({
-    websocketStatus: "reconnecting",
-    isSocketStale: true,
-    lastSocketError: "Live updates are stale. Polling fallback is active.",
-  });
+test(
+  "polling fallback updates the reader while the socket is stale",
+  async () => {
+    seedStore({
+      websocketStatus: "reconnecting",
+      isSocketStale: true,
+      lastSocketError: "Live updates are stale. Polling fallback is active.",
+    });
 
-  let chunkCount = 1;
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJob(chunkCount, "rendering") };
-    }
-    if (url.endsWith("/api/jobs/job-1/manifest")) {
-      return { ok: true, json: async () => buildManifest(chunkCount) };
-    }
-    return { ok: true, arrayBuffer: async () => new Uint8Array([chunkCount]).buffer };
-  }) as typeof fetch;
+    let chunkCount = 1;
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJob(chunkCount, "rendering") };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifest(chunkCount) };
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array([chunkCount]).buffer };
+    }) as typeof fetch;
 
-  render(
-    <MemoryRouter initialEntries={["/jobs/job-1"]}>
-      <Routes>
-        <Route element={<ReaderPage />} path="/jobs/:jobId" />
-      </Routes>
-    </MemoryRouter>,
-  );
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
 
-  expect(await screen.findByText(/Live updates degraded, using fallback sync/i)).toBeInTheDocument();
-  expect(screen.getByText(/1\/1 chunks rendered/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Live updates degraded, using fallback sync/i)).toBeInTheDocument();
+    expect(screen.getByText(/1\/1 chunks rendered/i)).toBeInTheDocument();
 
-  chunkCount = 2;
-  await waitFor(() => expect(screen.getByText(/2\/2 chunks rendered/i)).toBeInTheDocument(), {
-    timeout: 2_500,
-  });
-});
+    chunkCount = 2;
+    // The polling interval is 3 seconds; wait for it to fire
+    await waitFor(() => expect(screen.getByText(/2\/2 chunks rendered/i)).toBeInTheDocument(), {
+      timeout: 6_000,
+    });
+  },
+  10_000,
+);
 
 test("shows waiting copy when play is armed before the first chunk exists and hydrates from websocket metadata", async () => {
   const user = userEvent.setup();
@@ -470,8 +477,6 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       segment_url: "/api/jobs/job-1/chunks/0",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 1,
@@ -484,8 +489,6 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       segment_url: "/api/jobs/job-1/chunks/1",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 2,
@@ -498,8 +501,6 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       segment_url: "/api/jobs/job-1/chunks/2",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 3,
@@ -512,8 +513,6 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       segment_url: null,
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 4,
@@ -526,8 +525,6 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       segment_url: null,
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 5,
@@ -540,8 +537,6 @@ test("renders gap-aware slots and allows manual jump to a later ready chunk with
       segment_url: "/api/jobs/job-1/chunks/5",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
   ];
 
@@ -632,8 +627,6 @@ test("stays in buffering mode when playback reaches the end of the current conti
       segment_url: "/api/jobs/job-1/chunks/0",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 1,
@@ -646,8 +639,6 @@ test("stays in buffering mode when playback reaches the end of the current conti
       segment_url: "/api/jobs/job-1/chunks/1",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 2,
@@ -660,8 +651,6 @@ test("stays in buffering mode when playback reaches the end of the current conti
       segment_url: "/api/jobs/job-1/chunks/2",
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
     {
       index: 3,
@@ -674,8 +663,6 @@ test("stays in buffering mode when playback reaches the end of the current conti
       segment_url: null,
       deprecated: false,
       reprocessing: false,
-      char_start: 0,
-      char_end: 0,
     },
   ];
 
@@ -752,4 +739,369 @@ test("stays in buffering mode when playback reaches the end of the current conti
   );
   expect(container.querySelector(".animate-spin")).toBeNull();
   expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+});
+
+describe("chunk versioning & reprocessing", () => {
+  test("shows version badges for chunk with multiple versions", async () => {
+    const multiVersionChunks: Chunk[] = [
+      {
+        index: 0,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 0,
+        plan_version: 1,
+        version: 0,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+        deprecated: true,
+        reprocessing: false,
+      },
+      {
+        index: 0,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 0,
+        plan_version: 2,
+        version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+        deprecated: false,
+        reprocessing: false,
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJobWithChunks(multiVersionChunks, "queued")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifestFromChunks(multiVersionChunks)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // Both version buttons (V0, V1) should appear in the Chunk status panel
+    await vi.waitFor(() => {
+      expect(screen.getByRole("button", { name: "V0" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "V1" })).toBeInTheDocument();
+    });
+  });
+
+  test("written chunk status shows emerald badge", async () => {
+    const chunks: Chunk[] = [
+      {
+        index: 0,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 0,
+        plan_version: 1,
+        version: 0,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+        deprecated: false,
+        reprocessing: false,
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJobWithChunks(chunks, "queued")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifestFromChunks(chunks)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // Find the status badge for the written chunk - uses bg-emerald-100
+    const statusBadges = container.querySelectorAll('[class*="rounded-full"]');
+    const writtenBadge = Array.from(statusBadges).find((badge) =>
+      badge.textContent?.includes("written"),
+    );
+    expect(writtenBadge).toBeDefined();
+    expect(writtenBadge?.className).toContain("bg-emerald-100");
+  });
+
+  test("chunks with max_retries_exceeded status are treated as failed", async () => {
+    const chunks: Chunk[] = [
+      {
+        index: 0,
+        status: "max_retries_exceeded",
+        duration_seconds: 0,
+        start_seconds: 0,
+        plan_version: 1,
+        version: 0,
+        voice_id: "suzy",
+        segment_url: null,
+        deprecated: false,
+        reprocessing: false,
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJobWithChunks(chunks, "queued")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifestFromChunks(chunks)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // max_retries_exceeded chunks should render as "failed" in the timeline
+    expect(screen.getByRole("button", { name: "Chunk 1 failed" })).toHaveAttribute(
+      "data-slot-state",
+      "failed",
+    );
+
+    // Status badge should use rose (rose-100) styling
+    const statusBadges = container.querySelectorAll('[class*="rounded-full"]');
+    const failedBadge = Array.from(statusBadges).find((badge) =>
+      badge.textContent?.includes("max_retries_exceeded"),
+    );
+    expect(failedBadge).toBeDefined();
+    expect(failedBadge?.className).toContain("bg-rose-100");
+  });
+
+  test("shows reprocessing indicator on reprocessing chunks", async () => {
+    const chunks: Chunk[] = [
+      {
+        index: 0,
+        status: "reprocessing",
+        duration_seconds: 4,
+        start_seconds: 0,
+        plan_version: 1,
+        version: 0,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+        deprecated: false,
+        reprocessing: true,
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJobWithChunks(chunks, "queued")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifestFromChunks(chunks)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // The reprocessing indicator text should appear
+    await vi.waitFor(() => {
+      expect(screen.getByText(/↻ reprocessing/)).toBeInTheDocument();
+    });
+
+    // The status badge should have amber styling
+    const statusBadges = container.querySelectorAll('[class*="rounded-full"]');
+    const reprocessingBadge = Array.from(statusBadges).find((badge) =>
+      badge.textContent?.includes("reprocessing"),
+    );
+    expect(reprocessingBadge).toBeDefined();
+    expect(reprocessingBadge?.className).toContain("bg-amber-100");
+  });
+
+  test("shows duration for written chunks in status list", async () => {
+    const chunks: Chunk[] = [
+      {
+        index: 0,
+        status: "written",
+        duration_seconds: 4.5,
+        start_seconds: 0,
+        plan_version: 1,
+        version: 0,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+        deprecated: false,
+        reprocessing: false,
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJobWithChunks(chunks, "queued")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifestFromChunks(chunks)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // Duration should be shown in the Chunk status panel
+    await waitFor(() =>
+      expect(screen.getByText("• 4.5s")).toBeInTheDocument(),
+    );
+  });
+
+  test("shows version badges in chunk status list", async () => {
+    const chunks: Chunk[] = [
+      {
+        index: 0,
+        status: "written",
+        duration_seconds: 4,
+        start_seconds: 0,
+        plan_version: 1,
+        version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/0",
+        deprecated: false,
+        reprocessing: false,
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJobWithChunks(chunks, "queued")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifestFromChunks(chunks)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // Version span "V1" should appear in the status list
+    await waitFor(() =>
+      expect(screen.queryAllByText("V1").length).toBeGreaterThan(0),
+    );
+  });
 });
