@@ -359,8 +359,42 @@ export function ReaderPage() {
   const [pendingAnchorSeekSeconds, setPendingAnchorSeekSeconds] = useState<number | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
-  // Versioning & reprocessing state
-  const [activeVersions, setActiveVersions] = useState<Map<number, number>>(new Map());
+  // Versioning & reprocessing state.
+  // activeVersions is derived from job.active_chunk_version, with frontend-
+  // advanced versions (from chunk_ready events) preserved.  This replaces the
+  // previous useState + useEffect approach to avoid a race condition where
+  // the effect would overwrite frontend-advanced versions.
+  const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
+  const [frontendVersionIncrements, setFrontendVersionIncrements] = useState<Map<number, number>>(new Map());
+  const activeVersions = useMemo(() => {
+    const versions = new Map<number, number>();
+    const av = job?.active_chunk_version;
+    if (av && Object.keys(av).length > 0) {
+      for (const [idxStr, ver] of Object.entries(av)) {
+        const idx = Number(idxStr);
+        const current = frontendVersionIncrements.get(idx);
+        // Only adopt the backend version if it matches or is ahead of what
+        // the frontend already knows.
+        if (current === undefined || ver >= current) {
+          versions.set(idx, ver);
+        } else {
+          versions.set(idx, current);
+        }
+      }
+    }
+    // Fill in any indices the backend doesn't know about (new reprocessing
+    // chunks that were just added but the backend hasn't broadcast the
+    // active_chunk_version for yet — fall back to derive).
+    for (const chunk of knownChunks) {
+      if (!versions.has(chunk.index)) {
+        const derived = deriveActiveVersions([chunk]);
+        for (const [idx, ver] of derived) {
+          versions.set(idx, ver);
+        }
+      }
+    }
+    return versions;
+  }, [job?.active_chunk_version, knownChunks, frontendVersionIncrements]);
   const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<number | null>(null);
@@ -377,30 +411,8 @@ export function ReaderPage() {
 
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
-  const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
 
-  // Sync activeVersions from job.active_chunk_version or derive from chunks
-  useEffect(() => {
-    if (!knownChunks.length) {
-      setActiveVersions(new Map());
-      return;
-    }
-    // Check if job has active_chunk_version (non-empty)
-    const versions = new Map<number, number>();
-    const av = job?.active_chunk_version;
-    if (av && Object.keys(av).length > 0) {
-      for (const [idx, ver] of Object.entries(av)) {
-        versions.set(Number(idx), ver);
-      }
-    } else {
-      // Derive from chunks (pick highest version per index)
-      const derived = deriveActiveVersions(knownChunks);
-      for (const [idx, ver] of derived) {
-        versions.set(idx, ver);
-      }
-    }
-    setActiveVersions(versions);
-  }, [knownChunks, job?.active_chunk_version]);
+
 
   useEffect(() => {
     if (knownChunks.length === 0) {
@@ -716,9 +728,9 @@ export function ReaderPage() {
     // Auto-switch to new version when chunk_ready arrives
     if (lastEvent.type === "chunk_ready" && "chunk_index" in payload) {
       const chunkIndex = payload.chunk_index as number;
-      setActiveVersions((prev) => {
+      setFrontendVersionIncrements((prev) => {
         const next = new Map(prev);
-        // The new version is now ready — set active version to the latest
+        // The new version is now ready — record the frontend-advanced version
         next.set(chunkIndex, (next.get(chunkIndex) ?? 0) + 1);
         return next;
       });

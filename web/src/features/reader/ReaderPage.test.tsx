@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
@@ -10,6 +10,8 @@ import type { Chunk } from "../../types/api";
 const originalFetch = global.fetch;
 
 afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   global.fetch = originalFetch;
 });
@@ -742,6 +744,10 @@ test("stays in buffering mode when playback reaches the end of the current conti
 });
 
 describe("chunk versioning & reprocessing", () => {
+  beforeEach(() => {
+    seedStore();
+  });
+
   test("shows version badges for chunk with multiple versions", async () => {
     const multiVersionChunks: Chunk[] = [
       {
