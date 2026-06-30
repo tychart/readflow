@@ -152,3 +152,6 @@ All of these are unaffected.
    - All subsequent chunks are ~700 chars
    - Batching groups chunks more effectively (no size-based separation)
    - Active listening still pre-buffers correctly
+
+
+Honnestly we dont' really even need a deprecated identifier, because maybe the user didn't like the latest item and they actually want to use v4 instead of v5 or something. Would you just be able to put in a "current" identifier that is set to indicate that that version of the chunk is the one that the user selected most recently? That way if they leave the interface and come back it remembers whichever was the latest chunk that the user had selected. Would this make sense? Are there any problems you forsee with this approach?

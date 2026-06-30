@@ -360,31 +360,24 @@ export function ReaderPage() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   // Versioning & reprocessing state.
-  // activeVersions is derived from job.active_chunk_version, with frontend-
-  // advanced versions (from chunk_ready events) preserved.  This replaces the
-  // previous useState + useEffect approach to avoid a race condition where
-  // the effect would overwrite frontend-advanced versions.
+  // activeVersions is derived from job.active_chunk_version — the backend is
+  // the single source of truth for which version is active.  When the user
+  // selects a different version via the dropdown the change goes through the
+  // backend API first, so the job state always reflects the latest selection.
+  // For indices the backend hasn't explicitly assigned an active version to
+  // yet (e.g. a fresh reprocessing chunk before the backend broadcasts the
+  // job state), we fall back to deriving the highest version from knownChunks.
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
-  const [frontendVersionIncrements, setFrontendVersionIncrements] = useState<Map<number, number>>(new Map());
   const activeVersions = useMemo(() => {
     const versions = new Map<number, number>();
     const av = job?.active_chunk_version;
     if (av && Object.keys(av).length > 0) {
       for (const [idxStr, ver] of Object.entries(av)) {
-        const idx = Number(idxStr);
-        const current = frontendVersionIncrements.get(idx);
-        // Only adopt the backend version if it matches or is ahead of what
-        // the frontend already knows.
-        if (current === undefined || ver >= current) {
-          versions.set(idx, ver);
-        } else {
-          versions.set(idx, current);
-        }
+        versions.set(Number(idxStr), ver);
       }
     }
-    // Fill in any indices the backend doesn't know about (new reprocessing
-    // chunks that were just added but the backend hasn't broadcast the
-    // active_chunk_version for yet — fall back to derive).
+    // Fill in any indices the backend doesn't know about — fall back to
+    // deriving the highest version from known chunks.
     for (const chunk of knownChunks) {
       if (!versions.has(chunk.index)) {
         const derived = deriveActiveVersions([chunk]);
@@ -394,7 +387,7 @@ export function ReaderPage() {
       }
     }
     return versions;
-  }, [job?.active_chunk_version, knownChunks, frontendVersionIncrements]);
+  }, [job?.active_chunk_version, knownChunks]);
   const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<number | null>(null);
@@ -724,17 +717,6 @@ export function ReaderPage() {
     setError(null);
     setLastRefreshAt(Date.now());
     setLastRefreshReason(`ws:${lastEvent.type}`);
-
-    // Auto-switch to new version when chunk_ready arrives
-    if (lastEvent.type === "chunk_ready" && "chunk_index" in payload) {
-      const chunkIndex = payload.chunk_index as number;
-      setFrontendVersionIncrements((prev) => {
-        const next = new Map(prev);
-        // The new version is now ready — record the frontend-advanced version
-        next.set(chunkIndex, (next.get(chunkIndex) ?? 0) + 1);
-        return next;
-      });
-    }
 
     if (
       lastEvent.type === "chunk_ready" &&
@@ -1401,7 +1383,7 @@ export function ReaderPage() {
                           onChange={(e) => handleVersionChange(chunk.index, Number(e.target.value))}
                         >
                           {allVersions.map((v) => (
-                            <option key={v.version} value={v.version} disabled={v.deprecated}>
+                            <option key={v.version} value={v.version}>
                               V{v.version} {v.status === "written" ? "✓" : v.status}
                             </option>
                           ))}
@@ -1649,7 +1631,7 @@ export function ReaderPage() {
                                 : "text-stone-600 hover:bg-stone-100"
                           }`}
                           onClick={() => handleVersionChange(chunk.index, v.version)}
-                          disabled={v.deprecated}
+
                         >
                           V{v.version}
                         </button>
