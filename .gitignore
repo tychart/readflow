@@ -17,3 +17,5 @@ web/coverage/
 tmp/
 
 web/tsconfig.node.tsbuildinfo
+
+plans/
