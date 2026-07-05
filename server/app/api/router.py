@@ -14,6 +14,7 @@ from app.jobs.models import ChunkStatus, Job, JobStatus
 from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
+    AdminMemoryStats,
     AdminStateResponse,
     ChunkReprocessRequest,
     ChunkVersionRequest,
@@ -384,8 +385,23 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             queue_depth=app_services.job_manager.queue_depth(),
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
         )
+        try:
+            mem_raw = await app_services.model_manager.memory_stats()
+            memory = AdminMemoryStats(
+                device=mem_raw[0],
+                vram_total_mb=mem_raw[1],
+                vram_used_mb=mem_raw[2],
+                vram_free_mb=mem_raw[3],
+                ram_total_mb=mem_raw[4],
+                ram_free_mb=mem_raw[5],
+            )
+        except Exception:
+            memory = None
         return AdminStateResponse(
-            config=config, scheduler=scheduler, telemetry=app_services.telemetry.snapshot()
+            config=config,
+            scheduler=scheduler,
+            telemetry=app_services.telemetry.snapshot(),
+            memory=memory,
         )
 
     @router.post("/admin/model/warm", response_model=dict[str, str])

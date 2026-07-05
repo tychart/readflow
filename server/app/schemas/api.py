@@ -104,10 +104,20 @@ class SchedulerStateResponse(BaseModel):
     batch_candidates: list[int]
 
 
+class AdminMemoryStats(BaseModel):
+    device: str
+    vram_total_mb: int
+    vram_used_mb: int
+    vram_free_mb: int
+    ram_total_mb: int
+    ram_free_mb: int
+
+
 class AdminStateResponse(BaseModel):
     config: AdminConfigResponse
     scheduler: SchedulerStateResponse
     telemetry: dict[str, object]
+    memory: AdminMemoryStats | None = None
 
 
 class WsEnvelope(BaseModel):

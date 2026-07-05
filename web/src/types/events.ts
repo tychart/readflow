@@ -41,10 +41,20 @@ export type TelemetrySnapshot = {
 
 export type AdminStateTelemetry = TelemetrySnapshot;
 
+export type AdminMemoryStats = {
+  device: string;
+  vram_total_mb: number;
+  vram_used_mb: number;
+  vram_free_mb: number;
+  ram_total_mb: number;
+  ram_free_mb: number;
+};
+
 export type AdminState = {
   config: AdminConfig;
   scheduler: SchedulerState;
   telemetry: TelemetrySnapshot | null;
+  memory: AdminMemoryStats | null;
 };
 
 export type WsEnvelope =

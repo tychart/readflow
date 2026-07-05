@@ -31,7 +31,7 @@ class SynthesisProvider(Protocol):
     async def synthesize_batch(
         self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
     ) -> list[RawSynthesisResult]: ...
-    async def memory_stats(self) -> tuple[int, int]: ...
+    async def memory_stats(self) -> tuple[str, int, int, int, int, int]: ...
 
 
 class FakeQwenProvider:
@@ -71,10 +71,13 @@ class FakeQwenProvider:
             for chunk in chunks
         ]
 
-    async def memory_stats(self) -> tuple[int, int]:
+    async def memory_stats(self) -> tuple[str, int, int, int, int, int]:
+        import psutil
+
         if not self._loaded:
-            return (0, 0)
-        return (3100, 2500)
+            mem = psutil.virtual_memory()
+            return ("unloaded", 0, 0, 0, mem.total, mem.used)
+        return ("cuda", 3100, 2500, 3100 - 2500, 16384, 10240)
 
     def _build_wave_bytes(self, seed: int, text: str) -> bytes:
         import math
@@ -305,25 +308,39 @@ class QwenProvider:
             )
         return self._prompt_cache[prompt.voice_id]
 
-    def _memory_stats_sync(self) -> tuple[int, int]:
-        torch, _qwen_model_class = _import_qwen_runtime()
-        if self._model is None:
-            return (0, 0)
-        device = self._resolve_device()
-        if device.startswith("cuda") and torch.cuda.is_available():
-            return (
-                _mb_from_bytes(torch.cuda.memory_reserved()),
-                _mb_from_bytes(torch.cuda.memory_allocated()),
-            )
-        # CPU path — use psutil for process memory
-        try:
-            import psutil
+    def _memory_stats_sync(self) -> tuple[str, int, int, int, int, int]:
+        import psutil
 
+        torch, _qwen_model_class = _import_qwen_runtime()
+        device = self._resolve_device()
+        is_cuda = device.startswith("cuda") and torch.cuda.is_available()
+
+        # VRAM stats
+        vram_total = 0
+        vram_used = 0
+        if is_cuda and self._model is not None:
+            vram_used = _mb_from_bytes(torch.cuda.memory_allocated())
+            vram_total = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+        elif not is_cuda and self._model is not None:
+            # Running on CPU — report process RSS as "used" for reference
             proc = psutil.Process()
-            mem = proc.memory_info()
-            return (_mb_from_bytes(mem.rss), _mb_from_bytes(mem.rss))
-        except ImportError:
-            return (0, 0)
+            vram_used = _mb_from_bytes(proc.memory_info().rss)
+            vram_total = vram_used
+
+        # System RAM stats
+        sys_mem = psutil.virtual_memory()
+        ram_total = sys_mem.total // (1024 * 1024)
+        ram_free = sys_mem.available // (1024 * 1024)
+
+        # Device label
+        if not self._model:
+            device_label = "unloaded"
+        elif is_cuda:
+            device_label = "cuda"
+        else:
+            device_label = "cpu"
+
+        return (device_label, vram_total, vram_used, vram_total - vram_used, ram_total, ram_free)
 
     def _clear_cuda_after_failure_sync(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

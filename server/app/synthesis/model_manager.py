@@ -68,7 +68,7 @@ class ModelManager:
         if monotonic() >= deadline and self._state != ModelState.BUSY:
             await self.unload()
 
-    async def memory_stats(self) -> tuple[int, int]:
+    async def memory_stats(self) -> tuple[str, int, int, int, int, int]:
         return await self._provider.memory_stats()
 
     def _touch(self) -> None:

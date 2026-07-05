@@ -119,8 +119,10 @@ class SchedulerService:
             )
             grouped[key].append(chunk)
         (model_id, _language, _voice_id), chunks = next(iter(grouped.items()))
-        reserved_vram, _allocated = await self._model_manager.memory_stats()
-        batch_size = self._choose_batch_size(len(chunks), reserved_vram)
+        _device, vram_total, vram_used, _vram_free, _ram_total, _ram_free = (
+            await self._model_manager.memory_stats()
+        )
+        batch_size = self._choose_batch_size(len(chunks), vram_used, vram_total)
         batch = chunks[:batch_size]
         for chunk in batch:
             self._job_manager.mark_chunk_queued(chunk)
@@ -154,9 +156,9 @@ class SchedulerService:
 
 
 
-    def _choose_batch_size(self, available: int, reserved_vram_mb: int) -> int:
+    def _choose_batch_size(self, available: int, vram_used_mb: int, vram_total_mb: int) -> int:
         candidates = list(self._config.batch_candidates_small_model)
-        if reserved_vram_mb >= self._config.vram_soft_limit_mb:
+        if vram_total_mb > 0 and vram_used_mb / vram_total_mb >= 0.8:
             candidates = [size for size in candidates if size <= 3] or [1]
         for size in candidates:
             if available >= size:
