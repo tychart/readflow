@@ -18,6 +18,8 @@ class ChunkResponse(BaseModel):
     segment_url: str | None
     deprecated: bool = False
     reprocessing: bool = False
+    char_start: int = 0
+    char_end: int = 0
 
 
 class JobSummaryResponse(BaseModel):
@@ -135,6 +137,8 @@ def chunk_to_response(job: Job, chunk: ChunkRecord) -> ChunkResponse:
         segment_url=segment_url,
         deprecated=chunk.deprecated,
         reprocessing=chunk.reprocessing,
+        char_start=chunk.char_start,
+        char_end=chunk.char_end,
     )
 
 

@@ -19,6 +19,8 @@ export interface Chunk {
   segment_url: string | null;
   deprecated: boolean;
   reprocessing: boolean;
+  char_start: number;
+  char_end: number;
 }
 
 export interface JobSummary {
