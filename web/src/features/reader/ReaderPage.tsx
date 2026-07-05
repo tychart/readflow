@@ -199,10 +199,29 @@ function statusTone(
 }
 
 /**
+ * Mirrors the backend ChunkPlanner.normalize_text() so that
+ * char_start/char_end indices (which were computed against the
+ * normalized text) map to the correct positions in the source.
+ */
+function normalizeText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
  * Extracts the text for a chunk from the job source text.
+ * Normalizes the source first so that character boundaries
+ * (computed by the backend against normalized text) map
+ * to the correct positions and produce the same content
+ * that the backend stored as chunk.text.
  */
 function getChunkText(chunk: Chunk, sourceText: string): string {
-  return sourceText.slice(chunk.char_start, chunk.char_end);
+  const normalized = normalizeText(sourceText);
+  return normalized.slice(chunk.char_start, chunk.char_end).trim();
 }
 
 /**

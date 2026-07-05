@@ -392,3 +392,102 @@ describe("buildReaderJob with versioning fields", () => {
     expect(job.total_versioned_completed).toBe(1);
   });
 });
+
+/**
+ * Tests for normalizeText and getChunkText — the functions that ensure
+ * char_start/char_end indices (computed by the backend against normalized
+ * text) map to the correct positions in the source.
+ */
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function getChunkText(
+  chunk: { char_start: number; char_end: number },
+  sourceText: string,
+): string {
+  const normalized = normalizeText(sourceText);
+  return normalized.slice(chunk.char_start, chunk.char_end).trim();
+}
+
+describe("normalizeText", () => {
+  test("converts \\r\\n to \\n", () => {
+    expect(normalizeText("line1\r\nline2\r\nline3")).toBe("line1\nline2\nline3");
+  });
+
+  test("converts standalone \\r to \\n", () => {
+    expect(normalizeText("line1\rline2")).toBe("line1\nline2");
+  });
+
+  test("collapses multiple spaces to single space", () => {
+    expect(normalizeText("hello   world")).toBe("hello world");
+  });
+
+  test("collapses tabs to single space", () => {
+    expect(normalizeText("hello\t\tworld")).toBe("hello world");
+  });
+
+  test("collapses mixed whitespace", () => {
+    // \t -> space, but \n remains (handled by separate rule)
+    expect(normalizeText("hello \t \n world")).toBe("hello \n world");
+  });
+
+  test("collapses triple+ newlines to double", () => {
+    expect(normalizeText("para1\n\n\n\npara2")).toBe("para1\n\npara2");
+  });
+
+  test("trims leading and trailing whitespace", () => {
+    expect(normalizeText("  hello  ")).toBe("hello");
+  });
+});
+
+describe("getChunkText", () => {
+  test("returns correct text for simple ASCII source", () => {
+    const source = "Chunk one text. Chunk two text.";
+    // "Chunk two text." starts at index 16 (after "Chunk one text. ")
+    const chunk = { char_start: 16, char_end: 31 };
+    expect(getChunkText(chunk, source)).toBe("Chunk two text.");
+  });
+
+  test("handles \\r\\n by normalizing before slicing", () => {
+    // Source has \r\n which shortens the normalized version by 1 char
+    const source = "Hello\r\nWorld. Foo bar.";
+    // Normalized: "Hello\nWorld. Foo bar." (length 21 vs source 22)
+    // In normalized text, "Foo bar." starts at index 13
+    const chunk = { char_start: 13, char_end: 21 };
+    const extracted = getChunkText(chunk, source);
+    // Should return the text at the normalized boundary, not the wrong position
+    // in the raw source
+    expect(extracted).toBe("Foo bar.");
+  });
+
+  test("handles \\r\n spanning a chunk boundary", () => {
+    const source = "Paragraph one.\r\n\r\nParagraph two.";
+    // Normalized: "Paragraph one.\n\nParagraph two." (length 30 vs source 32)
+    // "Paragraph two." starts at index 16 in normalized text
+    const chunk = { char_start: 16, char_end: 30 };
+    expect(getChunkText(chunk, source)).toBe("Paragraph two.");
+  });
+
+  test("collapses multiple spaces correctly across boundary", () => {
+    const source = "Hello.   World. More text here for testing purposes.";
+    // Normalized: "Hello. World. More text here for testing purposes." (50 vs 52)
+    // "World." starts at index 7; "World. More text here for testing" ends at index 40
+    const chunk = { char_start: 7, char_end: 40 };
+    expect(getChunkText(chunk, source)).toBe("World. More text here for testing");
+  });
+
+  test("strips leading and trailing whitespace from extracted text", () => {
+    const source = "Hello. World. More text.";
+    // char_start points to space before "World"
+    // char_end points past period of "World."
+    const chunk = { char_start: 6, char_end: 13 };
+    expect(getChunkText(chunk, source)).toBe("World.");
+  });
+});
