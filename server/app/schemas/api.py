@@ -111,6 +111,7 @@ class AdminMemoryStats(BaseModel):
     vram_free_mb: int
     ram_total_mb: int
     ram_free_mb: int
+    ram_used_mb: int
 
 
 class AdminStateResponse(BaseModel):

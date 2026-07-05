@@ -31,7 +31,7 @@ class SynthesisProvider(Protocol):
     async def synthesize_batch(
         self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
     ) -> list[RawSynthesisResult]: ...
-    async def memory_stats(self) -> tuple[str, int, int, int, int, int]: ...
+    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int]: ...
 
 
 class FakeQwenProvider:
@@ -71,13 +71,15 @@ class FakeQwenProvider:
             for chunk in chunks
         ]
 
-    async def memory_stats(self) -> tuple[str, int, int, int, int, int]:
+    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int]:
         import psutil
 
+        proc = psutil.Process()
+        ram_used = _mb_from_bytes(proc.memory_info().rss)
+        mem = psutil.virtual_memory()
         if not self._loaded:
-            mem = psutil.virtual_memory()
-            return ("unloaded", 0, 0, 0, mem.total, mem.used)
-        return ("cuda", 3100, 2500, 3100 - 2500, 16384, 10240)
+            return ("unloaded", 0, 0, 0, mem.total, mem.used, ram_used)
+        return ("cuda", 3100, 2500, 3100 - 2500, 16384, 10240, ram_used)
 
     def _build_wave_bytes(self, seed: int, text: str) -> bytes:
         import math
@@ -308,39 +310,35 @@ class QwenProvider:
             )
         return self._prompt_cache[prompt.voice_id]
 
-    def _memory_stats_sync(self) -> tuple[str, int, int, int, int, int]:
+    def _memory_stats_sync(self) -> tuple[str, int, int, int, int, int, int]:
         import psutil
 
         torch, _qwen_model_class = _import_qwen_runtime()
-        device = self._resolve_device()
-        is_cuda = device.startswith("cuda") and torch.cuda.is_available()
 
-        # VRAM stats
-        vram_total = 0
-        vram_used = 0
-        if is_cuda and self._model is not None:
-            vram_used = _mb_from_bytes(torch.cuda.memory_allocated())
-            vram_total = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
-        elif not is_cuda and self._model is not None:
-            # Running on CPU — report process RSS as "used" for reference
-            proc = psutil.Process()
-            vram_used = _mb_from_bytes(proc.memory_info().rss)
-            vram_total = vram_used
-
-        # System RAM stats
+        # System RAM stats (always available)
         sys_mem = psutil.virtual_memory()
         ram_total = sys_mem.total // (1024 * 1024)
         ram_free = sys_mem.available // (1024 * 1024)
 
-        # Device label
-        if not self._model:
-            device_label = "unloaded"
-        elif is_cuda:
-            device_label = "cuda"
-        else:
-            device_label = "cpu"
+        # Process memory usage
+        proc = psutil.Process()
+        ram_used = _mb_from_bytes(proc.memory_info().rss)
 
-        return (device_label, vram_total, vram_used, vram_total - vram_used, ram_total, ram_free)
+        # No model loaded — return zeros for VRAM
+        if not self._model:
+            return ("unloaded", 0, 0, 0, ram_total, ram_free, ram_used)
+
+        # Directly check CUDA memory — don't re-resolve device.
+        # _resolve_device() checks for 2 GB *free* VRAM before returning "cuda:0",
+        # which is wrong here: we want stats regardless of how full the GPU is.
+        if torch.cuda.is_available():
+            vram_used = _mb_from_bytes(torch.cuda.memory_allocated(0))
+            vram_total = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+            vram_free = vram_total - vram_used
+            return ("cuda", vram_total, vram_used, vram_free, ram_total, ram_free, ram_used)
+
+        # Pure CPU — report process RSS as memory usage
+        return ("cpu", 0, 0, 0, ram_total, ram_free, ram_used)
 
     def _clear_cuda_after_failure_sync(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

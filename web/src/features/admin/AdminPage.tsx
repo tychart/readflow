@@ -200,10 +200,27 @@ export function AdminPage() {
                 <div className="rounded-3xl bg-white/70 p-5">
                   <div className="text-sm uppercase tracking-[0.2em] text-stone-600">System RAM</div>
                   <div className="mt-2 text-4xl font-semibold">
-                    {adminState.memory.ram_free_mb} MB free
+                    {adminState.memory.ram_used_mb} MB
                   </div>
                   <div className="text-xs text-stone-500">
+                    {adminState.memory.ram_free_mb} MB free of{" "}
                     {adminState.memory.ram_total_mb} MB total
+                  </div>
+                  <div className="mt-3 h-3 w-full rounded-full bg-stone-200">
+                    <div
+                      className="h-3 rounded-full bg-[var(--accent)]"
+                      style={{
+                        width: `${
+                          adminState.memory.ram_total_mb
+                            ? Math.round(
+                                (adminState.memory.ram_used_mb /
+                                  adminState.memory.ram_total_mb) *
+                                  100,
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    />
                   </div>
                 </div>
                 <div className="rounded-3xl bg-white/70 p-5">

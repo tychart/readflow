@@ -48,6 +48,7 @@ export type AdminMemoryStats = {
   vram_free_mb: number;
   ram_total_mb: number;
   ram_free_mb: number;
+  ram_used_mb: number;
 };
 
 export type AdminState = {

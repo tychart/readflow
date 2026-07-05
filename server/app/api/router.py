@@ -394,6 +394,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                 vram_free_mb=mem_raw[3],
                 ram_total_mb=mem_raw[4],
                 ram_free_mb=mem_raw[5],
+                ram_used_mb=mem_raw[6],
             )
         except Exception:
             memory = None

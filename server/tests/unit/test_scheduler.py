@@ -44,7 +44,7 @@ def test_scheduler_reduces_batch_size_when_memory_is_high(services):
     services.settings.runtime.vram_soft_limit_mb = 1
 
     async def fake_memory_stats():
-        return ("cuda", 5000, 4200, 800, 32000, 16000)
+        return ("cuda", 5000, 4200, 800, 32000, 16000, 4096)
 
     services.model_manager.memory_stats = fake_memory_stats
 
