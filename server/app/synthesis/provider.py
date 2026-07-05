@@ -31,7 +31,7 @@ class SynthesisProvider(Protocol):
     async def synthesize_batch(
         self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
     ) -> list[RawSynthesisResult]: ...
-    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int]: ...
+    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, str]: ...
 
 
 class FakeQwenProvider:
@@ -71,15 +71,8 @@ class FakeQwenProvider:
             for chunk in chunks
         ]
 
-    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int]:
-        import psutil
-
-        proc = psutil.Process()
-        ram_used = _mb_from_bytes(proc.memory_info().rss)
-        mem = psutil.virtual_memory()
-        if not self._loaded:
-            return ("unloaded", 0, 0, 0, mem.total, mem.used, ram_used)
-        return ("cuda", 3100, 2500, 3100 - 2500, 16384, 10240, ram_used)
+    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, str]:
+        return (True, 3100, 2500, 600, 16384, 10240, 4096, "cuda")
 
     def _build_wave_bytes(self, seed: int, text: str) -> bytes:
         import math
@@ -114,6 +107,7 @@ class QwenProvider:
         self._loaded_model_id: str | None = None
         self._prompt_cache: dict[str, Any] = {}
         self._attn_implementation: str | None = None  # resolved once at load time
+        self._resolved_device: str = "cpu"  # tracks actual device used at load time
 
     def _resolve_attn_implementation(self) -> str:
         """Decide which attention implementation to use.
@@ -211,7 +205,7 @@ class QwenProvider:
         """Return the attention implementation this provider is using."""
         return self._resolve_attn_implementation()
 
-    async def memory_stats(self) -> tuple[int, int]:
+    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, str]:
         return await self._call_in_worker(self._memory_stats_sync)
 
     async def _call_in_worker(self, callback, *args):
@@ -238,12 +232,14 @@ class QwenProvider:
         device = self._resolve_device()
         try:
             _do_load(device)
+            self._resolved_device = device
         except RuntimeError as exc:
             # Safety net: if "auto" picked CUDA but VRAM was insufficient
             # at load time, fall back to CPU.
             if self._device == "auto" and "out of memory" in str(exc).lower():
                 device = "cpu"
                 _do_load(device)
+                self._resolved_device = device
                 return
             raise
 
@@ -310,7 +306,7 @@ class QwenProvider:
             )
         return self._prompt_cache[prompt.voice_id]
 
-    def _memory_stats_sync(self) -> tuple[str, int, int, int, int, int, int]:
+    def _memory_stats_sync(self) -> tuple[bool, int, int, int, int, int, int, str]:
         import psutil
 
         torch, _qwen_model_class = _import_qwen_runtime()
@@ -324,21 +320,21 @@ class QwenProvider:
         proc = psutil.Process()
         ram_used = _mb_from_bytes(proc.memory_info().rss)
 
-        # No model loaded — return zeros for VRAM
-        if not self._model:
-            return ("unloaded", 0, 0, 0, ram_total, ram_free, ram_used)
-
-        # Directly check CUDA memory — don't re-resolve device.
-        # _resolve_device() checks for 2 GB *free* VRAM before returning "cuda:0",
-        # which is wrong here: we want stats regardless of how full the GPU is.
-        if torch.cuda.is_available():
+        # VRAM stats — report only when the model is actually running on CUDA.
+        # _resolved_device tracks the actual device used at load time so we
+        # don't misreport VRAM when "auto" picked CPU.
+        is_cuda = self._resolved_device.startswith("cuda")
+        if is_cuda and torch.cuda.is_available():
             vram_used = _mb_from_bytes(torch.cuda.memory_allocated(0))
             vram_total = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
             vram_free = vram_total - vram_used
-            return ("cuda", vram_total, vram_used, vram_free, ram_total, ram_free, ram_used)
+            return (
+                is_cuda, vram_total, vram_used, vram_free,
+                ram_total, ram_free, ram_used, self._resolved_device,
+            )
 
-        # Pure CPU — report process RSS as memory usage
-        return ("cpu", 0, 0, 0, ram_total, ram_free, ram_used)
+        # No CUDA or model not on GPU
+        return (False, 0, 0, 0, ram_total, ram_free, ram_used, self._resolved_device,)
 
     def _clear_cuda_after_failure_sync(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

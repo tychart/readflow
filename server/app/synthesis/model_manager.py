@@ -68,8 +68,23 @@ class ModelManager:
         if monotonic() >= deadline and self._state != ModelState.BUSY:
             await self.unload()
 
-    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int]:
-        return await self._provider.memory_stats()
+    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int, str]:
+        stats = await self._provider.memory_stats()
+        _is_cuda, vram_total, vram_used = stats[0], stats[1], stats[2]
+        vram_free, ram_total, ram_free = stats[3], stats[4], stats[5]
+        ram_used, resolved_device = stats[6], stats[7]
+        # Use the resolved device from the provider when the model is loaded.
+        # During loading/evicting transitions, use the state label.
+        if self._state in {ModelState.LOADING, ModelState.EVICTING}:
+            device = self._state
+        elif self._state in {ModelState.WARM_IDLE, ModelState.BUSY} and self._loaded_model_id:
+            device = resolved_device
+        else:
+            device = "unloaded"
+        return (
+            device, vram_total, vram_used, vram_free,
+            ram_total, ram_free, ram_used, resolved_device,
+        )
 
     def _touch(self) -> None:
         self._last_used_at = monotonic()

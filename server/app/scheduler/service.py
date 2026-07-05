@@ -119,9 +119,10 @@ class SchedulerService:
             )
             grouped[key].append(chunk)
         (model_id, _language, _voice_id), chunks = next(iter(grouped.items()))
-        _device, vram_total, vram_used, _vram_free, _ram_total, _ram_free, _ram_used = (
-            await self._model_manager.memory_stats()
-        )
+        stats = await self._model_manager.memory_stats()
+        _device, vram_total, vram_used = stats[0], stats[1], stats[2]
+        _vram_free, _ram_total, _ram_free = stats[3], stats[4], stats[5]
+        _ram_used, _resolved_device = stats[6], stats[7]
         batch_size = self._choose_batch_size(len(chunks), vram_used, vram_total)
         batch = chunks[:batch_size]
         for chunk in batch:
