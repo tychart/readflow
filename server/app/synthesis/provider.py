@@ -97,8 +97,13 @@ class FakeQwenProvider:
 
 
 class QwenProvider:
-    def __init__(self, default_language: str = "English") -> None:
+    def __init__(
+        self,
+        default_language: str = "English",
+        device: str = "auto",
+    ) -> None:
         self._default_language = default_language
+        self._device = device
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readflow-qwen")
         self._model: Any | None = None
         self._loaded_model_id: str | None = None
@@ -125,11 +130,36 @@ class QwenProvider:
 
     def validate_environment(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()
-        if not torch.cuda.is_available():
+        if self._device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(
-                "READFLOW_TTS_PROVIDER is set to 'qwen', but CUDA is not available. "
-                "Use a CUDA-enabled machine or set READFLOW_TTS_PROVIDER=fake for mocked runs."
+                "READFLOW_TTS_PROVIDER is set to 'qwen' with device='cuda', "
+                "but CUDA is not available. Set device='auto' or 'cpu' instead."
             )
+        if self._device == "cpu":
+            return  # CPU is always available if torch is installed
+
+    def _resolve_device(self) -> str:
+        """Resolve the device string based on the configured device mode.
+
+        "auto" — use CUDA when available, fall back to CPU.
+        "cuda" — require CUDA (caller already validated in validate_environment).
+        "cpu" — force CPU regardless of GPU availability.
+        """
+        torch, _qwen_model_class = _import_qwen_runtime()
+        if self._device == "cpu":
+            return "cpu"
+        if self._device == "cuda":
+            if torch.cuda.is_available():
+                return "cuda:0"
+            return "cpu"
+        # auto — prefer GPU if there's enough VRAM, fall back to CPU
+        if torch.cuda.is_available():
+            total = torch.cuda.get_device_properties(0).total_memory
+            used = torch.cuda.memory_allocated(0)
+            free_mb = (total - used) / (1024 * 1024)
+            if free_mb >= 2048:  # at least 2 GB free is required
+                return "cuda:0"
+        return "cpu"
 
     async def load_model(self, model_id: str) -> None:
         if self._loaded_model_id == model_id and self._model is not None:
@@ -189,14 +219,28 @@ class QwenProvider:
             return
         if self._model is not None:
             self._unload_model_sync()
-        self._model = qwen_model_class.from_pretrained(
-            model_id,
-            device_map="cuda:0",
-            dtype=torch.bfloat16,
-            attn_implementation=self._resolve_attn_implementation(),
-        )
-        self._loaded_model_id = model_id
-        self._prompt_cache = {}
+
+        def _do_load(device: str) -> None:
+            self._model = qwen_model_class.from_pretrained(
+                model_id,
+                device_map=device,
+                dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
+                attn_implementation=self._resolve_attn_implementation(),
+            )
+            self._loaded_model_id = model_id
+            self._prompt_cache = {}
+
+        device = self._resolve_device()
+        try:
+            _do_load(device)
+        except RuntimeError as exc:
+            # Safety net: if "auto" picked CUDA but VRAM was insufficient
+            # at load time, fall back to CPU.
+            if self._device == "auto" and "out of memory" in str(exc).lower():
+                device = "cpu"
+                _do_load(device)
+                return
+            raise
 
     def _unload_model_sync(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()
@@ -263,12 +307,23 @@ class QwenProvider:
 
     def _memory_stats_sync(self) -> tuple[int, int]:
         torch, _qwen_model_class = _import_qwen_runtime()
-        if self._model is None or not torch.cuda.is_available():
+        if self._model is None:
             return (0, 0)
-        return (
-            _mb_from_bytes(torch.cuda.memory_reserved()),
-            _mb_from_bytes(torch.cuda.memory_allocated()),
-        )
+        device = self._resolve_device()
+        if device.startswith("cuda") and torch.cuda.is_available():
+            return (
+                _mb_from_bytes(torch.cuda.memory_reserved()),
+                _mb_from_bytes(torch.cuda.memory_allocated()),
+            )
+        # CPU path — use psutil for process memory
+        try:
+            import psutil
+
+            proc = psutil.Process()
+            mem = proc.memory_info()
+            return (_mb_from_bytes(mem.rss), _mb_from_bytes(mem.rss))
+        except ImportError:
+            return (0, 0)
 
     def _clear_cuda_after_failure_sync(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

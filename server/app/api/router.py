@@ -46,6 +46,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     def admin_config_response(app_services: AppServices) -> AdminConfigResponse:
         runtime = app_services.settings.runtime
         return AdminConfigResponse(
+            device=runtime.device,
             idle_unload_seconds=runtime.idle_unload_seconds,
             max_prebuffer_seconds=runtime.max_prebuffer_seconds,
             target_buffer_seconds=runtime.target_buffer_seconds,

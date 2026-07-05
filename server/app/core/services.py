@@ -41,7 +41,10 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
     provider: SynthesisProvider = (
         FakeQwenProvider()
         if settings.tts_provider == "fake"
-        else QwenProvider(default_language=settings.runtime.default_language)
+        else QwenProvider(
+            default_language=settings.runtime.default_language,
+            device=settings.runtime.device,
+        )
     )
     provider.validate_environment()
     hub = WebSocketHub()

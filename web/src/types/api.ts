@@ -57,6 +57,7 @@ export interface Voice {
 }
 
 export interface AdminConfig {
+  device: string;
   idle_unload_seconds: number;
   max_prebuffer_seconds: number;
   target_buffer_seconds: number;

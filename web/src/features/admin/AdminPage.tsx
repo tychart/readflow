@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
@@ -10,12 +10,17 @@ const NUMBER_INPUT_PROPS = {
   mode: "uncontrolled" as const,
 } as const;
 
+const SELECT_INPUT_PROPS = {
+  className: "mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3",
+} as const;
+
 export function AdminPage() {
   useAppBootstrap(true);
 
   const adminState = useAppStore((state) => state.adminState);
   const setAdminState = useAppStore((state) => state.setAdminState);
   const [formState, setFormState] = useState<AdminConfig | null>(null);
+  const hasInitialized = useRef(false);
 
   useEffect(() => {
     if (adminState) {
@@ -26,9 +31,16 @@ export function AdminPage() {
     });
   }, [adminState, setAdminState]);
 
+  // Initialize formState once from adminState.config — don't re-sync on every
+  // adminState change because WebSocket events (telemetry, model_state, etc.)
+  // create new adminState references that would overwrite unsaved local edits.
   useEffect(() => {
-    if (adminState) {
-      setFormState(adminState.config);
+    if (adminState && adminState.config && !hasInitialized.current) {
+      hasInitialized.current = true;
+      setFormState({
+        ...adminState.config,
+        device: adminState.config.device ?? "auto",
+      });
     }
   }, [adminState]);
 
@@ -40,6 +52,7 @@ export function AdminPage() {
     event.preventDefault();
     try {
       const nextConfig = await api.updateAdminConfig(formState);
+      setFormState(nextConfig);
       setAdminState({ ...adminState, config: nextConfig });
     } catch (error) {
       console.error("Failed to update config:", error);
@@ -58,6 +71,25 @@ export function AdminPage() {
           <h1 className="display-font text-4xl">Warmth and flow control</h1>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
+          <label className="text-sm font-medium">
+            Device
+            <select
+              {...SELECT_INPUT_PROPS}
+              value={formState.device}
+              onChange={(event) =>
+                setFormState({ ...formState, device: event.target.value })
+              }
+            >
+              <option value="auto">Auto (GPU when available)</option>
+              <option value="cuda">GPU (CUDA only)</option>
+              <option value="cpu">CPU (fallback)</option>
+            </select>
+            <span className="mt-1 block text-xs text-stone-500">
+              {formState.device === "auto" && "Uses GPU if CUDA is available, otherwise falls back to CPU."}
+              {formState.device === "cuda" && "Forces CUDA. Will fail if no GPU is present."}
+              {formState.device === "cpu" && "Forces CPU. Slower but uses no VRAM."}
+            </span>
+          </label>
           <label className="text-sm font-medium">
             Idle unload seconds
             <input

@@ -78,6 +78,7 @@ class PlaybackUpdateRequest(BaseModel):
 
 
 class AdminConfigResponse(BaseModel):
+    device: str
     idle_unload_seconds: int
     max_prebuffer_seconds: int
     target_buffer_seconds: int
@@ -88,6 +89,7 @@ class AdminConfigResponse(BaseModel):
 
 
 class AdminConfigUpdateRequest(BaseModel):
+    device: str | None = None
     idle_unload_seconds: int | None = None
     max_prebuffer_seconds: int | None = None
     target_buffer_seconds: int | None = None

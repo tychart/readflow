@@ -8,6 +8,10 @@ from app.synthesis.provider import QwenProvider
 from app.voices.registry import VoicePrompt
 
 
+class _FakeCudaDeviceProperties:
+    total_memory = 11 * 1024 * 1024 * 1024  # 11 GB
+
+
 class _FakeCuda:
     @staticmethod
     def is_available() -> bool:
@@ -30,12 +34,16 @@ class _FakeCuda:
         return 256 * 1024 * 1024
 
     @staticmethod
-    def memory_allocated() -> int:
+    def memory_allocated(device: int | None = None) -> int:
         return 64 * 1024 * 1024
 
     @staticmethod
-    def memory_reserved() -> int:
+    def memory_reserved(device: int | None = None) -> int:
         return 96 * 1024 * 1024
+
+    @staticmethod
+    def get_device_properties(device: int) -> _FakeCudaDeviceProperties:
+        return _FakeCudaDeviceProperties()
 
     @staticmethod
     def empty_cache() -> None:
