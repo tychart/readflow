@@ -14,6 +14,29 @@ const SELECT_INPUT_PROPS = {
   className: "mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3",
 } as const;
 
+type ModelAction = "idle" | "warm" | "evict";
+
+const MODEL_STATE_LABELS: Record<string, string> = {
+  unloaded: "Unloaded",
+  loading: "Loading…",
+  warm_idle: "Warm (idle)",
+  busy: "Busy",
+  evicting: "Evicting…",
+  not_enough_vram: "Insufficient VRAM",
+};
+
+const MODEL_STATE_COLORS: Record<
+  string,
+  { bg: string; text: string; dot: string; pulse?: boolean }
+> = {
+  unloaded: { bg: "bg-stone-100", text: "text-stone-600", dot: "bg-stone-400" },
+  loading: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", pulse: true },
+  warm_idle: { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500" },
+  busy: { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500" },
+  evicting: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", pulse: true },
+  not_enough_vram: { bg: "bg-red-50", text: "text-red-700", dot: "bg-red-500" },
+};
+
 export function AdminPage() {
   useAppBootstrap(true);
 
@@ -21,6 +44,53 @@ export function AdminPage() {
   const setAdminState = useAppStore((state) => state.setAdminState);
   const [formState, setFormState] = useState<AdminConfig | null>(null);
   const hasInitialized = useRef(false);
+  const [modelActionPending, setModelActionPending] = useState<ModelAction>("idle");
+  const [feedbackMessage, setFeedbackMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showFeedback(type: "success" | "error", text: string) {
+    if (feedbackTimerRef.current) {
+      clearTimeout(feedbackTimerRef.current);
+    }
+    setFeedbackMessage({ type, text });
+    feedbackTimerRef.current = setTimeout(() => {
+      setFeedbackMessage(null);
+      feedbackTimerRef.current = null;
+    }, 5000);
+  }
+
+  async function handleWarmModel() {
+    setModelActionPending("warm");
+    setFeedbackMessage(null);
+    try {
+      await api.warmModel();
+      showFeedback("success", "Model warmed up successfully");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to warm model";
+      showFeedback("error", message);
+    } finally {
+      setModelActionPending("idle");
+    }
+  }
+
+  async function handleEvictModel() {
+    setModelActionPending("evict");
+    setFeedbackMessage(null);
+    try {
+      await api.evictModel();
+      showFeedback("success", "Model evicted successfully");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to evict model";
+      showFeedback("error", message);
+    } finally {
+      setModelActionPending("idle");
+    }
+  }
 
   // Initialize formState once from adminState.config — don't re-sync on every
   // adminState change because WebSocket events (telemetry, model_state, etc.)
@@ -50,6 +120,24 @@ export function AdminPage() {
     }
   };
 
+  const hasUnsavedChanges =
+    formState.device !== (adminState.config.device ?? "auto") ||
+    formState.idle_unload_seconds !== adminState.config.idle_unload_seconds ||
+    formState.max_prebuffer_seconds !== adminState.config.max_prebuffer_seconds ||
+    formState.target_buffer_seconds !== adminState.config.target_buffer_seconds ||
+    formState.vram_soft_limit_mb !== adminState.config.vram_soft_limit_mb ||
+    formState.vram_hard_limit_mb !== adminState.config.vram_hard_limit_mb ||
+    formState.batch_candidates_small_model.length !==
+      adminState.config.batch_candidates_small_model.length ||
+    formState.batch_candidates_small_model.some(
+      (v, i) => v !== adminState.config.batch_candidates_small_model[i],
+    ) ||
+    formState.batch_candidates_large_model.length !==
+      adminState.config.batch_candidates_large_model.length ||
+    formState.batch_candidates_large_model.some(
+      (v, i) => v !== adminState.config.batch_candidates_large_model[i],
+    );
+
   const recentBatch = adminState.telemetry?.recent_batches[0];
 
   const batchProps = { className: "rounded-2xl bg-white/70 p-4" } as const;
@@ -59,7 +147,15 @@ export function AdminPage() {
       <form className="panel rounded-[2rem] p-6" onSubmit={(event) => void handleSubmit(event)}>
         <div className="mb-6">
           <p className="text-sm uppercase tracking-[0.3em] text-stone-600">Admin</p>
-          <h1 className="display-font text-4xl">Warmth and flow control</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="display-font text-4xl">Warmth and flow control</h1>
+            {hasUnsavedChanges && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+                <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+                Unsaved changes
+              </span>
+            )}
+          </div>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <label className="text-sm font-medium">
@@ -129,24 +225,74 @@ export function AdminPage() {
           </label>
         </div>
         <div className="mt-6 flex flex-wrap gap-3">
-          <button className="rounded-full bg-[var(--accent)] px-5 py-3 font-semibold text-white" type="submit">
+          <button
+            className={`rounded-full px-5 py-3 font-semibold text-white transition-all duration-200 ${
+              hasUnsavedChanges
+                ? "bg-[var(--accent-2)] ring-2 ring-[var(--accent-2)] ring-offset-2 ring-offset-transparent"
+                : "bg-[var(--accent)]"
+            }`}
+            type="submit"
+          >
             Save config
           </button>
           <button
-            className="rounded-full border border-stone-300 bg-white/80 px-5 py-3 font-semibold"
-            onClick={() => void api.warmModel()}
+            className="inline-flex items-center gap-2 rounded-full border border-stone-300 bg-white/80 px-5 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={modelActionPending !== "idle"}
+            onClick={() => void handleWarmModel()}
             type="button"
+            aria-label={modelActionPending === "warm" ? "Warming model…" : "Warm model"}
           >
-            Warm model
+            {modelActionPending === "warm" && (
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-stone-400 border-t-transparent" />
+            )}
+            {modelActionPending === "warm" ? "Warming…" : "Warm model"}
           </button>
           <button
-            className="rounded-full border border-stone-300 bg-white/80 px-5 py-3 font-semibold"
-            onClick={() => void api.evictModel()}
+            className="inline-flex items-center gap-2 rounded-full border border-stone-300 bg-white/80 px-5 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={modelActionPending !== "idle"}
+            onClick={() => void handleEvictModel()}
             type="button"
+            aria-label={modelActionPending === "evict" ? "Evicting model…" : "Evict model"}
           >
-            Evict model
+            {modelActionPending === "evict" && (
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-stone-400 border-t-transparent" />
+            )}
+            {modelActionPending === "evict" ? "Evicting…" : "Evict model"}
           </button>
         </div>
+        {/* Inline feedback banner */}
+        {feedbackMessage && (
+          <div
+            className={`mt-4 rounded-2xl border px-4 py-3 text-sm font-medium transition-opacity duration-300 ${
+              feedbackMessage.type === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-red-200 bg-red-50 text-red-800"
+            }`}
+            role="alert"
+            aria-live="polite"
+          >
+            <div className="flex items-center gap-2">
+              {feedbackMessage.type === "success" ? (
+                <svg className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              )}
+              <span>{feedbackMessage.text}</span>
+            </div>
+          </div>
+        )}
       </form>
 
       <div className="space-y-6">
@@ -159,8 +305,28 @@ export function AdminPage() {
             </div>
             <div className="rounded-3xl bg-white/70 p-5">
               <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Model state</div>
-              <div className="mt-2 text-4xl font-semibold">
-                {adminState.telemetry?.model_state ?? "—"}
+              <div className="mt-3">
+                {(() => {
+                  const raw = adminState.telemetry?.model_state ?? "";
+                  const label = MODEL_STATE_LABELS[raw] ?? (raw || "Unknown");
+                  const colors = MODEL_STATE_COLORS[raw] ?? {
+                    bg: "bg-stone-100",
+                    text: "text-stone-600",
+                    dot: "bg-stone-400",
+                  };
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold ${colors.bg} ${colors.text}`}
+                    >
+                      <span
+                        className={`inline-block h-3 w-3 rounded-full ${colors.dot} ${
+                          colors.pulse ? "animate-pulse" : ""
+                        }`}
+                      />
+                      {label}
+                    </span>
+                  );
+                })()}
               </div>
             </div>
           </div>
