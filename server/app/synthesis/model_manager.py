@@ -4,7 +4,7 @@ from time import monotonic
 
 from app.core.config import RuntimeConfig
 from app.jobs.models import ModelState
-from app.synthesis.provider import SynthesisProvider
+from app.synthesis.provider import ModelVRAMError, SynthesisProvider
 from app.telemetry.service import TelemetryService
 
 
@@ -26,6 +26,14 @@ class ModelManager:
     def state(self) -> ModelState:
         return self._state
 
+    def set_device(self, device: str) -> None:
+        self._provider.set_device(device)
+        # If the model was in NOT_ENOUGH_VRAM state and the device setting
+        # changed, reset to UNLOADED so the next load attempt can succeed.
+        if self._state == ModelState.NOT_ENOUGH_VRAM:
+            self._state = ModelState.UNLOADED
+            self._telemetry.set_model_state(self._state)
+
     async def ensure_loaded(self, model_id: str) -> None:
         if self._loaded_model_id == model_id and self._state in {
             ModelState.WARM_IDLE,
@@ -33,9 +41,19 @@ class ModelManager:
         }:
             self._touch()
             return
+        # If previously failed with not_enough_vram, reset before retrying
+        if self._state == ModelState.NOT_ENOUGH_VRAM:
+            self._state = ModelState.UNLOADED
         self._state = ModelState.LOADING
         self._telemetry.set_model_state(self._state)
-        await self._provider.load_model(model_id)
+        try:
+            await self._provider.load_model(model_id)
+        except ModelVRAMError:
+            self._state = ModelState.NOT_ENOUGH_VRAM
+            self._telemetry.set_model_state(self._state)
+            self._loaded_model_id = None
+            self._last_used_at = None
+            raise
         self._loaded_model_id = model_id
         self._state = ModelState.WARM_IDLE
         self._touch()

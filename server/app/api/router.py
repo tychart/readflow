@@ -31,6 +31,7 @@ from app.schemas.api import (
     job_to_detail,
     job_to_summary,
 )
+from app.synthesis.provider import ModelVRAMError
 
 SUPPORTED_MODEL_IDS: set[str] = {
     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -372,6 +373,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         runtime = app_services.settings.runtime
         for field_name, value in request.model_dump(exclude_none=True).items():
             setattr(runtime, field_name, value)
+            # Propagate device setting change to the provider and model manager
+            if field_name == "device":
+                app_services.model_manager.set_device(str(value))
         config = admin_config_response(app_services)
         await app_services.hub.broadcast(
             WsEnvelope(type="admin_config_updated", payload=config.model_dump()).model_dump()
@@ -408,9 +412,17 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
     @router.post("/admin/model/warm", response_model=dict[str, str])
     async def warm_model(app_services: AppServices = Depends(services)) -> dict[str, str]:
-        await app_services.model_manager.ensure_loaded(
-            app_services.settings.runtime.default_model_id
-        )
+        try:
+            await app_services.model_manager.ensure_loaded(
+                app_services.settings.runtime.default_model_id
+            )
+        except ModelVRAMError as exc:
+            await app_services.hub.broadcast(
+                WsEnvelope(
+                    type="model_state", payload={"state": app_services.model_manager.state}
+                ).model_dump()
+            )
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
         await app_services.hub.broadcast(
             WsEnvelope(
                 type="model_state", payload={"state": app_services.model_manager.state}

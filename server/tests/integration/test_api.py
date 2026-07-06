@@ -289,3 +289,88 @@ async def test_delete_job_removes_export_source_files(client, services):
 
     assert response.status_code == 204
     assert not wav_path.parent.exists()
+
+
+# ─── Admin device config tests ────────────────────────────────────────
+
+
+async def test_admin_config_returns_default_device(client, services):
+    response = await client.get("/api/admin/config")
+    assert response.status_code == 200
+    config = response.json()
+    assert "device" in config
+    assert config["device"] in {"auto", "cpu", "gpu"}
+
+
+async def test_admin_config_change_device_propagates_to_provider(client, services):
+    # Verify initial device is "auto" (the default)
+    assert services.settings.runtime.device == "auto"
+    assert services.provider._device == "auto"
+
+    # Update to "cpu"
+    response = await client.post(
+        "/api/admin/config", json={"device": "cpu"}
+    )
+    assert response.status_code == 200
+
+    # Both runtime config and provider should be updated
+    assert services.settings.runtime.device == "cpu"
+    assert services.provider._device == "cpu"
+
+    # Update to "gpu"
+    response = await client.post(
+        "/api/admin/config", json={"device": "gpu"}
+    )
+    assert response.status_code == 200
+
+    assert services.settings.runtime.device == "gpu"
+    assert services.provider._device == "gpu"
+
+
+async def test_admin_config_change_device_broadcasts_event(client, services):
+    class _TestWebSocket:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def accept(self) -> None:
+            return None
+
+        async def send_text(self, payload: str) -> None:
+            import json
+            self.messages.append(json.loads(payload))
+
+    ws = _TestWebSocket()
+    await services.hub.connect(ws)
+
+    try:
+        await client.post(
+            "/api/admin/config", json={"device": "cpu"}
+        )
+    finally:
+        await services.hub.disconnect(ws)
+
+    # Should have received an admin_config_updated event
+    config_events = [
+        m for m in ws.messages
+        if m.get("type") == "admin_config_updated"
+    ]
+    assert len(config_events) >= 1
+    payload = config_events[-1].get("payload", {})
+    assert payload.get("device") == "cpu"
+
+
+async def test_admin_config_change_device_resets_not_enough_vram_state(client, services):
+    """When device changes and model state is NOT_ENOUGH_VRAM, it should reset to UNLOADED."""
+    # Simulate NOT_ENOUGH_VRAM state
+    services.model_manager._state = "not_enough_vram"
+    services.model_manager._telemetry.set_model_state("not_enough_vram")
+
+    # Change device
+    response = await client.post(
+        "/api/admin/config", json={"device": "cpu"}
+    )
+
+    assert response.status_code == 200
+    # State should have been reset
+    assert services.model_manager.state == "unloaded"
+    assert services.model_manager._telemetry.snapshot()["model_state"] == "unloaded"

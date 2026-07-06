@@ -22,15 +22,6 @@ export function AdminPage() {
   const [formState, setFormState] = useState<AdminConfig | null>(null);
   const hasInitialized = useRef(false);
 
-  useEffect(() => {
-    if (adminState) {
-      return;
-    }
-    void api.getAdminState().then((state) => {
-      setAdminState(state);
-    });
-  }, [adminState, setAdminState]);
-
   // Initialize formState once from adminState.config — don't re-sync on every
   // adminState change because WebSocket events (telemetry, model_state, etc.)
   // create new adminState references that would overwrite unsaved local edits.
@@ -80,13 +71,13 @@ export function AdminPage() {
                 setFormState({ ...formState, device: event.target.value })
               }
             >
-              <option value="auto">Auto (GPU when available)</option>
-              <option value="cuda">GPU (CUDA only)</option>
-              <option value="cpu">CPU (fallback)</option>
+              <option value="auto">Auto (GPU priority, CPU fallback)</option>
+              <option value="gpu">GPU (CUDA only)</option>
+              <option value="cpu">CPU only</option>
             </select>
             <span className="mt-1 block text-xs text-stone-500">
               {formState.device === "auto" && "Uses GPU if CUDA is available, otherwise falls back to CPU."}
-              {formState.device === "cuda" && "Forces CUDA. Will fail if no GPU is present."}
+              {formState.device === "gpu" && "Forces CUDA. Throws error if no GPU or insufficient VRAM."}
               {formState.device === "cpu" && "Forces CPU. Slower but uses no VRAM."}
             </span>
           </label>

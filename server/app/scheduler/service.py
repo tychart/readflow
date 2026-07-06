@@ -10,7 +10,7 @@ from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 from app.schemas.api import WsEnvelope, job_to_detail
 from app.synthesis.model_manager import ModelManager
-from app.synthesis.provider import SynthesisOOMError
+from app.synthesis.provider import ModelVRAMError, SynthesisOOMError
 from app.synthesis.worker import SynthesisWorker
 from app.telemetry.service import TelemetryService
 
@@ -71,14 +71,16 @@ class SchedulerService:
                     WsEnvelope(
                         type="memory_stats",
                         payload={
-                            "device": mem_raw[0],
-                            "vram_total_mb": mem_raw[1],
-                            "vram_used_mb": mem_raw[2],
-                            "vram_reserved_mb": mem_raw[3],
-                            "vram_free_mb": mem_raw[4],
-                            "ram_total_mb": mem_raw[5],
-                            "ram_free_mb": mem_raw[6],
-                            "ram_used_mb": mem_raw[7],
+                            "memory": {
+                                "device": mem_raw[0],
+                                "vram_total_mb": mem_raw[1],
+                                "vram_used_mb": mem_raw[2],
+                                "vram_reserved_mb": mem_raw[3],
+                                "vram_free_mb": mem_raw[4],
+                                "ram_total_mb": mem_raw[5],
+                                "ram_free_mb": mem_raw[6],
+                                "ram_used_mb": mem_raw[7],
+                            },
                         },
                     ).model_dump()
                 )
@@ -177,6 +179,12 @@ class SchedulerService:
         except SynthesisOOMError as exc:
             for chunk in batch:
                 self._job_manager.mark_chunk_failed(chunk, str(exc))
+            return
+        except ModelVRAMError as exc:
+            for chunk in batch:
+                self._job_manager.mark_chunk_failed(
+                    chunk, f"Failed to load model: {exc}"
+                )
             return
 
         for chunk, result in zip(batch, results, strict=True):

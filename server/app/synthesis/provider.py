@@ -17,6 +17,11 @@ class SynthesisOOMError(RuntimeError):
     pass
 
 
+class ModelVRAMError(RuntimeError):
+    """Raised when there is insufficient VRAM to load the model."""
+    pass
+
+
 @dataclass(slots=True)
 class RawSynthesisResult:
     wav_bytes: bytes
@@ -26,6 +31,7 @@ class RawSynthesisResult:
 
 class SynthesisProvider(Protocol):
     def validate_environment(self) -> None: ...
+    def set_device(self, device: str) -> None: ...
     async def load_model(self, model_id: str) -> None: ...
     async def unload_model(self) -> None: ...
     async def synthesize_batch(
@@ -37,9 +43,13 @@ class SynthesisProvider(Protocol):
 class FakeQwenProvider:
     def __init__(self) -> None:
         self._loaded = False
+        self._device: str = "auto"
 
     def validate_environment(self) -> None:
         return None
+
+    def set_device(self, device: str) -> None:
+        self._device = device
 
     async def load_model(self, model_id: str) -> None:
         await asyncio.sleep(0.01)
@@ -127,11 +137,14 @@ class QwenProvider:
             self._attn_implementation = "sdpa"
         return self._attn_implementation
 
+    def set_device(self, device: str) -> None:
+        self._device = device
+
     def validate_environment(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()
-        if self._device == "cuda" and not torch.cuda.is_available():
+        if self._device == "gpu" and not torch.cuda.is_available():
             raise RuntimeError(
-                "READFLOW_TTS_PROVIDER is set to 'qwen' with device='cuda', "
+                "READFLOW_TTS_PROVIDER is set to 'qwen' with device='gpu', "
                 "but CUDA is not available. Set device='auto' or 'cpu' instead."
             )
         if self._device == "cpu":
@@ -141,16 +154,16 @@ class QwenProvider:
         """Resolve the device string based on the configured device mode.
 
         "auto" — use CUDA when available, fall back to CPU.
-        "cuda" — require CUDA (caller already validated in validate_environment).
+        "gpu" — require CUDA. If CUDA is unavailable, raise at load time.
         "cpu" — force CPU regardless of GPU availability.
         """
         torch, _qwen_model_class = _import_qwen_runtime()
         if self._device == "cpu":
             return "cpu"
-        if self._device == "cuda":
+        if self._device == "gpu":
             if torch.cuda.is_available():
                 return "cuda:0"
-            return "cpu"
+            return "cpu"  # cpu placeholder; actual error raised at load
         # auto — prefer GPU if there's enough VRAM, fall back to CPU
         if torch.cuda.is_available():
             total = torch.cuda.get_device_properties(0).total_memory
@@ -230,17 +243,35 @@ class QwenProvider:
             self._prompt_cache = {}
 
         device = self._resolve_device()
+
+        # "gpu" mode: fail hard if CUDA is not available — don't silently fall back
+        if self._device == "gpu" and not torch.cuda.is_available():
+            raise ModelVRAMError(
+                "Device is set to 'gpu', but CUDA is not available on this system. "
+                "Choose 'auto' or 'cpu' instead."
+            )
+
         try:
             _do_load(device)
             self._resolved_device = device
         except RuntimeError as exc:
-            # Safety net: if "auto" picked CUDA but VRAM was insufficient
-            # at load time, fall back to CPU.
-            if self._device == "auto" and "out of memory" in str(exc).lower():
+            is_oom = "out of memory" in str(exc).lower()
+
+            # "gpu" mode: OOM at load time means not enough VRAM
+            if self._device == "gpu" and is_oom:
+                self._clear_cuda_after_failure_sync()
+                raise ModelVRAMError(
+                    f"Not enough VRAM to load '{model_id}' on GPU. "
+                    "Choose 'auto' (GPU with CPU fallback) or 'cpu' instead."
+                ) from exc
+
+            # "auto" mode: standard fallback
+            if self._device == "auto" and is_oom:
                 device = "cpu"
                 _do_load(device)
                 self._resolved_device = device
                 return
+
             raise
 
     def _unload_model_sync(self) -> None:

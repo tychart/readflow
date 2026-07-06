@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class RuntimeConfig(BaseModel):
-    device: Literal["auto", "cpu", "cuda"] = "auto"
+    device: Literal["auto", "cpu", "gpu"] = "auto"
     idle_unload_seconds: int = 300
     max_prebuffer_seconds: int = 300
     target_buffer_seconds: int = 45

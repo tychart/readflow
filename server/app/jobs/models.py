@@ -31,6 +31,7 @@ class ModelState(StrEnum):
     WARM_IDLE = "warm_idle"
     BUSY = "busy"
     EVICTING = "evicting"
+    NOT_ENOUGH_VRAM = "not_enough_vram"
 
 
 @dataclass(slots=True)
