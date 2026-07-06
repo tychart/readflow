@@ -19,3 +19,4 @@ tmp/
 web/tsconfig.node.tsbuildinfo
 
 plans/
+.pi-subagents/

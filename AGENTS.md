@@ -162,12 +162,14 @@ Key files:
 
 - `server/app/core/app.py`
 - `server/app/core/services.py`
+- `server/app/core/hub.py` (WebSocketHub)
 - `server/app/api/router.py`
 - `server/app/scheduler/service.py`
 - `server/app/synthesis/provider.py`
 - `server/app/synthesis/model_manager.py`
 - `server/app/synthesis/worker.py`
 - `server/app/media/store.py`
+- `server/app/media/mp4.py` (WAV → fragmented MP4 packaging)
 - `server/app/voices/registry.py`
 
 Core services:
@@ -188,12 +190,15 @@ Key files:
 
 - `web/src/app/App.tsx`
 - `web/src/features/jobs/JobsPage.tsx`
+- `web/src/features/jobs/JobCreateForm.tsx`
 - `web/src/features/reader/ReaderPage.tsx`
 - `web/src/features/admin/AdminPage.tsx`
 - `web/src/hooks/useAppBootstrap.ts`
 - `web/src/lib/api.ts`
+- `web/src/lib/transport.ts`
 - `web/src/lib/media-source.ts`
 - `web/src/state/store.ts`
+- `web/src/types/api.ts`, `events.ts`, `player.ts`
 
 Frontend stack:
 
@@ -440,8 +445,10 @@ There is no retention cleanup daemon yet.
 
 Frontend uses relative API URLs:
 
-- `/api/...`
-- `/api/ws`
+- `/api/...` (HTTP)
+- `/api/ws` (WebSocket)
+
+Transport layer: `web/src/lib/transport.ts` (HTTP client), `web/src/lib/live-client.ts` (WebSocket).
 
 Current dev-server behavior:
 
@@ -488,6 +495,11 @@ Important files:
 - `server/tests/unit/test_scheduler.py`
 - `server/tests/unit/test_config.py`
 - `server/tests/unit/test_voices.py`
+- `server/tests/unit/test_jobs.py`
+- `server/tests/unit/test_planner.py`
+
+Note: `server/app/jobs/test_manager.py` and `server/app/jobs/test_models.py` are in-app test
+modules (not in the pytest directory) — they test versioning and reprocessing logic.
 
 Important testing decisions:
 
@@ -611,10 +623,7 @@ Production / GPU installs use either:
 The Docker build targets SM 86 (RTX 30xx) via `FLASH_ATTN_CUDA_ARCHS=86` to minimize compile time.
 It only recompiles flash-attn when `pyproject.toml`, `uv.lock`, or the CUDA base image changes.
 
-### 1b. Docker build is the recommended path for Fedora 44+
-
-Fedora 44 ships GCC 15+, which CUDA 12.8 does not support. The Docker container isolates
-the compatible toolchain so the user never needs to downgrade their system compiler.
+Fedora 44 ships GCC 15+, which CUDA 12.8 does not support — use the Docker build, not a native install.
 
 Do not remove or significantly change `server/Dockerfile` without understanding:
 - the builder stage uses `nvidia/cuda:12.8.1-devel-ubuntu24.04`
@@ -712,6 +721,7 @@ Admin page:
 - evict model
 - inspect queue depth and model state
 - view recent batch telemetry
+- view model lifecycle state
 
 ## What Was Added During This Conversation
 
@@ -767,13 +777,12 @@ When making changes, use this checklist.
 
 Likely next steps, unless the user changes direction:
 
-1. add a Vite `/api` proxy or another same-origin dev solution
-2. persist jobs and chunk metadata
-3. add temp media cleanup/retention
-4. improve admin telemetry depth
-5. continue hardening reader/player edge cases
-6. expand deployment story for a single-host install (Docker is now in place)
-7. add a better documented GPU validation workflow
+1. persist jobs and chunk metadata
+2. add temp media cleanup/retention
+3. improve admin telemetry depth
+4. continue hardening reader/player edge cases
+5. expand deployment story for a single-host install (Docker is now in place)
+6. add a better documented GPU validation workflow
 
 ## Bottom Line for Future Agents
 
