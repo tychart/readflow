@@ -132,6 +132,7 @@ class WsEnvelope(BaseModel):
         "model_state",
         "telemetry",
         "admin_config_updated",
+        "memory_stats",
     ]
     payload: dict[str, object] = Field(default_factory=dict)
 

@@ -16,6 +16,8 @@ from app.telemetry.service import TelemetryService
 
 
 class SchedulerService:
+    MEMORY_STATS_INTERVAL = 3.0
+
     def __init__(
         self,
         config: RuntimeConfig,
@@ -36,14 +38,56 @@ class SchedulerService:
         self._telemetry = telemetry
         self._hub = hub
         self._stop_event = asyncio.Event()
+        self._memory_broadcast_task: asyncio.Task[None] | None = None
 
     async def run_forever(self) -> None:
-        while not self._stop_event.is_set():
-            await self.run_once()
-            await asyncio.sleep(self._config.planning_tick_seconds)
+        self._start_memory_broadcast()
+        try:
+            while not self._stop_event.is_set():
+                await self.run_once()
+                await asyncio.sleep(self._config.planning_tick_seconds)
+        finally:
+            self._stop_memory_broadcast()
 
     async def shutdown(self) -> None:
         self._stop_event.set()
+        self._stop_memory_broadcast()
+
+    def _start_memory_broadcast(self) -> None:
+        self._memory_broadcast_task = asyncio.create_task(
+            self._memory_broadcast_loop()
+        )
+
+    def _stop_memory_broadcast(self) -> None:
+        if self._memory_broadcast_task is not None:
+            self._memory_broadcast_task.cancel()
+            self._memory_broadcast_task = None
+
+    async def _memory_broadcast_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                mem_raw = await self._model_manager.memory_stats()
+                await self._hub.broadcast(
+                    WsEnvelope(
+                        type="memory_stats",
+                        payload={
+                            "device": mem_raw[0],
+                            "vram_total_mb": mem_raw[1],
+                            "vram_used_mb": mem_raw[2],
+                            "vram_reserved_mb": mem_raw[3],
+                            "vram_free_mb": mem_raw[4],
+                            "ram_total_mb": mem_raw[5],
+                            "ram_free_mb": mem_raw[6],
+                            "ram_used_mb": mem_raw[7],
+                        },
+                    ).model_dump()
+                )
+            except Exception:
+                pass
+            try:
+                await asyncio.sleep(self.MEMORY_STATS_INTERVAL)
+            except asyncio.CancelledError:
+                break
 
     async def run_once(self) -> None:
         self._ensure_planned_chunks()

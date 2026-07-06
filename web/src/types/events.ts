@@ -59,6 +59,10 @@ export type AdminState = {
   memory: AdminMemoryStats | null;
 };
 
+export interface AdminMemoryStatsPayload {
+  memory: AdminMemoryStats;
+}
+
 export type WsEnvelope =
   | { type: "job_created"; payload: JobPayload }
   | { type: "job_updated"; payload: JobPayload }
@@ -68,4 +72,5 @@ export type WsEnvelope =
   | { type: "model_state"; payload: ModelStatePayload }
   | { type: "telemetry"; payload: TelemetryPayload }
   | { type: "admin_config_updated"; payload: AdminConfig }
+  | { type: "memory_stats"; payload: AdminMemoryStatsPayload }
   | { type: "pong"; payload: null };

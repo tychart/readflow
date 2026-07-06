@@ -63,7 +63,8 @@ function adminStateEqual(
   return (
     JSON.stringify(a.config) === JSON.stringify(b.config) &&
     JSON.stringify(a.scheduler) === JSON.stringify(b.scheduler) &&
-    JSON.stringify(a.telemetry) === JSON.stringify(b.telemetry)
+    JSON.stringify(a.telemetry) === JSON.stringify(b.telemetry) &&
+    JSON.stringify(a.memory) === JSON.stringify(b.memory)
   );
 }
 
@@ -162,6 +163,16 @@ export const useAppStore = create<AppStore>((set) => ({
           adminState: {
             ...state.adminState,
             scheduler: event.payload,
+          },
+          lastEvent: event,
+        };
+      }
+
+      if (event.type === "memory_stats" && state.adminState) {
+        return {
+          adminState: {
+            ...state.adminState,
+            memory: event.payload.memory,
           },
           lastEvent: event,
         };
