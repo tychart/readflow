@@ -195,6 +195,9 @@ export function AdminPage() {
                       {adminState.memory.vram_free_mb} MB free of{" "}
                       {adminState.memory.vram_total_mb} MB total
                     </div>
+                    <div className="mt-2 text-xs text-stone-400">
+                      {adminState.memory.vram_reserved_mb} MB reserved
+                    </div>
                   </div>
                 ) : (
                   <div className="rounded-3xl bg-white/70 p-5">
@@ -239,27 +242,59 @@ export function AdminPage() {
                     <div className="mt-2 text-4xl font-semibold">
                       {adminState.memory.vram_total_mb
                         ? Math.round(
-                            (adminState.memory.vram_used_mb /
+                            (adminState.memory.vram_reserved_mb /
                               adminState.memory.vram_total_mb) *
                               100,
                           )
                         : 0}
                       %
                     </div>
-                    <div className="mt-3 h-3 w-full rounded-full bg-stone-200">
-                      <div
-                        className="h-3 rounded-full bg-[var(--accent)]"
-                        style={{
-                          width: `${
-                            adminState.memory.vram_total_mb
-                              ? Math.round(
-                                  (adminState.memory.vram_used_mb /
-                                    adminState.memory.vram_total_mb) * 100,
-                                )
-                              : 0
-                          }%`,
-                        }}
-                      />
+                    <div className="mt-3 space-y-1">
+                      {/* Stacked bar: allocated (used) + reserved headroom */}
+                      <div className="h-3 w-full rounded-full bg-stone-200 overflow-hidden">
+                        <div
+                          className="h-3 rounded-full bg-[var(--accent)] transition-all duration-500"
+                          style={{
+                            width: `${
+                              adminState.memory.vram_total_mb
+                                ? Math.min(
+                                    (adminState.memory.vram_used_mb /
+                                      adminState.memory.vram_total_mb) * 100,
+                                    100,
+                                  )
+                                : 0
+                            }%`,
+                          }}
+                          title={`Allocated: ${adminState.memory.vram_used_mb} MB`}
+                        />
+                      </div>
+                      <div className="h-3 w-full rounded-full bg-stone-200 overflow-hidden">
+                        <div
+                          className="h-3 rounded-full bg-amber-400 transition-all duration-500"
+                          style={{
+                            width: `${
+                              adminState.memory.vram_total_mb
+                                ? Math.min(
+                                    ((adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb) /
+                                      adminState.memory.vram_total_mb) * 100,
+                                    100,
+                                  )
+                                : 0
+                            }%`,
+                          }}
+                          title={`Reserved headroom: ${Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb)} MB`}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-2 flex gap-4 text-xs text-stone-500">
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)]"></span>
+                        Allocated {adminState.memory.vram_used_mb} MB
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block h-2 w-2 rounded-full bg-amber-400"></span>
+                        Reserved headroom {Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb)} MB
+                      </span>
                     </div>
                   </div>
                 ) : (

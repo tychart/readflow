@@ -31,7 +31,7 @@ class SynthesisProvider(Protocol):
     async def synthesize_batch(
         self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
     ) -> list[RawSynthesisResult]: ...
-    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, str]: ...
+    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, int, str]: ...
 
 
 class FakeQwenProvider:
@@ -71,8 +71,8 @@ class FakeQwenProvider:
             for chunk in chunks
         ]
 
-    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, str]:
-        return (True, 3100, 2500, 600, 16384, 10240, 4096, "cuda")
+    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, int, str]:
+        return (True, 3100, 2500, 2800, 600, 16384, 10240, 4096, "cuda")
 
     def _build_wave_bytes(self, seed: int, text: str) -> bytes:
         import math
@@ -205,7 +205,7 @@ class QwenProvider:
         """Return the attention implementation this provider is using."""
         return self._resolve_attn_implementation()
 
-    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, str]:
+    async def memory_stats(self) -> tuple[bool, int, int, int, int, int, int, int, str]:
         return await self._call_in_worker(self._memory_stats_sync)
 
     async def _call_in_worker(self, callback, *args):
@@ -306,7 +306,7 @@ class QwenProvider:
             )
         return self._prompt_cache[prompt.voice_id]
 
-    def _memory_stats_sync(self) -> tuple[bool, int, int, int, int, int, int, str]:
+    def _memory_stats_sync(self) -> tuple[bool, int, int, int, int, int, int, int, str]:
         import psutil
 
         torch, _qwen_model_class = _import_qwen_runtime()
@@ -323,18 +323,28 @@ class QwenProvider:
         # VRAM stats — report only when the model is actually running on CUDA.
         # _resolved_device tracks the actual device used at load time so we
         # don't misreport VRAM when "auto" picked CPU.
+        #
+        # We use torch.cuda.memory_reserved() (not memory_allocated()) for
+        # the primary VRAM metric because it matches what external tools
+        # (nvidia-smi, nvtop, etc.) report.  PyTorch's caching allocator
+        # keeps a large reserve of GPU memory that is not yet actively
+        # allocated but is reserved and unavailable to other processes.
+        #
+        # memory_allocated  = currently active tensors in VRAM (smaller)
+        # memory_reserved   = total reserved by the caching allocator (matches nvtop)
         is_cuda = self._resolved_device.startswith("cuda")
         if is_cuda and torch.cuda.is_available():
-            vram_used = _mb_from_bytes(torch.cuda.memory_allocated(0))
+            vram_allocated = _mb_from_bytes(torch.cuda.memory_allocated(0))
+            vram_reserved = _mb_from_bytes(torch.cuda.memory_reserved(0))
             vram_total = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
-            vram_free = vram_total - vram_used
+            vram_free = vram_total - vram_reserved
             return (
-                is_cuda, vram_total, vram_used, vram_free,
+                is_cuda, vram_total, vram_allocated, vram_reserved, vram_free,
                 ram_total, ram_free, ram_used, self._resolved_device,
             )
 
         # No CUDA or model not on GPU
-        return (False, 0, 0, 0, ram_total, ram_free, ram_used, self._resolved_device,)
+        return (False, 0, 0, 0, 0, ram_total, ram_free, ram_used, self._resolved_device)
 
     def _clear_cuda_after_failure_sync(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

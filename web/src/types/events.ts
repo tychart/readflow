@@ -45,6 +45,7 @@ export type AdminMemoryStats = {
   device: string;
   vram_total_mb: number;
   vram_used_mb: number;
+  vram_reserved_mb: number;
   vram_free_mb: number;
   ram_total_mb: number;
   ram_free_mb: number;
