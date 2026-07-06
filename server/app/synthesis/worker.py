@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from time import monotonic
 
 from app.core.config import RuntimeConfig
+from app.core.hub import WebSocketHub
 from app.jobs.models import ChunkRecord
 from app.media.store import MediaStore
+from app.schemas.api import WsEnvelope
 from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import SynthesisOOMError, SynthesisProvider
 from app.telemetry.service import TelemetryService
@@ -32,6 +34,7 @@ class SynthesisWorker:
         media_store: MediaStore,
         voice_registry: VoiceRegistry,
         telemetry: TelemetryService,
+        hub: WebSocketHub,
     ) -> None:
         self._config = config
         self._provider = provider
@@ -39,6 +42,15 @@ class SynthesisWorker:
         self._media_store = media_store
         self._voice_registry = voice_registry
         self._telemetry = telemetry
+        self._hub = hub
+
+    async def _broadcast_model_state(self) -> None:
+        await self._hub.broadcast(
+            WsEnvelope(
+                type="model_state",
+                payload={"state": self._model_manager.state},
+            ).model_dump()
+        )
 
     async def render_batch(
         self, model_id: str, chunks: list[ChunkRecord]
@@ -49,6 +61,7 @@ class SynthesisWorker:
         prompts = [self._voice_registry.get_prompt(chunk.voice_id) for chunk in chunks]
         start = monotonic()
         self._model_manager.mark_busy()
+        await self._broadcast_model_state()
         try:
             try:
                 results = await self._provider.synthesize_batch(model_id, chunks, prompts)
@@ -88,3 +101,4 @@ class SynthesisWorker:
             return packaged
         finally:
             self._model_manager.mark_idle()
+            await self._broadcast_model_state()

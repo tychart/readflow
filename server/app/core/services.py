@@ -56,6 +56,7 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
         media_store=media_store,
         voice_registry=voice_registry,
         telemetry=telemetry,
+        hub=hub,
     )
     scheduler = SchedulerService(
         config=settings.runtime,
