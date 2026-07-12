@@ -140,7 +140,12 @@ export function AdminPage() {
 
   const recentBatch = adminState.telemetry?.recent_batches[0];
 
-  const batchProps = { className: "rounded-2xl bg-white/70 p-4" } as const;
+  const isGpuActive =
+    adminState.memory &&
+    adminState.memory.device !== "cpu" &&
+    adminState.memory.device !== "unloaded" &&
+    adminState.memory.device !== "loading" &&
+    adminState.memory.device !== "evicting";
 
   return (
     <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
@@ -336,84 +341,51 @@ export function AdminPage() {
           {adminState.memory ? (
             <>
               <div className="mb-4 grid gap-4 md:grid-cols-2">
+                {/* Device card */}
                 <div className="rounded-3xl bg-white/70 p-5">
                   <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Device</div>
                   <div className="mt-2 text-4xl font-semibold capitalize">
-                    {adminState.memory.device}
+                    {adminState.memory.device === "loading" || adminState.memory.device === "evicting"
+                      ? "—"
+                      : adminState.memory.device}
+                  </div>
+                  <div className="mt-1 text-xs text-stone-500">
+                    {adminState.memory.device === "loading"
+                      ? "Model is loading…"
+                      : adminState.memory.device === "evicting"
+                        ? "Model is evicting…"
+                        : adminState.memory.device === "unloaded"
+                          ? "No model loaded"
+                          : `Setting: ${adminState.config.device}`}
                   </div>
                 </div>
-                {adminState.memory.device !== "cpu" ? (
+                {/* VRAM card — unified (replaces old VRAM + VRAM usage) */}
+                {isGpuActive ? (
                   <div className="rounded-3xl bg-white/70 p-5">
-                    <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM</div>
+                    <div className="flex items-start justify-between">
+                      <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM</div>
+                      {(adminState.telemetry?.oom_count ?? 0) > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-500" />
+                          {adminState.telemetry!.oom_count} OOM
+                        </span>
+                      )}
+                    </div>
                     <div className="mt-2 text-4xl font-semibold">
-                      {adminState.memory.vram_used_mb} MB
+                      {adminState.memory.vram_reserved_mb.toLocaleString()} MB
                     </div>
                     <div className="text-xs text-stone-500">
-                      {adminState.memory.vram_free_mb} MB free of{" "}
-                      {adminState.memory.vram_total_mb} MB total
+                      reserved of {adminState.memory.vram_total_mb.toLocaleString()} MB total ·{" "}
+                      {adminState.memory.vram_free_mb.toLocaleString()} MB free
                     </div>
-                    <div className="mt-2 text-xs text-stone-400">
-                      {adminState.memory.vram_reserved_mb} MB reserved
-                    </div>
-                  </div>
-                ) : (
-                  <div className="rounded-3xl bg-white/70 p-5">
-                    <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM</div>
-                    <div className="mt-2 text-4xl font-semibold">N/A</div>
-                    <div className="text-xs text-stone-500">
-                      Model is running on CPU — no GPU memory to report
-                    </div>
-                  </div>
-                )}
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-3xl bg-white/70 p-5">
-                  <div className="text-sm uppercase tracking-[0.2em] text-stone-600">System RAM</div>
-                  <div className="mt-2 text-4xl font-semibold">
-                    {adminState.memory.ram_used_mb} MB
-                  </div>
-                  <div className="text-xs text-stone-500">
-                    {adminState.memory.ram_free_mb} MB free of{" "}
-                    {adminState.memory.ram_total_mb} MB total
-                  </div>
-                  <div className="mt-3 h-3 w-full rounded-full bg-stone-200">
-                    <div
-                      className="h-3 rounded-full bg-[var(--accent)]"
-                      style={{
-                        width: `${
-                          adminState.memory.ram_total_mb
-                            ? Math.round(
-                                (adminState.memory.ram_used_mb /
-                                  adminState.memory.ram_total_mb) *
-                                  100,
-                              )
-                            : 0
-                        }%`,
-                      }}
-                    />
-                  </div>
-                </div>
-                {adminState.memory.device !== "cpu" ? (
-                  <div className="rounded-3xl bg-white/70 p-5">
-                    <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM usage</div>
-                    <div className="mt-2 text-4xl font-semibold">
-                      {adminState.memory.vram_total_mb
-                        ? Math.round(
-                            (adminState.memory.vram_reserved_mb /
-                              adminState.memory.vram_total_mb) *
-                              100,
-                          )
-                        : 0}
-                      %
-                    </div>
+                    {/* Stacked bar: allocated + headroom */}
                     <div className="mt-3 space-y-1">
-                      {/* Stacked bar: allocated (used) + reserved headroom */}
-                      <div className="h-3 w-full rounded-full bg-stone-200 overflow-hidden">
+                      <div className="h-3 w-full overflow-hidden rounded-full bg-stone-200">
                         <div
                           className="h-3 rounded-full bg-[var(--accent)] transition-all duration-500"
                           style={{
                             width: `${
-                              adminState.memory.vram_total_mb
+                              adminState.memory.vram_total_mb > 0
                                 ? Math.min(
                                     (adminState.memory.vram_used_mb /
                                       adminState.memory.vram_total_mb) * 100,
@@ -425,70 +397,147 @@ export function AdminPage() {
                           title={`Allocated: ${adminState.memory.vram_used_mb} MB`}
                         />
                       </div>
-                      <div className="h-3 w-full rounded-full bg-stone-200 overflow-hidden">
+                      <div className="h-3 w-full overflow-hidden rounded-full bg-stone-200">
                         <div
                           className="h-3 rounded-full bg-amber-400 transition-all duration-500"
                           style={{
                             width: `${
-                              adminState.memory.vram_total_mb
+                              adminState.memory.vram_total_mb > 0
                                 ? Math.min(
-                                    ((adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb) /
+                                    ((adminState.memory.vram_reserved_mb -
+                                      adminState.memory.vram_used_mb) /
                                       adminState.memory.vram_total_mb) * 100,
                                     100,
                                   )
                                 : 0
                             }%`,
                           }}
-                          title={`Reserved headroom: ${Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb)} MB`}
+                          title={`Headroom: ${Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb)} MB`}
                         />
                       </div>
                     </div>
                     <div className="mt-2 flex gap-4 text-xs text-stone-500">
                       <span className="flex items-center gap-1">
-                        <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)]"></span>
-                        Allocated {adminState.memory.vram_used_mb} MB
+                        <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
+                        Allocated {adminState.memory.vram_used_mb.toLocaleString()} MB
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="inline-block h-2 w-2 rounded-full bg-amber-400"></span>
-                        Reserved headroom {Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb)} MB
+                        <span className="inline-block h-2 w-2 rounded-full bg-amber-400" />
+                        Headroom{" "}
+                        {Math.max(
+                          0,
+                          adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb,
+                        ).toLocaleString()}{" "}
+                        MB
+                      </span>
+                    </div>
+                    {/* Soft/hard limit context */}
+                    <div className="mt-3 flex items-center gap-4 text-xs text-stone-400">
+                      <span>
+                        Soft limit:{" "}
+                        <span className="font-medium text-stone-600">
+                          {adminState.config.vram_soft_limit_mb.toLocaleString()} MB
+                        </span>
+                      </span>
+                      <span>
+                        Hard limit:{" "}
+                        <span className="font-medium text-stone-600">
+                          {adminState.config.vram_hard_limit_mb.toLocaleString()} MB
+                        </span>
                       </span>
                     </div>
                   </div>
                 ) : (
                   <div className="rounded-3xl bg-white/70 p-5">
-                    <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM usage</div>
-                    <div className="mt-2 text-4xl font-semibold">N/A</div>
-                    <div className="text-xs text-stone-500">
-                      Model is running on CPU — no GPU memory to report
+                    <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM</div>
+                    <div className="mt-2 text-4xl font-semibold text-stone-400">—</div>
+                    <div className="mt-1 text-xs text-stone-500">
+                      {adminState.memory.device === "cpu"
+                        ? "Model is running on CPU — no GPU memory to report"
+                        : adminState.memory.device === "unloaded"
+                          ? "Model is not loaded — GPU memory not in use"
+                          : "GPU memory stats unavailable during model transition"}
                     </div>
                   </div>
                 )}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                {/* System RAM card */}
+                <div className="rounded-3xl bg-white/70 p-5">
+                  <div className="text-sm uppercase tracking-[0.2em] text-stone-600">System RAM</div>
+                  <div className="mt-2 text-4xl font-semibold">
+                    {adminState.memory.ram_used_mb.toLocaleString()} MB
+                  </div>
+                  <div className="text-xs text-stone-500">
+                    {adminState.memory.ram_free_mb.toLocaleString()} MB free of{" "}
+                    {adminState.memory.ram_total_mb.toLocaleString()} MB total
+                  </div>
+                  <div className="mt-3 h-3 w-full rounded-full bg-stone-200">
+                    <div
+                      className="h-3 rounded-full bg-[var(--accent)]"
+                      style={{
+                        width: `${
+                          adminState.memory.ram_total_mb
+                            ? Math.round(
+                                (adminState.memory.ram_used_mb /
+                                  adminState.memory.ram_total_mb) * 100,
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+                {/* Synthesis summary card (replaces old VRAM usage + old Recent batch panel) */}
+                <div className="rounded-3xl bg-white/70 p-5">
+                  <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Synthesis</div>
+                  {recentBatch ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="text-xs text-stone-500">
+                        Last batch:{" "}
+                        <span className="font-semibold text-stone-700">
+                          {recentBatch.batch_size} chunk{recentBatch.batch_size !== 1 ? "s" : ""}
+                        </span>
+                        <span className="mx-1">·</span>
+                        <span className="font-semibold text-stone-700">
+                          {recentBatch.duration_seconds.toFixed(1)}s
+                        </span>
+                      </div>
+                      <div className="text-xs text-stone-500">
+                        Batch VRAM:{" "}
+                        <span className="font-semibold text-stone-700">
+                          {recentBatch.reserved_vram_mb.toLocaleString()} MB
+                        </span>{" "}
+                        reserved ·{" "}
+                        <span className="font-semibold text-stone-700">
+                          {recentBatch.allocated_vram_mb.toLocaleString()} MB
+                        </span>{" "}
+                        allocated
+                      </div>
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-stone-500">
+                          OOM count:{" "}
+                          <span
+                            className={`font-semibold ${
+                              (adminState.telemetry?.oom_count ?? 0) > 0
+                                ? "text-red-600"
+                                : "text-stone-700"
+                            }`}
+                          >
+                            {adminState.telemetry?.oom_count ?? 0}
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs text-stone-400">No batches yet</div>
+                  )}
+                </div>
               </div>
             </>
           ) : (
             <div aria-label="Memory stats unavailable" className="rounded-2xl border border-dashed border-stone-300 px-4 py-8 text-stone-600">
               Memory stats unavailable.
-            </div>
-          )}
-        </div>
-        <div className="panel rounded-[2rem] p-6">
-          <h2 className="mb-4 text-xl font-semibold">Recent batch</h2>
-          {recentBatch ? (
-            <div className="grid gap-3 md:grid-cols-2">
-              <div {...batchProps}>Batch size: {recentBatch.batch_size}</div>
-              <div {...batchProps}>
-                Reserved VRAM: {recentBatch.reserved_vram_mb} MB
-              </div>
-              <div {...batchProps}>
-                Allocated VRAM: {recentBatch.allocated_vram_mb} MB
-              </div>
-              <div {...batchProps}>
-                Duration: {recentBatch.duration_seconds.toFixed(2)}s
-              </div>
-            </div>
-          ) : (
-            <div aria-label="No batches yet" className="rounded-2xl border border-dashed border-stone-300 px-4 py-8 text-stone-600">
-              No batches yet.
             </div>
           )}
         </div>

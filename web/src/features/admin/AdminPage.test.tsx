@@ -129,12 +129,13 @@ test("renders memory section with VRAM stats", () => {
 
   render(<AdminPage />);
 
-  // VRAM value appears in both the stats display and the legend text below
-  const vramElements = screen.getAllByText(/6000 MB/);
-  expect(vramElements.length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText(/18000 MB free/)).toBeInTheDocument();
-  expect(screen.getByText(/24000 MB total/)).toBeInTheDocument();
+  // Reserved (matches nvidia-smi) is the big number
+  expect(screen.getByText("8,000 MB")).toBeInTheDocument();
+  expect(screen.getByText(/24,000 MB total/)).toBeInTheDocument();
+  expect(screen.getByText(/18,000 MB free/)).toBeInTheDocument();
   expect(screen.getByText(/cuda/)).toBeInTheDocument();
+  // Allocated appears in the legend
+  expect(screen.getByText(/Allocated 6,000 MB/)).toBeInTheDocument();
 });
 
 test("renders memory section with CPU fallback", () => {
@@ -142,9 +143,8 @@ test("renders memory section with CPU fallback", () => {
 
   render(<AdminPage />);
 
-  // CPU mode shows "N/A" for VRAM
-  const vramLabels = screen.getAllByText(/N\/A/);
-  expect(vramLabels.length).toBeGreaterThanOrEqual(2);
+  // CPU mode shows a dash and explanatory text instead of "N/A"
+  expect(screen.getByText(/CPU — no GPU memory to report/)).toBeInTheDocument();
   expect(screen.getByText(/cpu/)).toBeInTheDocument();
 });
 
@@ -169,7 +169,9 @@ test("renders admin telemetry and saves config", async () => {
   await user.type(screen.getByLabelText(/idle unload seconds/i), "120");
   await user.click(screen.getByRole("button", { name: /save config/i }));
 
-  expect(screen.getByText(/batch size: 4/i)).toBeInTheDocument();
+  // Batch info now appears in the Synthesis card
+  expect(screen.getByText(/4 chunks/)).toBeInTheDocument();
+  expect(screen.getByText(/0\.8s/)).toBeInTheDocument();
   expect(global.fetch).toHaveBeenCalledWith("/api/admin/config", expect.any(Object));
 });
 
