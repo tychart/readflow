@@ -781,7 +781,6 @@ export function ReaderPage() {
         syncPlaybackState(true, false);
       }
     };
-    const handleSeek = () => syncPlaybackState(true);
     const handleWaiting = () => syncPlaybackState(true, playIntent);
     const handleEnded = () => {
       if (
@@ -799,8 +798,6 @@ export function ReaderPage() {
 
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
-    audio.addEventListener("seeking", handleSeek);
-    audio.addEventListener("seeked", handleSeek);
     audio.addEventListener("waiting", handleWaiting);
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("error", handleError);
@@ -814,8 +811,6 @@ export function ReaderPage() {
     return () => {
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
-      audio.removeEventListener("seeking", handleSeek);
-      audio.removeEventListener("seeked", handleSeek);
       audio.removeEventListener("waiting", handleWaiting);
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("error", handleError);
@@ -1033,8 +1028,9 @@ export function ReaderPage() {
   const clearTimelineSeeking = useCallback((pointerId: number) => {
     if (seekingPointerIdRef.current === pointerId) {
       seekingPointerIdRef.current = null;
+      syncPlaybackState(true);
     }
-  }, []);
+  }, [syncPlaybackState]);
 
   const handleVoiceChange = async (voiceId: string) => {
     if (!job) {
