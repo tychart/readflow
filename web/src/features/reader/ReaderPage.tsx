@@ -10,6 +10,7 @@ import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
 import { api } from "../../lib/api";
+import { liveClient } from "../../lib/live-client";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
@@ -699,16 +700,25 @@ export function ReaderPage() {
       lastPlaybackSyncAtRef.current = now;
       const isPlaying =
         isPlayingOverride ?? (playIntent && (!audioRef.current.paused || isWaitingForData));
-      void api
-        .updatePlayback(job.id, audioRef.current.currentTime ?? 0, isPlaying)
-        .then(() => setLastPlaybackSyncError(null))
-        .catch((syncError) => {
-          setLastPlaybackSyncError(
-            syncError instanceof Error
-              ? `Playback sync failed: ${syncError.message}`
-              : "Playback sync failed",
-          );
-        });
+      const currentTime = audioRef.current.currentTime ?? 0;
+
+      // Prefer WebSocket — silent in access logs and lighter-weight
+      const sent = liveClient.sendPlaybackSync(job.id, currentTime, isPlaying);
+      if (sent) {
+        setLastPlaybackSyncError(null);
+      } else {
+        // Fall back to HTTP when WebSocket isn't available
+        void api
+          .updatePlayback(job.id, currentTime, isPlaying)
+          .then(() => setLastPlaybackSyncError(null))
+          .catch((syncError) => {
+            setLastPlaybackSyncError(
+              syncError instanceof Error
+                ? `Playback sync failed: ${syncError.message}`
+                : "Playback sync failed",
+            );
+          });
+      }
     },
     [audioRef, isJobTerminal, isWaitingForData, job, playIntent],
   );

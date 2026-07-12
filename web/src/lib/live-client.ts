@@ -66,6 +66,29 @@ class LiveClient {
     }, RELEASE_GRACE_MS);
   }
 
+  /**
+   * Sends a playback position update over the WebSocket.
+   * Silently no-ops if the socket is not open.
+   * Returns true if the message was sent, false otherwise
+   * (caller can fall back to HTTP).
+   */
+  sendPlaybackSync(jobId: string, currentTimeSeconds: number, isPlaying: boolean): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    this.socket.send(
+      JSON.stringify({
+        type: "playback_sync",
+        payload: {
+          job_id: jobId,
+          current_time_seconds: currentTimeSeconds,
+          is_playing: isPlaying,
+        },
+      }),
+    );
+    return true;
+  }
+
   private store() {
     return useAppStore.getState();
   }

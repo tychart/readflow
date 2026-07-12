@@ -458,8 +458,32 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                     message = await websocket.receive_text()
                 except WebSocketDisconnect:
                     break
+
+                # Plain-text heartbeat
                 if message == "ping":
                     await websocket.send_text(json.dumps({"type": "pong", "payload": {}}))
+                    continue
+
+                # JSON-typed messages
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = data.get("type")
+                payload = data.get("payload", {})
+
+                if msg_type == "playback_sync":
+                    job_id = payload.get("job_id", "")
+                    if job_id:
+                        try:
+                            app_services.job_manager.update_playback(
+                                job_id,
+                                current_time_seconds=payload.get("current_time_seconds", 0.0),
+                                is_playing=payload.get("is_playing", True),
+                            )
+                        except KeyError:
+                            pass  # stale job id, ignore silently
         finally:
             await app_services.hub.disconnect(websocket)
 
