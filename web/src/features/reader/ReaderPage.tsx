@@ -1273,9 +1273,8 @@ export function ReaderPage() {
             </div>
           </div>
 
-          <div className="rounded-[1.75rem] border border-stone-200 bg-stone-200/80 p-2">
-            <div className="rounded-[1.25rem] bg-stone-300/70 p-1">
-              <div className="flex items-stretch gap-px overflow-hidden rounded-[1rem] bg-white/45">
+          <div className="overflow-hidden rounded-[1.75rem] border border-stone-200 bg-stone-200/80">
+            <div className="flex items-stretch bg-white/45 overflow-hidden rounded-[1.5rem]">
                 {timelineSlots.map((slot) => {
                   const isMissing = slot.state === "missing_expected";
                   const isReadyAfterGap = slot.state === "ready_after_gap";
@@ -1287,7 +1286,7 @@ export function ReaderPage() {
                   return (
                     <button
                       aria-label={describeTimelineSlot(slot)}
-                      className={`group relative h-12 flex-1 overflow-hidden border-y border-transparent text-left transition first:rounded-l-[0.95rem] last:rounded-r-[0.95rem] ${
+                      className={`group relative h-12 overflow-hidden border-y border-transparent text-left transition ${
                         slot.isAnchor
                           ? "z-10 border-stone-900/60 shadow-[0_0_0_1px_rgba(28,25,23,0.18)]"
                           : ""
@@ -1303,9 +1302,8 @@ export function ReaderPage() {
                     onPointerUp={(event) => clearTimelineSeeking(event.pointerId)}
                     onPointerCancel={(event) => clearTimelineSeeking(event.pointerId)}
                     style={{
-                      flexGrow: slot.visualDurationSeconds,
-                      flexBasis: 0,
-                      }}
+                      flex: `${slot.visualDurationSeconds} 0 0`,
+                    }}
                       type="button"
                     >
                       <div
@@ -1319,9 +1317,6 @@ export function ReaderPage() {
                                 : "bg-stone-400/65"
                         }`}
                       />
-                      {isReadyAfterGap ? (
-                        <div className="absolute inset-0 bg-stone-400/65" />
-                      ) : null}
                       {isMissing && !isReprocessingSlot ? (
                         <div
                           className="absolute inset-0 opacity-85"
@@ -1353,7 +1348,9 @@ export function ReaderPage() {
                           style={{ left: `${Math.min(slot.fillPercent, 100)}%` }}
                         />
                       ) : null}
-                      <div className="absolute inset-y-2 right-0 z-10 w-px bg-white/65" />
+                      {slot.chunk.index < timelineSlots.length - 1 ? (
+                        <div className="absolute inset-y-1 right-0 z-10 w-px bg-white/65" />
+                      ) : null}
                       {/* Reload icon for reprocessing chunks */}
                       {isReprocessingSlot ? (
                         <div className="absolute inset-y-0 left-0 z-10 flex items-center justify-center">
@@ -1374,7 +1371,6 @@ export function ReaderPage() {
                     </button>
                   );
                 })}
-              </div>
             </div>
           </div>
 
