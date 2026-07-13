@@ -748,9 +748,13 @@ export function useMediaSourcePlayer({
   const setPlaybackRate = useCallback((rate: number) => {
     const clampedRate = Math.max(0.05, rate);
     const audio = audioRef.current;
+    // eslint-disable-next-line no-console
+    console.log("[ReadFlow] setPlaybackRate", { rate, clampedRate, hasAudio: !!audio, currentRate: audio?.playbackRate });
     if (audio) {
       audio.playbackRate = clampedRate;
       audio.defaultPlaybackRate = clampedRate;
+      // eslint-disable-next-line no-console
+      console.log("[ReadFlow] after set", { actualRate: audio.playbackRate, actualDefault: audio.defaultPlaybackRate });
     }
     playbackRateRef.current = clampedRate;
     setPlaybackRateState(clampedRate);
@@ -763,10 +767,16 @@ export function useMediaSourcePlayer({
   useLayoutEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
+      // eslint-disable-next-line no-console
+      console.log("[ReadFlow] layoutEffect: no audio");
       return;
     }
+    // eslint-disable-next-line no-console
+    console.log("[ReadFlow] layoutEffect", { stateRate: playbackRate, domRateBefore: audio.playbackRate });
     audio.playbackRate = playbackRate;
     audio.defaultPlaybackRate = playbackRate;
+    // eslint-disable-next-line no-console
+    console.log("[ReadFlow] layoutEffect after", { domRateAfter: audio.playbackRate });
   });
 
   const seekToSeconds = useCallback(

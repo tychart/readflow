@@ -35,10 +35,14 @@ export function SpeedSyncedAudio({
     <audio
       {...rest}
       ref={(el) => {
+        // eslint-disable-next-line no-console
+        console.log("[ReadFlow] SpeedSyncedAudio ref callback", { hasEl: !!el, rate: desiredRateRef.current });
         audioRef.current = el;
         if (el) {
           el.playbackRate = desiredRateRef.current;
           el.defaultPlaybackRate = desiredRateRef.current;
+          // eslint-disable-next-line no-console
+          console.log("[ReadFlow] SpeedSyncedAudio ref set", { actualRate: el.playbackRate });
         }
       }}
     />
