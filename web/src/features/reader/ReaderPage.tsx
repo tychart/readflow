@@ -868,11 +868,15 @@ export function ReaderPage() {
   // ── Main render ──────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4">
-      {/* Warnings */}
-      {((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) || error || lastPlayerError || downloadError) ? (
+      {/* Warnings — fixed-height container prevents layout shift */}
+      <div className="h-[44px]">
         <div
           aria-live="polite"
-          className="rounded-lg border border-[var(--amber)]/20 bg-[var(--amber)]/10 px-4 py-3 text-xs text-[var(--amber)]"
+          className={`rounded-lg border px-4 py-3 text-xs transition-all duration-200 ${
+            ((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) || error || lastPlayerError || downloadError)
+              ? 'visible opacity-100 border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]'
+              : 'invisible opacity-0'
+          }`}
         >
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
@@ -883,7 +887,7 @@ export function ReaderPage() {
             {downloadError ? <span>{downloadError}</span> : null}
           </div>
         </div>
-      ) : null}
+      </div>
 
       {/* Playbar */}
       <Playbar

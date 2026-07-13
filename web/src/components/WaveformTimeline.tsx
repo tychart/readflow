@@ -1,4 +1,4 @@
-import { type PointerEvent as ReactPointerEvent, useCallback, useRef } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef } from "react";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -25,6 +25,10 @@ export interface WaveformTimelineProps {
   capturedWaveforms: Map<number, Float32Array>;
   /** The current live waveform frame from the AnalyserNode (0..1 normalized). */
   liveWaveform: Float32Array | null;
+  /** Current playback position in seconds (for the playhead). */
+  currentTimeSeconds: number;
+  /** Total rendered duration in seconds (for the playhead position). */
+  renderedDurationSeconds: number;
   /**
    * Called when the user clicks/seeks within a slot.
    * `seekSeconds` is the audio-relative target timestamp.
@@ -94,6 +98,8 @@ export function WaveformTimeline({
   slots,
   capturedWaveforms,
   liveWaveform,
+  currentTimeSeconds,
+  renderedDurationSeconds,
   onSeek,
   onClickChunk,
 }: WaveformTimelineProps) {
@@ -186,6 +192,17 @@ export function WaveformTimeline({
     [onClickChunk],
   );
 
+  // Must be before early return — React hook ordering rule
+  const cumulativeStartTimes = useMemo(() => {
+    const times: number[] = [];
+    let running = 0;
+    for (const slot of slots) {
+      times.push(running);
+      running += slot.durationSeconds;
+    }
+    return times;
+  }, [slots]);
+
   if (slots.length === 0) {
     return (
       <div
@@ -201,12 +218,15 @@ export function WaveformTimeline({
   return (
     <div
       aria-label="Audio waveform timeline"
-      className="flex h-16 w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
+      aria-valuemax={renderedDurationSeconds}
+      aria-valuemin={0}
+      aria-valuenow={currentTimeSeconds}
+      className="relative flex h-16 w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
       ref={containerRef}
       role="slider"
       tabIndex={-1}
     >
-      {slots.map((slot) => {
+      {slots.map((slot, slotIndex) => {
         const waveform = slot.isLive && liveWaveform
           ? liveWaveform
           : (capturedWaveforms.get(slot.chunkIndex) ??
@@ -214,11 +234,15 @@ export function WaveformTimeline({
                ? generateBrokenWaveform(slot.chunkIndex, BARS_PER_CHUNK)
                : generatePlaceholderWaveform(slot.chunkIndex, BARS_PER_CHUNK)));
 
+        const chunkStartSeconds = cumulativeStartTimes[slotIndex] ?? 0;
+
         return (
           <div
             aria-label={`Chunk ${slot.chunkIndex + 1}: ${slot.state}`}
             className={`relative flex h-full cursor-pointer items-end overflow-hidden transition-colors ${
-              slot.state === "played" ? "opacity-50" : ""
+              slot.state === "played" && currentTimeSeconds > (chunkStartSeconds + slot.durationSeconds)
+                ? "opacity-40"
+                : ""
             }`}
             data-slot-state={slot.state}
             key={slot.chunkIndex}
@@ -272,27 +296,70 @@ export function WaveformTimeline({
               />
             ) : null}
 
-            {/* Waveform bars */}
-            <div className="relative z-10 flex h-[calc(100%-8px)] w-full items-end gap-px px-0.5">
+            {/* Waveform bars — smooth left-to-right amber fill, pixel-perfect at playhead */}
+            <div className="relative z-10 flex h-[calc(100%-8px)] w-full items-end gap-[2px] px-1">
               {Array.from({ length: BARS_PER_CHUNK }, (_, i) => {
                 const binIndex = Math.floor((i / BARS_PER_CHUNK) * waveform.length);
                 const amplitude = Math.max(MIN_BAR_HEIGHT, waveform[binIndex] ?? MIN_BAR_HEIGHT);
+
+                // Compute horizontal (left-to-right) fill percentage for this bar
+                const barStartTime = chunkStartSeconds + (i / BARS_PER_CHUNK) * slot.durationSeconds;
+                const barEndTime = chunkStartSeconds + ((i + 1) / BARS_PER_CHUNK) * slot.durationSeconds;
+
+                // horizontalFillPercent: how much of this bar's width is amber (left-to-right)
+                // - Playhead fully right of bar → 1.0 (entire bar amber)
+                // - Playhead fully left of bar → 0.0 (entire bar muted)
+                // - Playhead inside bar → proportional (smooth pixel movement)
+                const isSpecialState = slot.state === "failed" || slot.state === "missing_expected";
+                const isGap = slot.state === "ready_after_gap";
+
+                let horizontalFillPercent = 0;
+                if (!isSpecialState && renderedDurationSeconds > 0) {
+                  if (currentTimeSeconds >= barEndTime) {
+                    horizontalFillPercent = 1;
+                  } else if (currentTimeSeconds > barStartTime) {
+                    const barDuration = barEndTime - barStartTime;
+                    horizontalFillPercent = barDuration > 0
+                      ? Math.min(1, (currentTimeSeconds - barStartTime) / barDuration)
+                      : 0;
+                  }
+                }
+
                 return (
                   <div
-                    className={`w-full rounded-t-[1px] transition-all duration-75 ${
-                      slot.state === "played"
-                        ? "bg-[var(--waveform-bar)]"
-                        : slot.state === "playing"
-                          ? "bg-[var(--amber)]"
-                          : slot.state === "failed"
-                            ? "bg-rose-500/60"
-                            : slot.state === "missing_expected"
-                              ? "bg-[var(--waveform-bar-muted)]"
-                              : "bg-[var(--waveform-bar-dim)]"
-                    }`}
+                    className="relative w-full"
                     key={i}
                     style={{ height: `${amplitude * 100}%` }}
-                  />
+                  >
+                    {isSpecialState ? (
+                      <div
+                        className={`absolute inset-0 w-full rounded-[2px] ${
+                          slot.state === "failed" ? "bg-rose-500/60" : "bg-[var(--waveform-bar-muted)]"
+                        }`}
+                      />
+                    ) : (
+                      <>
+                        {/* Muted background — full bar height & width */}
+                        <div
+                          className={`absolute inset-0 w-full rounded-[2px] ${
+                            isGap ? "bg-[var(--waveform-bar-dim)]/50" : "bg-[var(--waveform-bar-dim)]"
+                          }`}
+                        />
+                        {/* Amber foreground — fills left-to-right with playhead */}
+                        {horizontalFillPercent > 0 ? (
+                          <div
+                            className={`absolute inset-y-0 left-0 rounded-[2px] ${
+                              isGap ? "bg-[var(--amber)]/70" : "bg-[var(--amber)]"
+                            }`}
+                            style={{
+                              width: `${horizontalFillPercent * 100}%`,
+                              minWidth: '1px',
+                            }}
+                          />
+                        ) : null}
+                      </>
+                    )}
+                  </div>
                 );
               })}
             </div>

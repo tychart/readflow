@@ -243,9 +243,11 @@ export function Playbar({
         <div className="min-w-0 flex-1">
           <WaveformTimeline
             capturedWaveforms={capturedWaveforms}
+            currentTimeSeconds={currentTimeSeconds}
             liveWaveform={liveWaveform}
             onClickChunk={handleTimelineClick}
             onSeek={handleTimelineSeek}
+            renderedDurationSeconds={renderedDurationSeconds}
             slots={slots}
           />
         </div>
@@ -253,19 +255,19 @@ export function Playbar({
 
       {/* Bottom row: metadata + controls */}
       <div className="flex items-center justify-between gap-4 text-xs text-[var(--ink-secondary)]">
-        {/* Left: time display */}
+        {/* Left: time display — fixed widths prevent layout shift */}
         <div className="flex items-center gap-3 font-mono tabular-nums">
           {/* Current time */}
-          <span className="font-semibold text-[var(--ink-primary)]">
+          <span className="inline-block min-w-[32px] text-right font-semibold text-[var(--ink-primary)]">
             {formatClock(currentTimeSeconds)}
           </span>
           <span className="opacity-40">/</span>
-          <span>{formatClock(renderedDurationSeconds)}</span>
+          <span className="inline-block min-w-[32px]">{formatClock(renderedDurationSeconds)}</span>
 
-          {/* Player state */}
+          {/* Player state — fixed min-width prevents layout shift */}
           <span
             aria-live="polite"
-            className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+            className={`ml-2 inline-block min-w-[100px] rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${
               playerStateLabel === "Playing" || playerStateLabel === "Starting…" || playerStateLabel === "Preparing stream…"
                 ? "bg-[var(--amber-soft)] text-[var(--amber)]"
                 : playerStateLabel === "Playback complete"
