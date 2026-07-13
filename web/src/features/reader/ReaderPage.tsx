@@ -680,14 +680,17 @@ export function ReaderPage() {
     }
   }, [activeProgress.activeChunkIndex]);
 
-  // ── Scroll-triggered compact playbar — must be before early returns ──
-  const [isCompact, setIsCompact] = useState(false);
+  // ── Scroll-triggered progressive playbar shrink — must be before early returns ──
+  const [scrollProgress, setScrollProgress] = useState(0);
 
   useEffect(() => {
-    // Simple scroll listener: when user scrolls past ~150px, compact the playbar
-    // This always works because window.scrollY is always available — no DOM ref dependency
-    const handleScroll = () => setIsCompact(window.scrollY > 150);
-    handleScroll(); // set initial state
+    // Progressively shrink the playbar as the user scrolls down.
+    // At 0px scroll: fully expanded. At ~220px scroll: fully compact.
+    const handleScroll = () => {
+      const progress = Math.min(1, Math.max(0, window.scrollY / 220));
+      setScrollProgress(progress);
+    };
+    handleScroll();
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
@@ -881,21 +884,32 @@ export function ReaderPage() {
   return (
     <div className="flex flex-col">
       {/* Sticky playbar wrapper — flush against the app header */}
-      <div
-        className={`sticky top-[56px] z-30 w-full transition-all duration-300 ${
-          isCompact
-            ? 'bg-[var(--surface)]/90 backdrop-blur-md border-b border-[var(--line)] shadow-sm'
-            : 'bg-transparent'
-        }`}
-      >
-        <div className={`mx-auto w-full transition-all duration-300 ${
-          isCompact ? 'px-3 py-2' : 'px-4 py-5 md:px-6'
-        }`}>
+      <div className="sticky top-[56px] z-30 w-full">
+        {/* Background layer — fades in smoothly with scroll progress */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 transition-all duration-300"
+          style={{
+            background: 'var(--surface)',
+            opacity: scrollProgress * 0.95,
+            backdropFilter: scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : 'none',
+            WebkitBackdropFilter: scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : 'none',
+            borderBottom: scrollProgress > 0.05 ? '1px solid var(--line)' : '1px solid transparent',
+            boxShadow: scrollProgress > 0.5 ? '0 1px 3px rgba(0,0,0,0.3)' : 'none',
+          }}
+        />
+        {/* Content — padding shrinks progressively */}
+        <div
+          className="relative z-10 mx-auto w-full"
+          style={{
+            padding: `${Math.round(20 - scrollProgress * 12)}px ${Math.round(16 - scrollProgress * 4)}px`,
+          }}
+        >
           <Playbar
             activeChunkIndex={activeProgress.activeChunkIndex}
             audioRef={audioRef as React.RefObject<HTMLAudioElement | null>}
             canDownload={canDownloadRenderedAudio}
-            compact={isCompact}
+            scrollProgress={scrollProgress}
             currentTimeSeconds={currentTimeSeconds}
             isAutoplayBlocked={isAutoplayBlocked}
             isDownloadComplete={isDownloadComplete}

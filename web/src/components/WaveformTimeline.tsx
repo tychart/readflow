@@ -36,8 +36,12 @@ export interface WaveformTimelineProps {
   onSeek: (chunkIndex: number, seekSeconds: number) => void;
   /** Called when a slot is clicked (not a seek). */
   onClickChunk?: (chunkIndex: number) => void;
-  /** When true, renders a compact timeline (smaller height, no labels/separators). */
-  compact?: boolean;
+  /**
+   * Scroll progress from 0 to 1.
+   * 0 = full height with labels/separators
+   * 1 = compact height, no labels/separators
+   */
+  scrollProgress: number;
 }
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -104,8 +108,9 @@ export function WaveformTimeline({
   renderedDurationSeconds,
   onSeek,
   onClickChunk,
-  compact = false,
+  scrollProgress,
 }: WaveformTimelineProps) {
+  const compact = scrollProgress > 0.95;
   const seekingPointerIdRef = useRef<number | null>(null);
   const suppressClickRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -206,14 +211,16 @@ export function WaveformTimeline({
     return times;
   }, [slots]);
 
-  const heightClass = compact ? 'h-10' : 'h-20';
+  // Smooth height interpolation: 80px (h-20) → 40px (h-10)
+  const timelineHeight = Math.round(80 - scrollProgress * 40);
 
   if (slots.length === 0) {
     return (
       <div
         aria-label="Timeline"
-        className={`flex ${heightClass} items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)] text-xs text-[var(--ink-secondary)]`}
+        className="flex items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)] text-xs text-[var(--ink-secondary)]"
         role="slider"
+        style={{ height: timelineHeight }}
       >
         No chunks to display
       </div>
@@ -226,9 +233,8 @@ export function WaveformTimeline({
       aria-valuemax={renderedDurationSeconds}
       aria-valuemin={0}
       aria-valuenow={currentTimeSeconds}
-      className={`relative flex w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] ${
-        compact ? 'h-10' : 'h-20'
-      }`}
+      className="relative flex w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
+      style={{ height: timelineHeight }}
       ref={containerRef}
       role="slider"
       tabIndex={-1}

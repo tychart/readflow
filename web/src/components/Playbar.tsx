@@ -44,8 +44,13 @@ export interface PlaybarProps {
   totalChunks: number;
   /** Number of chunks currently written/ready. */
   writtenChunks: number;
-  /** When true, renders a slim compact version (play button + waveform only). */
-  compact?: boolean;
+  /**
+   * Scroll progress from 0 to 1.
+   * 0 = fully expanded (at top of page)
+   * 1 = fully compact (scrolled past playbar)
+   * Drives smooth inline-style transitions on padding, sizes, opacity.
+   */
+  scrollProgress: number;
 }
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -86,8 +91,10 @@ export function Playbar({
   isDownloading = false,
   totalChunks,
   writtenChunks,
-  compact = false,
+  scrollProgress,
 }: PlaybarProps) {
+  // Binary compact state derived from scroll progress for structural logic
+  const compact = scrollProgress > 0.95;
   const barRef = useRef<HTMLDivElement>(null);
 
   // ── Waveform analyser ─────────────────────────────────────
@@ -206,45 +213,60 @@ export function Playbar({
   // When autoplay is blocked, show "Resume" to encourage a click.
   const playButtonLabel = isAutoplayBlocked ? "Resume" : playIntent ? "Pause" : "Play";
 
+  // ── Smooth interpolated values ────────────────────────────
+  // All animate linearly as scrollProgress goes 0 → 1
+  const containerPad = Math.round(20 - scrollProgress * 20); // 20px → 0px
+  const btnSize = Math.round(48 - scrollProgress * 12);     // 48px → 36px
+  const iconSize = Math.round(16 - scrollProgress * 4);     // 16px → 12px
+  const gap = 12 - scrollProgress * 4;                      // 12px → 8px
+  const metaOpacity = Math.max(0, 1 - scrollProgress * 1.2); // fades out by ~0.83
+  // Fade the card border/background out as compact approaches
+  const cardVisibility = 1 - Math.min(1, scrollProgress * 1.5);
+
   return (
     <div
       aria-label="Playback controls"
-      className={`flex w-full flex-col transition-all ${
-        compact
-          ? 'gap-2'
-          : 'gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5'
-      }`}
+      className="flex w-full flex-col"
       ref={barRef}
       role="toolbar"
+      style={{ gap: `${gap}px` }}
       tabIndex={-1}
     >
+      {/* Card background/border — fades out as scrollProgress increases */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 rounded-xl border border-[var(--line)] bg-[var(--surface)]"
+        style={{ opacity: cardVisibility }}
+      />
+
       {/* Top row: play/pause + timeline */}
-      <div className="flex items-center gap-3">
+      <div
+        className="relative z-10 flex items-center gap-3"
+        style={{ padding: `${containerPad}px` }}
+      >
         {/* Play/Pause button */}
         <button
           aria-label={playButtonLabel}
-          className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)] ${
-            compact ? 'h-9 w-9' : 'h-12 w-12'
-          }`}
+          className="flex shrink-0 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)]"
           onClick={() => (isPlaying ? onPause() : onPlay())}
+          style={{ width: btnSize, height: btnSize }}
           type="button"
         >
           {showSpinner ? (
             <span
               aria-hidden="true"
-              className={`inline-block animate-spin rounded-full border-2 border-white border-t-transparent ${
-                compact ? 'h-3 w-3' : 'h-4 w-4'
-              }`}
+              className="inline-block animate-spin rounded-full border-2 border-white border-t-transparent"
+              style={{ width: iconSize, height: iconSize }}
             />
           ) : isPlaying || playIntent ? (
             /* Pause icon */
-            <svg aria-hidden="true" className={compact ? 'h-3 w-3' : 'h-4 w-4'} fill="currentColor" viewBox="0 0 16 16">
+            <svg aria-hidden="true" fill="currentColor" style={{ width: iconSize, height: iconSize }} viewBox="0 0 16 16">
               <rect height="14" rx="1" width="5" x="2.5" y="1" />
               <rect height="14" rx="1" width="5" x="8.5" y="1" />
             </svg>
           ) : (
             /* Play icon */
-            <svg aria-hidden="true" className={`ml-0.5 ${compact ? 'h-3 w-3' : 'h-4 w-4'}`} fill="currentColor" viewBox="0 0 16 16">
+            <svg aria-hidden="true" className="ml-0.5" fill="currentColor" style={{ width: iconSize, height: iconSize }} viewBox="0 0 16 16">
               <path d="M3 1.5v13l11-6.5L3 1.5z" />
             </svg>
           )}
@@ -254,7 +276,7 @@ export function Playbar({
         <div className="min-w-0 flex-1">
           <WaveformTimeline
             capturedWaveforms={capturedWaveforms}
-            compact={compact}
+            scrollProgress={scrollProgress}
             currentTimeSeconds={currentTimeSeconds}
             liveWaveform={liveWaveform}
             onClickChunk={handleTimelineClick}
@@ -265,21 +287,30 @@ export function Playbar({
         </div>
       </div>
 
-      {/* Bottom row: metadata + controls — hidden in compact mode */}
-      {!compact && (
-        <div className="flex items-center justify-between gap-4 text-xs text-[var(--ink-secondary)]">
-          {/* Left: time display — fixed widths prevent layout shift */}
-          <div className="flex items-center gap-3 font-mono tabular-nums">
-            {/* Current time */}
-            <span className="inline-block min-w-[32px] text-right font-semibold text-[var(--ink-primary)]">
-              {formatClock(currentTimeSeconds)}
-            </span>
-            <span className="opacity-40">/</span>
-            <span className="inline-block min-w-[32px]">{formatClock(renderedDurationSeconds)}</span>
+      {/* Bottom row: metadata + controls — fades out progressively */}
+      <div
+        className="relative z-10 flex items-center justify-between gap-4 text-xs text-[var(--ink-secondary)]"
+        style={{
+          opacity: metaOpacity,
+          maxHeight: metaOpacity > 0 ? '50px' : '0px',
+          overflow: 'hidden',
+          paddingLeft: `${containerPad}px`,
+          paddingRight: `${containerPad}px`,
+          paddingBottom: `${containerPad > 0 ? containerPad : 0}px`,
+        }}
+      >
+        {/* Left: time display — fixed widths prevent layout shift */}
+        <div className="flex items-center gap-3 font-mono tabular-nums">
+          {/* Current time */}
+          <span className="inline-block min-w-[32px] text-right font-semibold text-[var(--ink-primary)]">
+            {formatClock(currentTimeSeconds)}
+          </span>
+          <span className="opacity-40">/</span>
+          <span className="inline-block min-w-[32px]">{formatClock(renderedDurationSeconds)}</span>
 
-            {/* Player state — fixed min-width prevents layout shift */}
-            <span
-              aria-live="polite"
+          {/* Player state — fixed min-width prevents layout shift */}
+          <span
+            aria-live="polite"
               className={`ml-2 inline-block min-w-[100px] rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${
                 playerStateLabel === "Playing" || playerStateLabel === "Starting…" || playerStateLabel === "Preparing stream…"
                   ? "bg-[var(--amber-soft)] text-[var(--amber)]"
@@ -341,7 +372,6 @@ export function Playbar({
             </button>
           </div>
         </div>
-      )}
     </div>
   );
 }
