@@ -6,6 +6,7 @@
   --canvas: #0b1120;
   --surface: #131b2f;
   --surface-raised: #1b2640;
+  --hover-bg: rgba(255, 255, 255, 0.05);
   --line: rgba(255, 255, 255, 0.06);
   --ink-primary: #f1f5f9;
   --ink-secondary: #94a3b8;
@@ -15,6 +16,10 @@
   --emerald: #22c55e;
   --rose: #ef4444;
   --slate: #475569;
+  --waveform-bar: rgba(255, 255, 255, 0.35);
+  --waveform-bar-dim: rgba(255, 255, 255, 0.18);
+  --waveform-bar-muted: rgba(255, 255, 255, 0.10);
+  --waveform-sep: rgba(255, 255, 255, 0.08);
   --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
@@ -26,6 +31,7 @@
   --canvas: #f5f2ed;
   --surface: #ffffff;
   --surface-raised: #faf8f5;
+  --hover-bg: rgba(0, 0, 0, 0.04);
   --line: rgba(0, 0, 0, 0.08);
   --ink-primary: #1c1917;
   --ink-secondary: #6b6258;
@@ -35,6 +41,10 @@
   --emerald: #16a34a;
   --rose: #dc2626;
   --slate: #94a3b8;
+  --waveform-bar: rgba(0, 0, 0, 0.25);
+  --waveform-bar-dim: rgba(0, 0, 0, 0.12);
+  --waveform-bar-muted: rgba(0, 0, 0, 0.06);
+  --waveform-sep: rgba(0, 0, 0, 0.06);
   --shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
 }
 

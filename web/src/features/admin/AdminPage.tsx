@@ -29,7 +29,7 @@ const MODEL_STATE_LABELS: Record<string, string> = {
 };
 
 const MODEL_STATE_COLORS: Record<string, { dot: string; pulse?: boolean }> = {
-  unloaded: { dot: "bg-white/30" },
+  unloaded: { dot: "bg-[var(--ink-secondary)]" },
   loading: { dot: "bg-amber-400", pulse: true },
   warm_idle: { dot: "bg-emerald-400" },
   busy: { dot: "bg-blue-400" },
@@ -169,7 +169,7 @@ export function AdminPage() {
               Warmth and flow control
             </h1>
             {hasUnsavedChanges && (
-              <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-900/30 bg-amber-950/30 px-2.5 py-1 text-[10px] font-semibold text-amber-400">
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--amber)]/20 bg-[var(--amber)]/10 px-2.5 py-1 text-[10px] font-semibold text-[var(--amber)]">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
                 Unsaved
               </span>
@@ -296,8 +296,8 @@ export function AdminPage() {
           <div
             className={`mt-4 rounded-lg border px-4 py-3 text-xs font-medium ${
               feedbackMessage.type === "success"
-                ? "border-emerald-900/30 bg-emerald-950/30 text-emerald-400"
-                : "border-rose-900/30 bg-rose-950/30 text-rose-400"
+                ? "border-[var(--emerald)]/20 bg-[var(--emerald)]/10 text-[var(--emerald)]"
+                : "border-[var(--rose)]/20 bg-[var(--rose)]/10 text-[var(--rose)]"
             }`}
             role="alert"
             aria-live="polite"
@@ -336,7 +336,7 @@ export function AdminPage() {
                 {(() => {
                   const raw = adminState.telemetry?.model_state ?? "";
                   const label = MODEL_STATE_LABELS[raw] ?? (raw || "Unknown");
-                  const colors = MODEL_STATE_COLORS[raw] ?? { dot: "bg-white/30" };
+                  const colors = MODEL_STATE_COLORS[raw] ?? { dot: "bg-[var(--ink-secondary)]" };
                   return (
                     <span className="inline-flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-1.5 text-xs font-medium text-[var(--ink-primary)]">
                       <span className={`inline-block h-2 w-2 rounded-full ${colors.dot} ${colors.pulse ? "animate-pulse" : ""}`} />
@@ -393,7 +393,7 @@ export function AdminPage() {
                           Allocated {adminState.memory.vram_used_mb.toLocaleString()} MB
                         </span>
                         <span className="flex items-center gap-1">
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-white/30" />
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--ink-secondary)]" />
                           Headroom {Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb).toLocaleString()} MB
                         </span>
                       </div>
@@ -403,7 +403,7 @@ export function AdminPage() {
                       <span>Hard: {adminState.config.vram_hard_limit_mb.toLocaleString()} MB</span>
                     </div>
                     {(adminState.telemetry?.oom_count ?? 0) > 0 && (
-                      <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-rose-900/30 bg-rose-950/30 px-2 py-0.5 text-[10px] font-medium text-rose-400">
+                      <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-2 py-0.5 text-[10px] font-medium text-[var(--rose)]">
                         {adminState.telemetry!.oom_count} OOM
                       </div>
                     )}

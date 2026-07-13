@@ -729,7 +729,7 @@ export function ReaderPage() {
 
   if (!job) {
     return (
-      <div className="rounded-xl border border-rose-900/30 bg-rose-950/30 px-5 py-8 text-center text-sm text-rose-400">
+      <div className="rounded-xl border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-5 py-8 text-center text-sm text-[var(--rose)]">
         {error ?? "Job not found"}
       </div>
     );
@@ -855,8 +855,8 @@ export function ReaderPage() {
         {/* Status badges */}
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <span className={`rounded-md px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
-            chunk.status === "written" ? "bg-emerald-950/30 text-emerald-400 border border-emerald-900/30" :
-            chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-rose-950/30 text-rose-400 border border-rose-900/30" :
+            chunk.status === "written" ? "bg-[var(--emerald)]/10 text-[var(--emerald)] border border-[var(--emerald)]/20" :
+            chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-[var(--rose)]/10 text-[var(--rose)] border border-[var(--rose)]/20" :
             "bg-white/5 text-[var(--ink-secondary)] border border-[var(--line)]"
           }`}>
             {chunk.status}
@@ -887,13 +887,13 @@ export function ReaderPage() {
         ) : null}
 
         {maxRetriesReached ? (
-          <div className="rounded-md bg-rose-950/30 px-3 py-2 text-xs text-rose-400">
+          <div className="rounded-md bg-[var(--rose)]/10 px-3 py-2 text-xs text-[var(--rose)]">
             Max retries exceeded (3/3)
           </div>
         ) : null}
 
         {reprocessError ? (
-          <div className="mt-2 rounded-md bg-rose-950/30 px-3 py-2 text-xs text-rose-400">
+          <div className="mt-2 rounded-md bg-[var(--rose)]/10 px-3 py-2 text-xs text-[var(--rose)]">
             {reprocessError}
           </div>
         ) : null}
@@ -908,7 +908,7 @@ export function ReaderPage() {
       {((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) || error || lastPlayerError || downloadError) ? (
         <div
           aria-live="polite"
-          className="rounded-lg border border-amber-900/30 bg-amber-950/30 px-4 py-3 text-xs text-amber-400"
+          className="rounded-lg border border-[var(--amber)]/20 bg-[var(--amber)]/10 px-4 py-3 text-xs text-[var(--amber)]"
         >
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
@@ -1021,7 +1021,7 @@ export function ReaderPage() {
               <div className="flex justify-between"><span>Current time</span><span>{currentTimeSeconds.toFixed(1)}s</span></div>
               <div className="flex justify-between"><span>Audio ready/network</span><span>{diagnostics.readyState}/{diagnostics.networkState}</span></div>
               {lastPlayerError || lastPlaybackSyncError || lastSocketError ? (
-                <div className="mt-2 rounded-md bg-rose-950/30 px-2 py-1 text-rose-400">
+                <div className="mt-2 rounded-md bg-[var(--rose)]/10 px-2 py-1 text-[var(--rose)]">
                   {lastPlayerError ?? lastPlaybackSyncError ?? lastSocketError}
                 </div>
               ) : null}
@@ -1048,8 +1048,8 @@ export function ReaderPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-[var(--ink-primary)]">Chunk {chunk.index + 1}</span>
                       <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                        chunk.status === "written" ? "bg-emerald-950/30 text-emerald-400" :
-                        chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-rose-950/30 text-rose-400" :
+                        chunk.status === "written" ? "bg-[var(--emerald)]/10 text-[var(--emerald)]" :
+                        chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-[var(--rose)]/10 text-[var(--rose)]" :
                         "bg-white/5 text-[var(--ink-secondary)]"
                       }`}>
                         {chunk.status}

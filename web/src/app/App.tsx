@@ -69,7 +69,7 @@ function ConnectionBadge() {
             ? "border-amber-900/30 bg-amber-950/30 text-amber-400"
             : isError
               ? "border-rose-900/30 bg-rose-950/30 text-rose-400"
-              : "border-white/5 bg-white/5 text-[var(--ink-secondary)]"
+              : "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
       }`}
       title={lastSocketError ?? "WebSocket connection status"}
     >
@@ -78,12 +78,12 @@ function ConnectionBadge() {
         aria-hidden="true"
         className={`inline-block h-1.5 w-1.5 rounded-full ${
           isHealthy
-            ? "bg-emerald-400"
+            ? "bg-[var(--emerald)]"
             : isConnecting
-              ? "bg-amber-400"
+              ? "bg-[var(--amber)]"
               : isError
-                ? "bg-rose-400"
-                : "bg-white/30"
+                ? "bg-[var(--rose)]"
+                : "bg-[var(--ink-secondary)]"
         } ${isConnecting ? "animate-pulse" : ""}`}
       />
       <span className="font-medium uppercase tracking-wider">{label}</span>
@@ -137,7 +137,7 @@ function Shell() {
                     `rounded-lg px-3 py-1.5 text-sm font-medium transition ${
                       isActive
                         ? "bg-[var(--amber-soft)] text-[var(--amber)]"
-                        : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] hover:bg-white/5"
+                        : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] hover:bg-[var(--hover-bg)]"
                     }`
                   }
                   end={to === "/"}

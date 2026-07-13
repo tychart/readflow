@@ -287,8 +287,8 @@ export function Playbar({
                 : playerStateLabel === "Playback complete"
                   ? "bg-emerald-900/30 text-emerald-400"
                   : playerStateLabel === "Buffering…" || playerStateLabel === "Preparing stream…"
-                    ? "bg-white/5 text-[var(--ink-secondary)]"
-                    : "bg-white/5 text-[var(--ink-secondary)]"
+                    ? "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
+                    : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
             }`}
           >
             {playerStateLabel}

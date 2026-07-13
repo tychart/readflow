@@ -10,12 +10,12 @@ import { JobCreateForm } from "./JobCreateForm";
 
 function StatusBadge({ status }: { status: JobSummary["status"] }) {
   const colors: Record<JobSummary["status"], string> = {
-    queued: "bg-white/5 text-[var(--ink-secondary)] border border-[var(--line)]",
-    rendering: "bg-amber-950/30 text-amber-400 border border-amber-900/30",
-    paused: "bg-white/5 text-[var(--ink-secondary)] border border-[var(--line)]",
-    playing: "bg-emerald-950/30 text-emerald-400 border border-emerald-900/30",
-    completed: "bg-emerald-950/30 text-emerald-400 border border-emerald-900/30",
-    failed: "bg-rose-950/30 text-rose-400 border border-rose-900/30",
+    queued: "bg-[var(--hover-bg)] text-[var(--ink-secondary)] border border-[var(--line)]",
+    rendering: "bg-[var(--amber)]/10 text-[var(--amber)] border border-[var(--amber)]/20",
+    paused: "bg-[var(--hover-bg)] text-[var(--ink-secondary)] border border-[var(--line)]",
+    playing: "bg-[var(--emerald)]/10 text-[var(--emerald)] border border-[var(--emerald)]/20",
+    completed: "bg-[var(--emerald)]/10 text-[var(--emerald)] border border-[var(--emerald)]/20",
+    failed: "bg-[var(--rose)]/10 text-[var(--rose)] border border-[var(--rose)]/20",
   };
 
   return (

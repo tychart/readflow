@@ -248,8 +248,8 @@ export function WaveformTimeline({
                     : slot.state === "playing"
                       ? "bg-[var(--amber-soft)]"
                       : slot.state === "played"
-                        ? "bg-white/[0.02]"
-                        : "bg-white/[0.02]"
+                        ? "bg-[var(--waveform-bar-muted)]"
+                        : "bg-[var(--waveform-bar-muted)]"
               }`}
             />
 
@@ -282,14 +282,14 @@ export function WaveformTimeline({
                   <div
                     className={`w-full rounded-t-[1px] transition-all duration-75 ${
                       slot.state === "played"
-                        ? "bg-white/30"
+                        ? "bg-[var(--waveform-bar)]"
                         : slot.state === "playing"
                           ? "bg-[var(--amber)]"
                           : slot.state === "failed"
                             ? "bg-rose-500/60"
                             : slot.state === "missing_expected"
-                              ? "bg-white/15"
-                              : "bg-white/20"
+                              ? "bg-[var(--waveform-bar-muted)]"
+                              : "bg-[var(--waveform-bar-dim)]"
                     }`}
                     key={i}
                     style={{ height: `${amplitude * 100}%` }}
@@ -310,7 +310,7 @@ export function WaveformTimeline({
             {slot.chunkIndex < slots.length - 1 ? (
               <div
                 aria-hidden="true"
-                className="absolute inset-y-2 right-0 z-20 w-px bg-white/10"
+                className="absolute inset-y-2 right-0 z-20 w-px bg-[var(--waveform-sep)]"
               />
             ) : null}
           </div>
