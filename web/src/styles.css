@@ -1,26 +1,60 @@
 @import "tailwindcss";
 
+/* ── Dark mode (default) ─────────────────────────────────── */
 :root {
-  color-scheme: light;
-  --canvas: #f5efe3;
-  --panel: rgba(255, 250, 242, 0.88);
-  --panel-strong: #fffaf2;
-  --ink: #1f1f1a;
-  --accent: #0e6b62;
-  --accent-2: #c16829;
-  --line: rgba(37, 32, 26, 0.12);
-  --shadow: 0 20px 60px rgba(65, 50, 28, 0.14);
+  color-scheme: dark;
+  --canvas: #0b1120;
+  --surface: #131b2f;
+  --surface-raised: #1b2640;
+  --line: rgba(255, 255, 255, 0.06);
+  --ink-primary: #f1f5f9;
+  --ink-secondary: #94a3b8;
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.15);
+  --amber-glow: 0 0 20px rgba(245, 158, 11, 0.25);
+  --emerald: #22c55e;
+  --rose: #ef4444;
+  --slate: #475569;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
 }
 
+/* ── Light mode (class override) ─────────────────────────── */
+.light {
+  color-scheme: light;
+  --canvas: #f5f2ed;
+  --surface: #ffffff;
+  --surface-raised: #faf8f5;
+  --line: rgba(0, 0, 0, 0.08);
+  --ink-primary: #1c1917;
+  --ink-secondary: #6b6258;
+  --amber: #d97706;
+  --amber-soft: rgba(217, 119, 6, 0.1);
+  --amber-glow: 0 0 12px rgba(217, 119, 6, 0.12);
+  --emerald: #16a34a;
+  --rose: #dc2626;
+  --slate: #94a3b8;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+/* ── Base styles ─────────────────────────────────────────── */
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(14, 107, 98, 0.18), transparent 30%),
-    radial-gradient(circle at top right, rgba(193, 104, 41, 0.18), transparent 30%),
-    linear-gradient(180deg, #fbf7f0 0%, #efe6d6 100%);
-  color: var(--ink);
-  font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+  background: var(--canvas);
+  color: var(--ink-primary);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  body {
+    transition: none;
+  }
 }
 
 #root {
@@ -31,14 +65,47 @@ body {
   min-height: 100vh;
 }
 
+/* ── Reusable panel surface ───────────────────────────────── */
 .panel {
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
 }
 
-.display-font {
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+/* ── Scrollbar styling (dark-friendly) ───────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
+.light ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Selection ────────────────────────────────────────────── */
+::selection {
+  background: var(--amber-soft);
+  color: var(--ink-primary);
+}
+
+/* ── Focus ring ───────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* ── Tailwind dark variant ────────────────────────────────── */
+@custom-variant dark (&:where(.dark, .dark *));
