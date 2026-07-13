@@ -741,18 +741,23 @@ export function useMediaSourcePlayer({
     const audio = audioRef.current;
     if (audio) {
       audio.playbackRate = clampedRate;
+      audio.defaultPlaybackRate = clampedRate;
     }
     playbackRateRef.current = clampedRate;
     setPlaybackRateState(clampedRate);
   }, []);
 
-  // Sync audio element playbackRate when stream becomes primed
+  // Sync audio element playbackRate after every render so that it stays
+  // applied even if the audio element is recreated, a new source is loaded,
+  // or the browser otherwise resets the property.
   useEffect(() => {
-    if (!isStreamPrimed || !audioRef.current) {
+    const audio = audioRef.current;
+    if (!audio) {
       return;
     }
-    audioRef.current.playbackRate = playbackRate;
-  }, [isStreamPrimed, playbackRate]);
+    audio.playbackRate = playbackRate;
+    audio.defaultPlaybackRate = playbackRate;
+  });
 
   const seekToSeconds = useCallback(
     (targetSeconds: number) => {

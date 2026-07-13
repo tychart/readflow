@@ -749,6 +749,7 @@ describe("playbackRate", () => {
     }
 
     const { container } = render(<Harness />);
+    const audio = container.querySelector("audio");
 
     act(() => {
       setPlaybackRateFromHook(0.75);
@@ -761,6 +762,8 @@ describe("playbackRate", () => {
     });
 
     expect(container.firstChild).toHaveAttribute("data-playback-rate", "2.5");
+    expect(audio!.playbackRate).toBe(2.5);
+    expect(audio!.defaultPlaybackRate).toBe(2.5);
   });
 });
 
