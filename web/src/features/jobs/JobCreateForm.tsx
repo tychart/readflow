@@ -12,6 +12,22 @@ const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: "Qwen/Qwen3-TTS-12Hz-1.7B-Base", label: "Large (1.7B)" },
 ];
 
+/* ── Reusable input style ─────────────────────────────────── */
+
+function inputBase() {
+  return [
+    "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3.5 py-2.5",
+    "text-sm text-[var(--ink-primary)] placeholder:text-[var(--ink-secondary)]/50",
+    "transition focus:outline-none focus:border-[var(--amber)] focus:ring-1 focus:ring-[var(--amber)]",
+  ].join(" ");
+}
+
+function labelClass() {
+  return "block text-xs font-medium uppercase tracking-wider text-[var(--ink-secondary)] mb-1.5";
+}
+
+/* ── Component ────────────────────────────────────────────── */
+
 export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
   const [text, setText] = useState("");
   const [title, setTitle] = useState("");
@@ -67,28 +83,37 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
     [title, text, file, voiceId, modelId, onSubmit],
   );
 
+  const canSubmit = (text.trim() || file) && !submitting;
+
   return (
-    <form className="panel rounded-[2rem] p-6" onSubmit={handleSubmit}>
+    <form
+      className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
+      onSubmit={handleSubmit}
+    >
       <div className="flex flex-col gap-4">
+        {/* Title */}
         <div>
-          <label className="mb-2 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600" htmlFor="job-title">
+          <label className={labelClass()} htmlFor="job-title">
             Job title
           </label>
           <input
-            className="w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+            className={inputBase()}
             id="job-title"
+            type="text"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="Optional title"
           />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+
+        {/* Voice + Model row */}
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="mb-2 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600" htmlFor="voice-select">
+            <label className={labelClass()} htmlFor="voice-select">
               Voice
             </label>
             <select
-              className="w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+              className={inputBase()}
               id="voice-select"
               value={voiceId}
               onChange={(event) => setVoiceId(event.target.value)}
@@ -101,11 +126,11 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
             </select>
           </div>
           <div>
-            <label className="mb-2 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600" htmlFor="model-select">
+            <label className={labelClass()} htmlFor="model-select">
               Model
             </label>
             <select
-              className="w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3"
+              className={inputBase()}
               id="model-select"
               value={modelId}
               onChange={(event) => setModelId(event.target.value)}
@@ -118,31 +143,49 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
             </select>
           </div>
         </div>
+
+        {/* Text source */}
         <div>
-          <label className="mb-2 block text-sm font-semibold uppercase tracking-[0.2em] text-stone-600" htmlFor="job-text">
+          <label className={labelClass()} htmlFor="job-text">
             Text source
           </label>
           <textarea
-            className="min-h-56 w-full rounded-3xl border border-stone-300 bg-white/70 px-4 py-3"
+            className={`${inputBase()} min-h-44 resize-y`}
             id="job-text"
+            rows={8}
             value={text}
             onChange={(event) => setText(event.target.value)}
-            placeholder="Paste long-form text here"
+            placeholder="Paste long-form text here…"
           />
         </div>
-        <div className="rounded-2xl border border-dashed border-stone-400 bg-white/40 px-4 py-4">
-          <span className="mb-2 block text-sm font-semibold">Upload .txt instead</span>
+
+        {/* File upload */}
+        <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--canvas)]/50 p-4 transition hover:border-white/20">
+          <span className="mb-2 block text-xs font-medium text-[var(--ink-secondary)]">
+            Upload .txt instead
+          </span>
           <input
             aria-label="Upload text file"
-            className="block"
+            className="block w-full text-xs text-[var(--ink-secondary)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--surface-raised)] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-[var(--ink-primary)] hover:file:brightness-110"
             type="file"
             accept=".txt"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
+          {file ? (
+            <p className="mt-1.5 text-xs text-[var(--ink-secondary)]">
+              {file.name} ({(file.size / 1024).toFixed(1)} KB)
+            </p>
+          ) : null}
         </div>
+
+        {/* Submit */}
         <button
-          className="rounded-full bg-[var(--accent)] px-5 py-3 font-semibold text-white disabled:opacity-50"
-          disabled={submitting || (!text.trim() && !file)}
+          className={`rounded-lg px-5 py-2.5 text-sm font-semibold transition ${
+            canSubmit
+              ? "bg-[var(--amber)] text-[var(--canvas)] hover:brightness-110"
+              : "cursor-not-allowed bg-[var(--surface-raised)] text-[var(--ink-secondary)]/50"
+          }`}
+          disabled={!canSubmit}
           type="submit"
         >
           {submitting ? "Creating…" : "Create job"}
