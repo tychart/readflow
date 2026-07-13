@@ -15,6 +15,7 @@ import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
+import { PlaybackSpeedControl } from "./PlaybackSpeedControl";
 import { calculateChunkSeekTargetSeconds } from "./timeline";
 
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
@@ -537,9 +538,11 @@ export function ReaderPage() {
     lastPlayerError,
     pausePlayback,
     playerState,
+    playbackRate,
     renderedDurationSeconds,
     requestUserGesturePlay,
     seekToSeconds,
+    setPlaybackRate,
   } = useMediaSourcePlayer({
     jobId,
     manifest: streamManifest,
@@ -1256,6 +1259,10 @@ export function ReaderPage() {
               <div className="text-sm text-stone-600">
                 {formatClock(currentTimeSeconds)} / {formatClock(renderedDurationSeconds)}
               </div>
+              <PlaybackSpeedControl
+                value={playbackRate}
+                onChange={setPlaybackRate}
+              />
             </div>
             <div className="flex items-center gap-3">
               <button

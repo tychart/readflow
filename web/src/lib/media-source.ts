@@ -173,9 +173,11 @@ export function useMediaSourcePlayer({
   const playIntentRef = useRef(playIntent);
   const isTerminalRef = useRef(isTerminal);
   const renderedDurationRef = useRef(0);
+  const playbackRateRef = useRef(1);
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
+  const [playbackRate, setPlaybackRateState] = useState(1);
   const [isReady, setIsReady] = useState(false);
   const [isStreamPrimed, setIsStreamPrimed] = useState(false);
   const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
@@ -734,6 +736,24 @@ export function useMediaSourcePlayer({
     updatePlaybackState(true);
   }, [updatePlaybackState]);
 
+  const setPlaybackRate = useCallback((rate: number) => {
+    const clampedRate = Math.max(0.05, rate);
+    const audio = audioRef.current;
+    if (audio) {
+      audio.playbackRate = clampedRate;
+    }
+    playbackRateRef.current = clampedRate;
+    setPlaybackRateState(clampedRate);
+  }, []);
+
+  // Sync audio element playbackRate when stream becomes primed
+  useEffect(() => {
+    if (!isStreamPrimed || !audioRef.current) {
+      return;
+    }
+    audioRef.current.playbackRate = playbackRate;
+  }, [isStreamPrimed, playbackRate]);
+
   const seekToSeconds = useCallback(
     (targetSeconds: number) => {
       const audio = audioRef.current;
@@ -764,8 +784,10 @@ export function useMediaSourcePlayer({
     lastPlayerError,
     pausePlayback,
     playerState,
+    playbackRate,
     renderedDurationSeconds,
     requestUserGesturePlay,
     seekToSeconds,
+    setPlaybackRate,
   };
 }

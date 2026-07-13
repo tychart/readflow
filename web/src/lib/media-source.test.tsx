@@ -535,6 +535,235 @@ test("keeps the custom player clock in sync while audio time advances live", asy
   cancelAnimationFrameSpy.mockRestore();
 });
 
+describe("playbackRate", () => {
+
+  test("starts at 1.0 by default", async () => {
+    let bufferedEnd = 0;
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/init")) {
+        bufferedEnd = 0.5;
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness() {
+      const { audioRef, playbackRate } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      return (
+        <div data-playback-rate={playbackRate}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-playback-rate", "1"),
+    );
+  });
+
+  test("setPlaybackRate sets audio.playbackRate and updates state", async () => {
+    let bufferedEnd = 0;
+    let setPlaybackRateFromHook: (rate: number) => void = () => {};
+
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/init")) {
+        bufferedEnd = 0.5;
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness() {
+      const { audioRef, playbackRate, setPlaybackRate } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      setPlaybackRateFromHook = setPlaybackRate;
+      return (
+        <div data-playback-rate={playbackRate}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    const audio = container.querySelector("audio");
+    expect(audio).not.toBeNull();
+
+    act(() => {
+      setPlaybackRateFromHook(1.5);
+    });
+
+    expect(audio!.playbackRate).toBe(1.5);
+    expect(container.firstChild).toHaveAttribute("data-playback-rate", "1.5");
+  });
+
+  test("setPlaybackRate clamps to minimum of 0.05", async () => {
+    let setPlaybackRateFromHook: (rate: number) => void = () => {};
+    let bufferedEnd = 0;
+
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/init")) {
+        bufferedEnd = 0.5;
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness() {
+      const { audioRef, setPlaybackRate, playbackRate } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      setPlaybackRateFromHook = setPlaybackRate;
+      return (
+        <div data-playback-rate={playbackRate}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    const audio = container.querySelector("audio");
+    expect(audio).not.toBeNull();
+
+    act(() => {
+      setPlaybackRateFromHook(0.01);
+    });
+
+    expect(audio!.playbackRate).toBe(0.05);
+    expect(container.firstChild).toHaveAttribute("data-playback-rate", "0.05");
+  });
+
+  test("setPlaybackRate works before stream is primed and applies when primed", async () => {
+    let bufferedEnd = 0;
+    let setPlaybackRateFromHook: (rate: number) => void = () => {};
+
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/init")) {
+        bufferedEnd = 0.5;
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness() {
+      const { audioRef, setPlaybackRate, playbackRate, isStreamPrimed } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      setPlaybackRateFromHook = setPlaybackRate;
+      return (
+        <div
+          data-playback-rate={playbackRate}
+          data-stream-primed={isStreamPrimed ? "yes" : "no"}
+        >
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    const audio = container.querySelector("audio");
+    expect(audio).not.toBeNull();
+
+    act(() => {
+      setPlaybackRateFromHook(2.0);
+    });
+
+    // Before primed, audio element isn't ready yet, but ref and state track it
+    expect(audio!.playbackRate).toBe(2.0);
+    expect(container.firstChild).toHaveAttribute("data-playback-rate", "2");
+
+    // Once the stream becomes primed, the effect re-syncs playbackRate
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-stream-primed", "yes"),
+    );
+    expect(audio!.playbackRate).toBe(2.0);
+  });
+
+  test("multiple rapid setPlaybackRate calls preserve the last value", async () => {
+    let setPlaybackRateFromHook: (rate: number) => void = () => {};
+    let bufferedEnd = 0;
+
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/init")) {
+        bufferedEnd = 0.5;
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness() {
+      const { audioRef, setPlaybackRate, playbackRate } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      setPlaybackRateFromHook = setPlaybackRate;
+      return (
+        <div data-playback-rate={playbackRate}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+
+    act(() => {
+      setPlaybackRateFromHook(0.75);
+    });
+    act(() => {
+      setPlaybackRateFromHook(1.25);
+    });
+    act(() => {
+      setPlaybackRateFromHook(2.5);
+    });
+
+    expect(container.firstChild).toHaveAttribute("data-playback-rate", "2.5");
+  });
+});
+
 test("shows waiting for data when playback stalls at the rendered boundary without a waiting event", async () => {
   let bufferedEnd = 0;
   let simulatedCurrentTime = 0;

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
@@ -1109,5 +1109,145 @@ describe("chunk versioning & reprocessing", () => {
     await waitFor(() =>
       expect(screen.queryAllByText("V1").length).toBeGreaterThan(0),
     );
+  });
+});
+
+describe("playback speed control", () => {
+  beforeEach(() => {
+    seedStore();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/jobs/job-1")) {
+          return new Response(
+            JSON.stringify(buildReaderJob(2, "completed")),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/api/jobs/job-1/manifest")) {
+          return new Response(
+            JSON.stringify(buildManifest(2)),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(new Uint8Array([1]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+      }),
+    );
+  });
+
+  test("renders the speed slider and text input in the player controls", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    expect(
+      screen.getByRole("slider", { name: /playback speed slider/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: /playback speed value/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("slider starts at 1.0 and input shows 1", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    expect(slider).toHaveValue("1");
+
+    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    expect(input).toHaveValue("1");
+  });
+
+  test("changing the speed slider updates the displayed speed value", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+
+    fireEvent.change(slider, { target: { value: "2" } });
+
+    expect(input).toHaveValue("2");
+  });
+
+  test("typing a speed in the input and pressing Enter updates the displayed speed", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+
+    fireEvent.change(input, { target: { value: "0.75" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(input).toHaveValue("0.75");
+  });
+
+  test("speed control co-exists with play/pause and clock", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    // All key player controls should be in the DOM together
+    expect(screen.getByRole("button", { name: /play/i })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: /playback speed slider/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toBeInTheDocument();
+  });
+
+  test("invalid speed input reverts to the current value", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+
+    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+
+    // Default is 1. Type invalid, blur — should revert
+    fireEvent.change(input, { target: { value: "abc" } });
+    fireEvent.blur(input);
+
+    expect(input).toHaveValue("1");
   });
 });
