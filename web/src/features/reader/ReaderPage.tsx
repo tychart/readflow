@@ -682,38 +682,14 @@ export function ReaderPage() {
 
   // ── Scroll-triggered compact playbar — must be before early returns ──
   const [isCompact, setIsCompact] = useState(false);
-  const playbarWrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let rafId: number;
-    const checkScroll = () => {
-      const wrapper = playbarWrapperRef.current;
-      if (!wrapper) return;
-      // Get the wrapper's natural top position (before sticky kicks in)
-      const rect = wrapper.getBoundingClientRect();
-      // When the wrapper's natural position is above the sticky threshold,
-      // it means the user has scrolled past its original position
-      // Header is 56px, so sticky activates when top < 56.
-      // We trigger compact when the wrapper's bottom goes above the header (top + height < 56)
-      // Simpler: scrollY > wrapper offset top means we've scrolled past the playbar
-      const scrollY = window.scrollY;
-      const naturalTop = wrapper.offsetTop;
-      setIsCompact(scrollY > naturalTop + 10); // small buffer
-    };
-
-    const handleScroll = () => {
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(checkScroll);
-    };
-
+    // Simple scroll listener: when user scrolls past ~150px, compact the playbar
+    // This always works because window.scrollY is always available — no DOM ref dependency
+    const handleScroll = () => setIsCompact(window.scrollY > 150);
+    handleScroll(); // set initial state
     window.addEventListener('scroll', handleScroll, { passive: true });
-    // Run once to set initial state
-    checkScroll();
-
-    return () => {
-      window.removeEventListener('scroll', handleScroll);
-      cancelAnimationFrame(rafId);
-    };
+    return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
   // ── Loader / error states ───────────────────────────────
@@ -906,7 +882,6 @@ export function ReaderPage() {
     <div className="flex flex-col">
       {/* Sticky playbar wrapper — flush against the app header */}
       <div
-        ref={playbarWrapperRef}
         className={`sticky top-[56px] z-30 w-full transition-all duration-300 ${
           isCompact
             ? 'bg-[var(--surface)]/90 backdrop-blur-md border-b border-[var(--line)] shadow-sm'
