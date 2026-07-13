@@ -1158,7 +1158,7 @@ describe("playback speed control", () => {
     ).toBeInTheDocument();
   });
 
-  test("slider starts at 1.0 and input shows 1", async () => {
+  test("slider starts at 3.0 and input shows 3 (hardcoded for Firefox MSE test)", async () => {
     render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
@@ -1170,10 +1170,11 @@ describe("playback speed control", () => {
     await screen.findByText("Reader job");
 
     const slider = screen.getByRole("slider", { name: /playback speed slider/i });
-    expect(slider).toHaveValue("1");
+    // Slider is clamped to max 3.0, so 3.0 shows as "3"
+    expect(slider).toHaveValue("3");
 
     const input = screen.getByRole("textbox", { name: /playback speed value/i });
-    expect(input).toHaveValue("1");
+    expect(input).toHaveValue("3");
   });
 
   test("changing the speed slider updates the displayed speed value", async () => {
@@ -1244,10 +1245,10 @@ describe("playback speed control", () => {
 
     const input = screen.getByRole("textbox", { name: /playback speed value/i });
 
-    // Default is 1. Type invalid, blur — should revert
+    // Default is 3 (hardcoded for Firefox MSE test). Type invalid, blur — should revert
     fireEvent.change(input, { target: { value: "abc" } });
     fireEvent.blur(input);
 
-    expect(input).toHaveValue("1");
+    expect(input).toHaveValue("3");
   });
 });

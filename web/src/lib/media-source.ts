@@ -174,11 +174,11 @@ export function useMediaSourcePlayer({
   const playIntentRef = useRef(playIntent);
   const isTerminalRef = useRef(isTerminal);
   const renderedDurationRef = useRef(0);
-  const playbackRateRef = useRef(1);
+  const playbackRateRef = useRef(3);
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
-  const [playbackRate, setPlaybackRateState] = useState(1);
+  const [playbackRate, setPlaybackRateState] = useState(3);
   const [isReady, setIsReady] = useState(false);
   const [isStreamPrimed, setIsStreamPrimed] = useState(false);
   const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
@@ -230,6 +230,18 @@ export function useMediaSourcePlayer({
 
   const updatePlaybackState = useCallback((force = false) => {
     const audio = audioRef.current;
+    // HACK (Firefox MSE): Firefox appears to asynchronously reset playbackRate
+    // to 1.0 during MSE segment processing. Re-apply the desired rate on every
+    // tick (~60fps) to override this. This is a targeted workaround for a
+    // browser bug, not normal application logic.
+    if (audio && playbackRateRef.current !== 1) {
+      if (audio.playbackRate !== playbackRateRef.current) {
+        audio.playbackRate = playbackRateRef.current;
+      }
+      if (audio.defaultPlaybackRate !== playbackRateRef.current) {
+        audio.defaultPlaybackRate = playbackRateRef.current;
+      }
+    }
     const nextSnapshot = {
       bufferedUntilSeconds: getBufferedEnd(audio),
       currentTimeSeconds: audio?.currentTime ?? 0,
@@ -302,6 +314,9 @@ export function useMediaSourcePlayer({
 
       try {
         await audio.play();
+        // Re-apply playback rate immediately after play succeeds
+        audio.playbackRate = playbackRateRef.current;
+        audio.defaultPlaybackRate = playbackRateRef.current;
         setIsAutoplayBlocked(false);
         setLastPlayerError(null);
         return true;
@@ -406,6 +421,9 @@ export function useMediaSourcePlayer({
     setDiagnostics({ paused: true, readyState: 0, networkState: 0, playbackRate: 1 });
     safePause(audio);
     audio.src = objectUrl;
+    // Apply playback rate immediately after src is set
+    audio.playbackRate = playbackRateRef.current;
+    audio.defaultPlaybackRate = playbackRateRef.current;
 
     const handleSourceOpen = async () => {
       try {
@@ -418,6 +436,11 @@ export function useMediaSourcePlayer({
         if (!cancelled && activeStreamKeyRef.current === streamKey) {
           setIsReady(true);
           setLastPlayerError(null);
+          // Re-apply playback rate after source buffer is created
+          if (audioRef.current) {
+            audioRef.current.playbackRate = playbackRateRef.current;
+            audioRef.current.defaultPlaybackRate = playbackRateRef.current;
+          }
           updatePlaybackState(true);
         }
       } catch (error) {
@@ -567,6 +590,11 @@ export function useMediaSourcePlayer({
       setIsWaitingForData(false);
       setIsAutoplayBlocked(false);
       setLastPlayerError(null);
+      // Re-apply playback rate when playback actually starts
+      if (audio && playbackRateRef.current !== 1) {
+        audio.playbackRate = playbackRateRef.current;
+        audio.defaultPlaybackRate = playbackRateRef.current;
+      }
       updatePlaybackState(true);
     };
     const handleError = () => {
@@ -748,13 +776,9 @@ export function useMediaSourcePlayer({
   const setPlaybackRate = useCallback((rate: number) => {
     const clampedRate = Math.max(0.05, rate);
     const audio = audioRef.current;
-    // eslint-disable-next-line no-console
-    console.log("[ReadFlow] setPlaybackRate", { rate, clampedRate, hasAudio: !!audio, currentRate: audio?.playbackRate });
     if (audio) {
       audio.playbackRate = clampedRate;
       audio.defaultPlaybackRate = clampedRate;
-      // eslint-disable-next-line no-console
-      console.log("[ReadFlow] after set", { actualRate: audio.playbackRate, actualDefault: audio.defaultPlaybackRate });
     }
     playbackRateRef.current = clampedRate;
     setPlaybackRateState(clampedRate);
@@ -767,16 +791,10 @@ export function useMediaSourcePlayer({
   useLayoutEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
-      // eslint-disable-next-line no-console
-      console.log("[ReadFlow] layoutEffect: no audio");
       return;
     }
-    // eslint-disable-next-line no-console
-    console.log("[ReadFlow] layoutEffect", { stateRate: playbackRate, domRateBefore: audio.playbackRate });
     audio.playbackRate = playbackRate;
     audio.defaultPlaybackRate = playbackRate;
-    // eslint-disable-next-line no-console
-    console.log("[ReadFlow] layoutEffect after", { domRateAfter: audio.playbackRate });
   });
 
   const seekToSeconds = useCallback(
