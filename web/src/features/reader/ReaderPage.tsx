@@ -1617,6 +1617,12 @@ export function ReaderPage() {
             <div className="rounded-2xl bg-white/70 p-4">
               Audio ready/network: {diagnostics.readyState}/{diagnostics.networkState}
             </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Speed (state): {playbackRate.toFixed(3)}×
+            </div>
+            <div className="rounded-2xl bg-white/70 p-4">
+              Speed (DOM): {diagnostics.playbackRate.toFixed(3)}×
+            </div>
             <div className="rounded-2xl bg-white/70 p-4 md:col-span-2">
               Last transport/player issue:{" "}
               {lastPlayerError ?? lastPlaybackSyncError ?? lastSocketError ?? "none"}

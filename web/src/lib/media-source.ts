@@ -31,6 +31,7 @@ interface AudioDiagnostics {
   paused: boolean;
   readyState: number;
   networkState: number;
+  playbackRate: number;
 }
 
 interface PlaybackSnapshot extends AudioDiagnostics {
@@ -191,6 +192,7 @@ export function useMediaSourcePlayer({
     paused: true,
     readyState: 0,
     networkState: 0,
+    playbackRate: 1,
   });
 
   const streamKey = manifest ? `${jobId}:${manifest.mime_type}:${playbackAnchorIndex}` : null;
@@ -256,6 +258,7 @@ export function useMediaSourcePlayer({
       paused: nextSnapshot.paused,
       readyState: nextSnapshot.readyState,
       networkState: nextSnapshot.networkState,
+      playbackRate: audio?.playbackRate ?? 1,
     });
 
     const stoppedAtBoundary = isStoppedAtRenderedBoundary(
@@ -400,7 +403,7 @@ export function useMediaSourcePlayer({
     setAppendedChunksCount(0);
     setHasEnded(false);
     setIsAutoplayBlocked(false);
-    setDiagnostics({ paused: true, readyState: 0, networkState: 0 });
+    setDiagnostics({ paused: true, readyState: 0, networkState: 0, playbackRate: 1 });
     safePause(audio);
     audio.src = objectUrl;
 
@@ -571,6 +574,10 @@ export function useMediaSourcePlayer({
       setLastPlayerError("Audio playback failed");
       updatePlaybackState(true);
     };
+    const handleRateChange = () => {
+      // The browser fired a ratechange event, so sync our diagnostics.
+      updatePlaybackState(true);
+    };
 
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
@@ -582,6 +589,7 @@ export function useMediaSourcePlayer({
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("playing", handlePlaying);
     audio.addEventListener("error", handleError);
+    audio.addEventListener("ratechange", handleRateChange);
 
     return () => {
       audio.removeEventListener("play", handlePlay);
@@ -594,6 +602,7 @@ export function useMediaSourcePlayer({
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("error", handleError);
+      audio.removeEventListener("ratechange", handleRateChange);
     };
   }, [isTerminal, updatePlaybackState]);
 
