@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { BrowserRouter } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
@@ -5,7 +6,10 @@ import { useShallow } from "zustand/shallow";
 import { AdminPage } from "../features/admin/AdminPage";
 import { JobsPage } from "../features/jobs/JobsPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { useAppStore } from "../state/store";
+
+/* ── Connection Badge ─────────────────────────────────────── */
 
 interface ConnectionBadgeState {
   websocketStatus: string;
@@ -16,15 +20,19 @@ interface ConnectionBadgeState {
 }
 
 function formatSocketMessageAge(timestamp: number | null): string {
-  if (!timestamp) {
-    return "no live events yet";
-  }
+  if (!timestamp) return "no live events yet";
   const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
   return seconds === 0 ? "just now" : `${seconds}s ago`;
 }
 
 function ConnectionBadge() {
-  const { websocketStatus, lastSocketMessageAt, lastSocketError, reconnectAttempt, isSocketStale } = useAppStore(
+  const {
+    websocketStatus,
+    lastSocketMessageAt,
+    lastSocketError,
+    reconnectAttempt,
+    isSocketStale,
+  } = useAppStore(
     useShallow(
       (state): ConnectionBadgeState => ({
         websocketStatus: state.websocketStatus,
@@ -36,57 +44,100 @@ function ConnectionBadge() {
     ),
   );
 
-  const tone =
-    websocketStatus === "open" && !isSocketStale
-      ? "bg-emerald-100 text-emerald-800"
-      : websocketStatus === "connecting" || websocketStatus === "reconnecting"
-        ? "bg-amber-100 text-amber-900"
-        : websocketStatus === "closed" && !lastSocketError
-          ? "bg-stone-200 text-stone-700"
-          : "bg-rose-100 text-rose-800";
+  // Derive visual state
+  const isHealthy = websocketStatus === "open" && !isSocketStale;
+  const isConnecting = websocketStatus === "connecting" || websocketStatus === "reconnecting";
+  const isError = websocketStatus === "closed" && !!lastSocketError;
 
-  const label = websocketStatus === "closed" && !lastSocketError
-    ? "idle"
-    : isSocketStale
-    ? "stale"
-    : websocketStatus === "reconnecting"
-      ? `reconnecting${reconnectAttempt ? ` #${reconnectAttempt}` : ""}`
-      : websocketStatus;
+  const label =
+    websocketStatus === "closed" && !lastSocketError
+      ? "idle"
+      : isSocketStale
+        ? "stale"
+        : websocketStatus === "reconnecting"
+          ? `reconnecting${reconnectAttempt ? ` #${reconnectAttempt}` : ""}`
+          : websocketStatus;
 
   return (
     <div
-      aria-label={`Connection status: ${label}. Last message ${formatSocketMessageAge(lastSocketMessageAt)}`}
+      aria-label={`Connection: ${label}. Last message ${formatSocketMessageAge(lastSocketMessageAt)}`}
       aria-live="polite"
-      className={`rounded-3xl px-4 py-3 text-right text-sm ${tone}`}
-      title={lastSocketError ?? "Live connection diagnostics"}
+      className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${
+        isHealthy
+          ? "border-emerald-900/30 bg-emerald-950/30 text-emerald-400"
+          : isConnecting
+            ? "border-amber-900/30 bg-amber-950/30 text-amber-400"
+            : isError
+              ? "border-rose-900/30 bg-rose-950/30 text-rose-400"
+              : "border-white/5 bg-white/5 text-[var(--ink-secondary)]"
+      }`}
+      title={lastSocketError ?? "WebSocket connection status"}
     >
-      <div className="font-semibold uppercase tracking-[0.2em]">Live {label}</div>
-      <div className="text-xs opacity-80">Last message: {formatSocketMessageAge(lastSocketMessageAt)}</div>
-      {lastSocketError ? <div className="mt-1 max-w-64 text-xs">{lastSocketError}</div> : null}
+      {/* Status dot */}
+      <span
+        aria-hidden="true"
+        className={`inline-block h-1.5 w-1.5 rounded-full ${
+          isHealthy
+            ? "bg-emerald-400"
+            : isConnecting
+              ? "bg-amber-400"
+              : isError
+                ? "bg-rose-400"
+                : "bg-white/30"
+        } ${isConnecting ? "animate-pulse" : ""}`}
+      />
+      <span className="font-medium uppercase tracking-wider">{label}</span>
+      <span className="opacity-60">{formatSocketMessageAge(lastSocketMessageAt)}</span>
     </div>
   );
 }
 
+/* ── Shell ────────────────────────────────────────────────── */
+
 function Shell() {
+  // Periodically re-render to update the "seconds ago" display
+  const [, forceUpdate] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => forceUpdate((n) => n + 1), 10_000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
   return (
-    <div className="app-shell px-4 py-6 md:px-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="panel mb-6 flex flex-col gap-4 rounded-[2rem] px-6 py-5 md:flex-row md:items-center md:justify-between">
-          <div>
-            <div className="text-sm uppercase tracking-[0.4em] text-stone-600">ReadFlow</div>
-            <div className="display-font text-3xl">Batched long-form narration</div>
-          </div>
-          <div className="flex flex-col gap-3 md:items-end">
-            <ConnectionBadge />
-            <nav className="flex gap-3">
+    <div className="app-shell flex min-h-screen flex-col bg-[var(--canvas)] text-[var(--ink-primary)]">
+      {/* Header */}
+      <header className="sticky top-0 z-50 border-b border-[var(--line)] bg-[var(--surface)]/80 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 md:px-6">
+          {/* Brand + Nav */}
+          <div className="flex items-center gap-6">
+            {/* Brand */}
+            <div className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--amber)] text-[10px] font-bold text-[var(--canvas)]"
+              >
+                RF
+              </span>
+              <span className="text-sm font-semibold tracking-wide text-[var(--ink-primary)]">
+                ReadFlow
+              </span>
+            </div>
+
+            {/* Navigation tabs */}
+            <nav className="flex gap-1">
               {[
                 ["/", "Jobs"],
                 ["/admin", "Admin"],
               ].map(([to, label]) => (
                 <NavLink
                   className={({ isActive }) =>
-                    `rounded-full px-4 py-2 text-sm font-semibold ${
-                      isActive ? "bg-[var(--accent)] text-white" : "bg-white/70 text-stone-700"
+                    `rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                      isActive
+                        ? "bg-[var(--amber-soft)] text-[var(--amber)]"
+                        : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] hover:bg-white/5"
                     }`
                   }
                   end={to === "/"}
@@ -98,17 +149,28 @@ function Shell() {
               ))}
             </nav>
           </div>
-        </header>
 
+          {/* Right: Connection badge + Theme toggle */}
+          <div className="flex items-center gap-3">
+            <ConnectionBadge />
+            <ThemeToggle />
+          </div>
+        </div>
+      </header>
+
+      {/* Main content */}
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 md:px-6 md:py-8">
         <Routes>
           <Route element={<JobsPage />} path="/" />
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
           <Route element={<AdminPage />} path="/admin" />
         </Routes>
-      </div>
+      </main>
     </div>
   );
 }
+
+/* ── App ──────────────────────────────────────────────────── */
 
 export function App() {
   return (
