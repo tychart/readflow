@@ -86,6 +86,20 @@ beforeEach(() => {
   MockWebSocket.instances = [];
   MockWebSocket.latest = null;
   vi.stubGlobal("WebSocket", MockWebSocket);
+  // Stub matchMedia for useTheme hook (not available in jsdom)
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs")) {
@@ -135,7 +149,7 @@ test("jobs list updates from websocket events and shows live connection state", 
   });
 
   await waitFor(() => expect(MockWebSocket.latest).not.toBeNull());
-  expect(await screen.findByText(/live open/i)).toBeInTheDocument();
+  expect(await screen.findByText(/just now/i)).toBeInTheDocument();
 
   expect(await screen.findByText("Live job")).toBeInTheDocument();
 });
@@ -152,12 +166,12 @@ test("socket reconnects and surfaces reconnecting state", async () => {
     MockWebSocket.latest?.fail();
   });
 
-  expect(await screen.findByText(/live reconnecting/i)).toBeInTheDocument();
+  expect(await screen.findByText(/reconnecting #1/i)).toBeInTheDocument();
 
   await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), {
     timeout: 2_500,
   });
-  await waitFor(() => expect(screen.getByText(/live open/i)).toBeInTheDocument(), {
+  await waitFor(() => expect(screen.getByText(/just now/i)).toBeInTheDocument(), {
     timeout: 2_500,
   });
 });

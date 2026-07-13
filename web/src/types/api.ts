@@ -42,6 +42,7 @@ export interface JobDetail extends JobSummary {
   plan_version: number;
   chunks: Chunk[];
   failed_reason: string | null;
+  active_chunk_version: Record<number, number>;
 }
 
 export interface JobManifest {

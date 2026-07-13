@@ -17,10 +17,14 @@ export interface PlaybarProps {
   renderedDurationSeconds: number;
   /** True when audio is actually playing (not paused/blocked). */
   isPlaying: boolean;
+  /** True when the user has requested playback (even if not started yet). */
+  playIntent: boolean;
   /** True when the browser has blocked autoplay. */
   isAutoplayBlocked: boolean;
   /** True if the job is in a terminal state (completed/failed). */
   isJobTerminal: boolean;
+  /** True when the player is waiting for buffered data. */
+  isWaitingForData: boolean;
   /** Whether the download button should be enabled. */
   canDownload: boolean;
   /** True when all chunks have been downloaded (full audio available). */
@@ -51,29 +55,6 @@ function formatClock(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function describePlayerState(
-  playerState: "priming" | "waiting" | "stalled" | "ready" | "playing" | "ended" | "error",
-  isAutoplayBlocked: boolean,
-): string {
-  if (isAutoplayBlocked) return "Playback blocked by browser; tap play to resume.";
-  switch (playerState) {
-    case "priming":
-      return "Preparing stream…";
-    case "waiting":
-    case "stalled":
-      return "Buffering…";
-    case "ready":
-    case "playing":
-      return isAutoplayBlocked ? "Ready — tap to play" : "Playing";
-    case "ended":
-      return "Playback complete";
-    case "error":
-      return "Playback error";
-    default:
-      return "";
-  }
-}
-
 /* ── Component ────────────────────────────────────────────── */
 
 /**
@@ -89,8 +70,10 @@ export function Playbar({
   currentTimeSeconds,
   renderedDurationSeconds,
   isPlaying,
+  playIntent,
   isAutoplayBlocked,
   isJobTerminal,
+  isWaitingForData,
   canDownload,
   isDownloadComplete,
   onPlay,
@@ -140,15 +123,18 @@ export function Playbar({
 
   // ── Player state for display ──────────────────────────────
   const playerStateLabel = useMemo(() => {
-    if (isAutoplayBlocked) return describePlayerState("ready", true);
-    if (isPlaying) return "Playing";
+    if (isAutoplayBlocked) return "Playback blocked by browser";
     if (isJobTerminal && renderedDurationSeconds > 0 && currentTimeSeconds >= renderedDurationSeconds) {
       return "Playback complete";
     }
+    if (isPlaying) return "Playing";
+    if (playIntent && isWaitingForData) return "Buffering…";
+    if (playIntent && !isPlaying && renderedDurationSeconds <= 0) return "Preparing stream…";
+    if (playIntent) return "Starting…";
     return "Ready";
-  }, [isAutoplayBlocked, isPlaying, isJobTerminal, renderedDurationSeconds, currentTimeSeconds]);
+  }, [isAutoplayBlocked, isJobTerminal, renderedDurationSeconds, currentTimeSeconds, isPlaying, playIntent, isWaitingForData]);
 
-  const showSpinner = playerStateLabel === "Buffering…" || playerStateLabel === "Preparing stream…";
+  const showSpinner = (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
 
   // ── Keyboard shortcuts ────────────────────────────────────
   useEffect(() => {
@@ -195,17 +181,15 @@ export function Playbar({
   // ── Seek handler for timeline clicks ──────────────────────
   const handleTimelineSeek = useCallback(
     (chunkIndex: number, seekSeconds: number) => {
-      if (isJobTerminal || !isPlaying) {
-        onPlay();
-      }
+      // onSeekToChunk handles activation and play intent internally
       onSeekToChunk(chunkIndex, seekSeconds);
     },
-    [isJobTerminal, isPlaying, onPlay, onSeekToChunk],
+    [onSeekToChunk],
   );
 
   const handleTimelineClick = useCallback(
     (chunkIndex: number) => {
-      // Seek to the start of the chunk
+      // Seek to the start of the chunk — onSeekToChunk handles activation internally
       const chunkStartSeconds = slots
         .slice(0, chunkIndex < slots.length ? chunkIndex : slots.length)
         .reduce((acc, s) => acc + s.durationSeconds, 0);
@@ -215,7 +199,9 @@ export function Playbar({
   );
 
   // ── Render ────────────────────────────────────────────────
-  const playButtonLabel = isPlaying ? "Pause" : isAutoplayBlocked ? "Resume" : "Play";
+  // When playIntent is true (user requested play), show "Pause" even if audio hasn't started.
+  // When autoplay is blocked, show "Resume" to encourage a click.
+  const playButtonLabel = isAutoplayBlocked ? "Resume" : playIntent ? "Pause" : "Play";
 
   return (
     <div
@@ -239,7 +225,7 @@ export function Playbar({
               aria-hidden="true"
               className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"
             />
-          ) : isPlaying ? (
+          ) : isPlaying || playIntent ? (
             /* Pause icon */
             <svg aria-hidden="true" className="h-4 w-4" fill="currentColor" viewBox="0 0 16 16">
               <rect height="14" rx="1" width="5" x="2.5" y="1" />
@@ -280,12 +266,12 @@ export function Playbar({
           <span
             aria-live="polite"
             className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-              playerStateLabel === "Playing"
+              playerStateLabel === "Playing" || playerStateLabel === "Starting…" || playerStateLabel === "Preparing stream…"
                 ? "bg-[var(--amber-soft)] text-[var(--amber)]"
                 : playerStateLabel === "Playback complete"
                   ? "bg-emerald-900/30 text-emerald-400"
-                  : playerStateLabel === "Buffering…" || playerStateLabel === "Preparing stream…"
-                    ? "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
+                  : playerStateLabel === "Buffering…"
+                    ? "bg-amber-900/30 text-amber-400"
                     : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
             }`}
           >
@@ -299,7 +285,7 @@ export function Playbar({
           <span className="tabular-nums">
             <span className="text-[var(--ink-primary)]">{writtenChunks}</span>
             <span className="opacity-40">/{totalChunks}</span>
-            <span className="ml-1">chunks</span>
+            <span> chunks</span>
           </span>
 
           {/* Download button */}

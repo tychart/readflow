@@ -11,7 +11,7 @@ import { useShallow } from "zustand/shallow";
 import { api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
 import { Playbar } from "../../components/Playbar";
-import type { TimelineSlotData } from "../../components/WaveformTimeline";
+import type { TimelineSlotData, TimelineSlotState } from "../../components/WaveformTimeline";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
@@ -25,15 +25,6 @@ const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
 
 /* ── Types ────────────────────────────────────────────────── */
-
-type TimelineSlotState =
-  | "played"
-  | "playing"
-  | "ready"
-  | "ready_after_gap"
-  | "missing_expected"
-  | "failed";
-
 
 interface StreamEventPayload {
   job?: JobDetail;
@@ -905,6 +896,8 @@ export function ReaderPage() {
         isDownloading={isDownloading}
         isJobTerminal={isJobTerminal}
         isPlaying={isActuallyPlaying}
+        isWaitingForData={isWaitingForData}
+        playIntent={playIntent}
         onDownload={handleDownload}
         onPause={handlePause}
         onPlay={handlePlay}
@@ -915,6 +908,9 @@ export function ReaderPage() {
         totalChunks={totalChunksInJob}
         writtenChunks={writtenChunkCount}
       />
+
+      {/* Hidden audio element for MediaSource playback */}
+      <audio aria-hidden="true" className="hidden" ref={audioRef as React.RefObject<HTMLAudioElement | null>} />
 
       {/* Main content grid */}
       <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">

@@ -132,7 +132,7 @@ test("renders memory section with VRAM stats", () => {
   // Reserved (matches nvidia-smi) is the big number
   expect(screen.getByText("8,000 MB")).toBeInTheDocument();
   expect(screen.getByText(/24,000 MB total/)).toBeInTheDocument();
-  expect(screen.getByText(/18,000 MB free/)).toBeInTheDocument();
+  expect(screen.getByText(/Headroom 2,000 MB/)).toBeInTheDocument();
   expect(screen.getByText(/cuda/)).toBeInTheDocument();
   // Allocated appears in the legend
   expect(screen.getByText(/Allocated 6,000 MB/)).toBeInTheDocument();
@@ -144,7 +144,7 @@ test("renders memory section with CPU fallback", () => {
   render(<AdminPage />);
 
   // CPU mode shows a dash and explanatory text instead of "N/A"
-  expect(screen.getByText(/CPU — no GPU memory to report/)).toBeInTheDocument();
+  expect(screen.getByText(/Running on CPU — no GPU memory/)).toBeInTheDocument();
   expect(screen.getByText(/cpu/)).toBeInTheDocument();
 });
 
@@ -154,7 +154,7 @@ test("renders 'unavailable' when memory is null", () => {
   render(<AdminPage />);
 
   expect(
-    screen.getByLabelText(/memory stats unavailable/i),
+    screen.getByText("Memory stats unavailable."),
   ).toBeInTheDocument();
 });
 
@@ -165,8 +165,8 @@ test("renders admin telemetry and saves config", async () => {
 
   render(<AdminPage />);
 
-  await user.clear(screen.getByLabelText(/idle unload seconds/i));
-  await user.type(screen.getByLabelText(/idle unload seconds/i), "120");
+  await user.clear(screen.getByLabelText(/Idle unload/i));
+  await user.type(screen.getByLabelText(/Idle unload/i), "120");
   await user.click(screen.getByRole("button", { name: /save config/i }));
 
   // Batch info now appears in the Synthesis card
@@ -182,7 +182,7 @@ test("form does not reset when adminState changes via WebSocket", () => {
   render(<AdminPage />);
 
   // Verify idle_unload default value is loaded into the form
-  const input = screen.getByLabelText(/idle unload seconds/i) as HTMLInputElement;
+  const input = screen.getByLabelText(/Idle unload/i) as HTMLInputElement;
   expect(input.value).toBe("300");
 
   // Simulate a WebSocket telemetry update (new adminState reference, same config)
@@ -212,7 +212,7 @@ test("form initializes from adminState.config once", () => {
 
   const { rerender } = render(<AdminPage />);
 
-  const input = screen.getByLabelText(/idle unload seconds/i) as HTMLInputElement;
+  const input = screen.getByLabelText(/Idle unload/i) as HTMLInputElement;
   expect(input.value).toBe("300");
 
   // Simulate a WebSocket admin_config_updated event

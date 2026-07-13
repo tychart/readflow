@@ -6,6 +6,7 @@ export type TimelineSlotState =
   | "played"
   | "playing"
   | "ready"
+  | "ready_after_gap"
   | "missing_expected"
   | "failed";
 
@@ -219,6 +220,7 @@ export function WaveformTimeline({
             className={`relative flex h-full cursor-pointer items-end overflow-hidden transition-colors ${
               slot.state === "played" ? "opacity-50" : ""
             }`}
+            data-slot-state={slot.state}
             key={slot.chunkIndex}
             role="slider"
             tabIndex={0}
