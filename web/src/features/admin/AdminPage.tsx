@@ -5,14 +5,17 @@ import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useAppStore } from "../../state/store";
 import type { AdminConfig } from "../../types/api";
 
-const NUMBER_INPUT_PROPS = {
-  className: "mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3",
-  mode: "uncontrolled" as const,
-} as const;
+/* ── Styles ───────────────────────────────────────────────── */
 
-const SELECT_INPUT_PROPS = {
-  className: "mt-2 w-full rounded-2xl border border-stone-300 bg-white/70 px-4 py-3",
-} as const;
+function inputClass() {
+  return "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3.5 py-2.5 text-sm text-[var(--ink-primary)] transition focus:outline-none focus:border-[var(--amber)] focus:ring-1 focus:ring-[var(--amber)]";
+}
+
+function labelClass() {
+  return "block text-xs font-medium uppercase tracking-wider text-[var(--ink-secondary)]";
+}
+
+/* ── Types ────────────────────────────────────────────────── */
 
 type ModelAction = "idle" | "warm" | "evict";
 
@@ -25,17 +28,29 @@ const MODEL_STATE_LABELS: Record<string, string> = {
   not_enough_vram: "Insufficient VRAM",
 };
 
-const MODEL_STATE_COLORS: Record<
-  string,
-  { bg: string; text: string; dot: string; pulse?: boolean }
-> = {
-  unloaded: { bg: "bg-stone-100", text: "text-stone-600", dot: "bg-stone-400" },
-  loading: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", pulse: true },
-  warm_idle: { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500" },
-  busy: { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500" },
-  evicting: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-400", pulse: true },
-  not_enough_vram: { bg: "bg-red-50", text: "text-red-700", dot: "bg-red-500" },
+const MODEL_STATE_COLORS: Record<string, { dot: string; pulse?: boolean }> = {
+  unloaded: { dot: "bg-white/30" },
+  loading: { dot: "bg-amber-400", pulse: true },
+  warm_idle: { dot: "bg-emerald-400" },
+  busy: { dot: "bg-blue-400" },
+  evicting: { dot: "bg-amber-400", pulse: true },
+  not_enough_vram: { dot: "bg-rose-400" },
 };
+
+/* ── Stat Card ────────────────────────────────────────────── */
+
+function StatCard({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* ── Component ────────────────────────────────────────────── */
 
 export function AdminPage() {
   useAppBootstrap(true);
@@ -52,9 +67,7 @@ export function AdminPage() {
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showFeedback(type: "success" | "error", text: string) {
-    if (feedbackTimerRef.current) {
-      clearTimeout(feedbackTimerRef.current);
-    }
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
     setFeedbackMessage({ type, text });
     feedbackTimerRef.current = setTimeout(() => {
       setFeedbackMessage(null);
@@ -69,9 +82,7 @@ export function AdminPage() {
       await api.warmModel();
       showFeedback("success", "Model warmed up successfully");
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to warm model";
-      showFeedback("error", message);
+      showFeedback("error", error instanceof Error ? error.message : "Failed to warm model");
     } finally {
       setModelActionPending("idle");
     }
@@ -84,17 +95,12 @@ export function AdminPage() {
       await api.evictModel();
       showFeedback("success", "Model evicted successfully");
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to evict model";
-      showFeedback("error", message);
+      showFeedback("error", error instanceof Error ? error.message : "Failed to evict model");
     } finally {
       setModelActionPending("idle");
     }
   }
 
-  // Initialize formState once from adminState.config — don't re-sync on every
-  // adminState change because WebSocket events (telemetry, model_state, etc.)
-  // create new adminState references that would overwrite unsaved local edits.
   useEffect(() => {
     if (adminState && adminState.config && !hasInitialized.current) {
       hasInitialized.current = true;
@@ -106,7 +112,14 @@ export function AdminPage() {
   }, [adminState]);
 
   if (!adminState || !formState) {
-    return <div aria-label="Loading" className="panel rounded-[2rem] p-8">Loading admin state…</div>;
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="flex items-center gap-3 text-sm text-[var(--ink-secondary)]">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--amber)] border-t-transparent" />
+          Loading admin state…
+        </div>
+      </div>
+    );
   }
 
   const handleSubmit = async (event: FormEvent) => {
@@ -127,19 +140,12 @@ export function AdminPage() {
     formState.target_buffer_seconds !== adminState.config.target_buffer_seconds ||
     formState.vram_soft_limit_mb !== adminState.config.vram_soft_limit_mb ||
     formState.vram_hard_limit_mb !== adminState.config.vram_hard_limit_mb ||
-    formState.batch_candidates_small_model.length !==
-      adminState.config.batch_candidates_small_model.length ||
-    formState.batch_candidates_small_model.some(
-      (v, i) => v !== adminState.config.batch_candidates_small_model[i],
-    ) ||
-    formState.batch_candidates_large_model.length !==
-      adminState.config.batch_candidates_large_model.length ||
-    formState.batch_candidates_large_model.some(
-      (v, i) => v !== adminState.config.batch_candidates_large_model[i],
-    );
+    formState.batch_candidates_small_model.length !== adminState.config.batch_candidates_small_model.length ||
+    formState.batch_candidates_small_model.some((v, i) => v !== adminState.config.batch_candidates_small_model[i]) ||
+    formState.batch_candidates_large_model.length !== adminState.config.batch_candidates_large_model.length ||
+    formState.batch_candidates_large_model.some((v, i) => v !== adminState.config.batch_candidates_large_model[i]);
 
   const recentBatch = adminState.telemetry?.recent_batches[0];
-
   const isGpuActive =
     adminState.memory &&
     adminState.memory.device !== "cpu" &&
@@ -148,150 +154,162 @@ export function AdminPage() {
     adminState.memory.device !== "evicting";
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-      <form className="panel rounded-[2rem] p-6" onSubmit={(event) => void handleSubmit(event)}>
-        <div className="mb-6">
-          <p className="text-sm uppercase tracking-[0.3em] text-stone-600">Admin</p>
+    <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+      {/* ── Config Form ──────────────────────────────────── */}
+      <form
+        className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
+        onSubmit={(event) => void handleSubmit(event)}
+      >
+        <div className="mb-5">
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
+            Admin
+          </p>
           <div className="flex items-center gap-3">
-            <h1 className="display-font text-4xl">Warmth and flow control</h1>
+            <h1 className="text-xl font-bold text-[var(--ink-primary)]">
+              Warmth and flow control
+            </h1>
             {hasUnsavedChanges && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
-                <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
-                Unsaved changes
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-900/30 bg-amber-950/30 px-2.5 py-1 text-[10px] font-semibold text-amber-400">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
+                Unsaved
               </span>
             )}
           </div>
         </div>
+
         <div className="grid gap-4 md:grid-cols-2">
-          <label className="text-sm font-medium">
+          {/* Device */}
+          <label className={labelClass()}>
             Device
             <select
-              {...SELECT_INPUT_PROPS}
+              className={`${inputClass()} mt-1.5`}
               value={formState.device}
-              onChange={(event) =>
-                setFormState({ ...formState, device: event.target.value })
-              }
+              onChange={(e) => setFormState({ ...formState, device: e.target.value })}
             >
               <option value="auto">Auto (GPU priority, CPU fallback)</option>
               <option value="gpu">GPU (CUDA only)</option>
               <option value="cpu">CPU only</option>
             </select>
-            <span className="mt-1 block text-xs text-stone-500">
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
               {formState.device === "auto" && "Uses GPU if CUDA is available, otherwise falls back to CPU."}
               {formState.device === "gpu" && "Forces CUDA. Throws error if no GPU or insufficient VRAM."}
               {formState.device === "cpu" && "Forces CPU. Slower but uses no VRAM."}
             </span>
           </label>
-          <label className="text-sm font-medium">
-            Idle unload seconds
+
+          <label className={labelClass()}>
+            Idle unload (seconds)
             <input
-              {...NUMBER_INPUT_PROPS}
+              className={`${inputClass()} mt-1.5`}
               type="number"
               min="0"
               value={formState.idle_unload_seconds}
-              onChange={(event) =>
-                setFormState({ ...formState, idle_unload_seconds: Number(event.target.value) })
-              }
+              onChange={(e) => setFormState({ ...formState, idle_unload_seconds: Number(e.target.value) })}
             />
           </label>
-          <label className="text-sm font-medium">
-            Target buffer seconds
+
+          <label className={labelClass()}>
+            Target buffer (seconds)
             <input
-              {...NUMBER_INPUT_PROPS}
+              className={`${inputClass()} mt-1.5`}
               type="number"
               min="0"
               value={formState.target_buffer_seconds}
-              onChange={(event) =>
-                setFormState({ ...formState, target_buffer_seconds: Number(event.target.value) })
-              }
+              onChange={(e) => setFormState({ ...formState, target_buffer_seconds: Number(e.target.value) })}
             />
           </label>
-          <label className="text-sm font-medium">
-            Max prebuffer seconds
+
+          <label className={labelClass()}>
+            Max prebuffer (seconds)
             <input
-              {...NUMBER_INPUT_PROPS}
+              className={`${inputClass()} mt-1.5`}
               type="number"
               min="0"
               value={formState.max_prebuffer_seconds}
-              onChange={(event) =>
-                setFormState({ ...formState, max_prebuffer_seconds: Number(event.target.value) })
-              }
+              onChange={(e) => setFormState({ ...formState, max_prebuffer_seconds: Number(e.target.value) })}
             />
           </label>
-          <label className="text-sm font-medium">
-            VRAM soft limit
+
+          <label className={labelClass()}>
+            VRAM soft limit (MB)
             <input
-              {...NUMBER_INPUT_PROPS}
+              className={`${inputClass()} mt-1.5`}
               type="number"
               min="0"
               value={formState.vram_soft_limit_mb}
-              onChange={(event) => setFormState({ ...formState, vram_soft_limit_mb: Number(event.target.value) })}
+              onChange={(e) => setFormState({ ...formState, vram_soft_limit_mb: Number(e.target.value) })}
+            />
+          </label>
+
+          <label className={labelClass()}>
+            VRAM hard limit (MB)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="0"
+              value={formState.vram_hard_limit_mb}
+              onChange={(e) => setFormState({ ...formState, vram_hard_limit_mb: Number(e.target.value) })}
             />
           </label>
         </div>
-        <div className="mt-6 flex flex-wrap gap-3">
+
+        {/* Action buttons */}
+        <div className="mt-5 flex flex-wrap gap-3">
           <button
-            className={`rounded-full px-5 py-3 font-semibold text-white transition-all duration-200 ${
+            className={`rounded-lg px-5 py-2.5 text-sm font-semibold transition ${
               hasUnsavedChanges
-                ? "bg-[var(--accent-2)] ring-2 ring-[var(--accent-2)] ring-offset-2 ring-offset-transparent"
-                : "bg-[var(--accent)]"
+                ? "bg-[var(--amber)] text-white ring-2 ring-[var(--amber)] ring-offset-2 ring-offset-[var(--surface)]"
+                : "bg-[var(--amber)] text-white hover:brightness-110"
             }`}
             type="submit"
           >
             Save config
           </button>
+
           <button
-            className="inline-flex items-center gap-2 rounded-full border border-stone-300 bg-white/80 px-5 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition hover:text-[var(--ink-primary)] disabled:cursor-not-allowed disabled:opacity-50"
             disabled={modelActionPending !== "idle"}
             onClick={() => void handleWarmModel()}
             type="button"
-            aria-label={modelActionPending === "warm" ? "Warming model…" : "Warm model"}
           >
             {modelActionPending === "warm" && (
-              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-stone-400 border-t-transparent" />
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--ink-secondary)] border-t-transparent" />
             )}
             {modelActionPending === "warm" ? "Warming…" : "Warm model"}
           </button>
+
           <button
-            className="inline-flex items-center gap-2 rounded-full border border-stone-300 bg-white/80 px-5 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition hover:text-[var(--ink-primary)] disabled:cursor-not-allowed disabled:opacity-50"
             disabled={modelActionPending !== "idle"}
             onClick={() => void handleEvictModel()}
             type="button"
-            aria-label={modelActionPending === "evict" ? "Evicting model…" : "Evict model"}
           >
             {modelActionPending === "evict" && (
-              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-stone-400 border-t-transparent" />
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--ink-secondary)] border-t-transparent" />
             )}
             {modelActionPending === "evict" ? "Evicting…" : "Evict model"}
           </button>
         </div>
-        {/* Inline feedback banner */}
+
+        {/* Feedback */}
         {feedbackMessage && (
           <div
-            className={`mt-4 rounded-2xl border px-4 py-3 text-sm font-medium transition-opacity duration-300 ${
+            className={`mt-4 rounded-lg border px-4 py-3 text-xs font-medium ${
               feedbackMessage.type === "success"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : "border-red-200 bg-red-50 text-red-800"
+                ? "border-emerald-900/30 bg-emerald-950/30 text-emerald-400"
+                : "border-rose-900/30 bg-rose-950/30 text-rose-400"
             }`}
             role="alert"
             aria-live="polite"
           >
             <div className="flex items-center gap-2">
               {feedbackMessage.type === "success" ? (
-                <svg className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
-                    clipRule="evenodd"
-                  />
+                <svg className="h-3.5 w-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
                 </svg>
               ) : (
-                <svg className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
-                    clipRule="evenodd"
-                  />
+                <svg className="h-3.5 w-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
                 </svg>
               )}
               <span>{feedbackMessage.text}</span>
@@ -300,243 +318,143 @@ export function AdminPage() {
         )}
       </form>
 
-      <div className="space-y-6">
-        <div className="panel rounded-[2rem] p-6">
-          <h2 className="mb-4 text-xl font-semibold">Live scheduler</h2>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-3xl bg-white/70 p-5">
-              <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Queue depth</div>
-              <div className="mt-2 text-4xl font-semibold">{adminState.scheduler.queue_depth}</div>
-            </div>
-            <div className="rounded-3xl bg-white/70 p-5">
-              <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Model state</div>
-              <div className="mt-3">
+      {/* ── Dashboard ────────────────────────────────────── */}
+      <div className="space-y-4">
+        {/* Scheduler */}
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="mb-3 text-sm font-semibold text-[var(--ink-primary)]">
+            Live scheduler
+          </h2>
+          <div className="grid gap-3 md:grid-cols-2">
+            <StatCard label="Queue depth">
+              <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">
+                {adminState.scheduler.queue_depth}
+              </div>
+            </StatCard>
+            <StatCard label="Model state">
+              <div className="mt-2">
                 {(() => {
                   const raw = adminState.telemetry?.model_state ?? "";
                   const label = MODEL_STATE_LABELS[raw] ?? (raw || "Unknown");
-                  const colors = MODEL_STATE_COLORS[raw] ?? {
-                    bg: "bg-stone-100",
-                    text: "text-stone-600",
-                    dot: "bg-stone-400",
-                  };
+                  const colors = MODEL_STATE_COLORS[raw] ?? { dot: "bg-white/30" };
                   return (
-                    <span
-                      className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold ${colors.bg} ${colors.text}`}
-                    >
-                      <span
-                        className={`inline-block h-3 w-3 rounded-full ${colors.dot} ${
-                          colors.pulse ? "animate-pulse" : ""
-                        }`}
-                      />
+                    <span className="inline-flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-1.5 text-xs font-medium text-[var(--ink-primary)]">
+                      <span className={`inline-block h-2 w-2 rounded-full ${colors.dot} ${colors.pulse ? "animate-pulse" : ""}`} />
                       {label}
                     </span>
                   );
                 })()}
               </div>
-            </div>
+            </StatCard>
           </div>
         </div>
-        <div className="panel rounded-[2rem] p-6">
-          <h2 className="mb-4 text-xl font-semibold">System resources</h2>
+
+        {/* System resources */}
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="mb-3 text-sm font-semibold text-[var(--ink-primary)]">
+            System resources
+          </h2>
           {adminState.memory ? (
             <>
-              <div className="mb-4 grid gap-4 md:grid-cols-2">
-                {/* Device card */}
-                <div className="rounded-3xl bg-white/70 p-5">
-                  <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Device</div>
-                  <div className="mt-2 text-4xl font-semibold capitalize">
-                    {adminState.memory.device === "loading" || adminState.memory.device === "evicting"
-                      ? "—"
-                      : adminState.memory.device}
+              <div className="grid gap-3 md:grid-cols-2">
+                <StatCard label="Device">
+                  <div className="mt-1 text-2xl font-bold capitalize text-[var(--ink-primary)]">
+                    {adminState.memory.device === "loading" || adminState.memory.device === "evicting" ? "—" : adminState.memory.device}
                   </div>
-                  <div className="mt-1 text-xs text-stone-500">
-                    {adminState.memory.device === "loading"
-                      ? "Model is loading…"
-                      : adminState.memory.device === "evicting"
-                        ? "Model is evicting…"
-                        : adminState.memory.device === "unloaded"
-                          ? "No model loaded"
-                          : `Setting: ${adminState.config.device}`}
+                  <div className="mt-0.5 text-[10px] text-[var(--ink-secondary)]">
+                    {adminState.memory.device === "loading" ? "Model is loading…" :
+                     adminState.memory.device === "evicting" ? "Model is evicting…" :
+                     adminState.memory.device === "unloaded" ? "No model loaded" :
+                     `Setting: ${adminState.config.device}`}
                   </div>
-                </div>
-                {/* VRAM card — unified (replaces old VRAM + VRAM usage) */}
+                </StatCard>
+
                 {isGpuActive ? (
-                  <div className="rounded-3xl bg-white/70 p-5">
-                    <div className="flex items-start justify-between">
-                      <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM</div>
-                      {(adminState.telemetry?.oom_count ?? 0) > 0 && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-500" />
-                          {adminState.telemetry!.oom_count} OOM
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-2 text-4xl font-semibold">
+                  <StatCard label="VRAM">
+                    <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">
                       {adminState.memory.vram_reserved_mb.toLocaleString()} MB
                     </div>
-                    <div className="text-xs text-stone-500">
-                      reserved of {adminState.memory.vram_total_mb.toLocaleString()} MB total ·{" "}
-                      {adminState.memory.vram_free_mb.toLocaleString()} MB free
+                    <div className="text-[10px] text-[var(--ink-secondary)]">
+                      reserved of {adminState.memory.vram_total_mb.toLocaleString()} MB total
                     </div>
-                    {/* Stacked bar: allocated + headroom */}
-                    <div className="mt-3 space-y-1">
-                      <div className="h-3 w-full overflow-hidden rounded-full bg-stone-200">
+                    {/* Stacked bars */}
+                    <div className="mt-2 space-y-1">
+                      <div className="h-2 overflow-hidden rounded-full bg-[var(--line)]">
                         <div
-                          className="h-3 rounded-full bg-[var(--accent)] transition-all duration-500"
+                          className="h-2 rounded-full bg-[var(--amber)] transition-all"
                           style={{
-                            width: `${
-                              adminState.memory.vram_total_mb > 0
-                                ? Math.min(
-                                    (adminState.memory.vram_used_mb /
-                                      adminState.memory.vram_total_mb) * 100,
-                                    100,
-                                  )
-                                : 0
-                            }%`,
+                            width: `${adminState.memory.vram_total_mb > 0 ? Math.min((adminState.memory.vram_used_mb / adminState.memory.vram_total_mb) * 100, 100) : 0}%`,
                           }}
-                          title={`Allocated: ${adminState.memory.vram_used_mb} MB`}
                         />
                       </div>
-                      <div className="h-3 w-full overflow-hidden rounded-full bg-stone-200">
-                        <div
-                          className="h-3 rounded-full bg-amber-400 transition-all duration-500"
-                          style={{
-                            width: `${
-                              adminState.memory.vram_total_mb > 0
-                                ? Math.min(
-                                    ((adminState.memory.vram_reserved_mb -
-                                      adminState.memory.vram_used_mb) /
-                                      adminState.memory.vram_total_mb) * 100,
-                                    100,
-                                  )
-                                : 0
-                            }%`,
-                          }}
-                          title={`Headroom: ${Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb)} MB`}
-                        />
+                      <div className="flex gap-3 text-[10px] text-[var(--ink-secondary)]">
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--amber)]" />
+                          Allocated {adminState.memory.vram_used_mb.toLocaleString()} MB
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-white/30" />
+                          Headroom {Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb).toLocaleString()} MB
+                        </span>
                       </div>
                     </div>
-                    <div className="mt-2 flex gap-4 text-xs text-stone-500">
-                      <span className="flex items-center gap-1">
-                        <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
-                        Allocated {adminState.memory.vram_used_mb.toLocaleString()} MB
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <span className="inline-block h-2 w-2 rounded-full bg-amber-400" />
-                        Headroom{" "}
-                        {Math.max(
-                          0,
-                          adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb,
-                        ).toLocaleString()}{" "}
-                        MB
-                      </span>
+                    <div className="mt-2 flex gap-3 text-[10px] text-[var(--ink-secondary)]">
+                      <span>Soft: {adminState.config.vram_soft_limit_mb.toLocaleString()} MB</span>
+                      <span>Hard: {adminState.config.vram_hard_limit_mb.toLocaleString()} MB</span>
                     </div>
-                    {/* Soft/hard limit context */}
-                    <div className="mt-3 flex items-center gap-4 text-xs text-stone-400">
-                      <span>
-                        Soft limit:{" "}
-                        <span className="font-medium text-stone-600">
-                          {adminState.config.vram_soft_limit_mb.toLocaleString()} MB
-                        </span>
-                      </span>
-                      <span>
-                        Hard limit:{" "}
-                        <span className="font-medium text-stone-600">
-                          {adminState.config.vram_hard_limit_mb.toLocaleString()} MB
-                        </span>
-                      </span>
-                    </div>
-                  </div>
+                    {(adminState.telemetry?.oom_count ?? 0) > 0 && (
+                      <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-rose-900/30 bg-rose-950/30 px-2 py-0.5 text-[10px] font-medium text-rose-400">
+                        {adminState.telemetry!.oom_count} OOM
+                      </div>
+                    )}
+                  </StatCard>
                 ) : (
-                  <div className="rounded-3xl bg-white/70 p-5">
-                    <div className="text-sm uppercase tracking-[0.2em] text-stone-600">VRAM</div>
-                    <div className="mt-2 text-4xl font-semibold text-stone-400">—</div>
-                    <div className="mt-1 text-xs text-stone-500">
-                      {adminState.memory.device === "cpu"
-                        ? "Model is running on CPU — no GPU memory to report"
-                        : adminState.memory.device === "unloaded"
-                          ? "Model is not loaded — GPU memory not in use"
-                          : "GPU memory stats unavailable during model transition"}
+                  <StatCard label="VRAM">
+                    <div className="mt-1 text-2xl font-bold text-[var(--ink-secondary)]/50">—</div>
+                    <div className="mt-0.5 text-[10px] text-[var(--ink-secondary)]">
+                      {adminState.memory.device === "cpu" ? "Running on CPU — no GPU memory" :
+                       "Model not loaded — GPU memory not in use"}
                     </div>
-                  </div>
+                  </StatCard>
                 )}
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                {/* System RAM card */}
-                <div className="rounded-3xl bg-white/70 p-5">
-                  <div className="text-sm uppercase tracking-[0.2em] text-stone-600">System RAM</div>
-                  <div className="mt-2 text-4xl font-semibold">
+
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <StatCard label="System RAM">
+                  <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">
                     {adminState.memory.ram_used_mb.toLocaleString()} MB
                   </div>
-                  <div className="text-xs text-stone-500">
-                    {adminState.memory.ram_free_mb.toLocaleString()} MB free of{" "}
-                    {adminState.memory.ram_total_mb.toLocaleString()} MB total
+                  <div className="text-[10px] text-[var(--ink-secondary)]">
+                    {adminState.memory.ram_free_mb.toLocaleString()} MB free of {adminState.memory.ram_total_mb.toLocaleString()} MB total
                   </div>
-                  <div className="mt-3 h-3 w-full rounded-full bg-stone-200">
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--line)]">
                     <div
-                      className="h-3 rounded-full bg-[var(--accent)]"
+                      className="h-2 rounded-full bg-[var(--emerald)] transition-all"
                       style={{
-                        width: `${
-                          adminState.memory.ram_total_mb
-                            ? Math.round(
-                                (adminState.memory.ram_used_mb /
-                                  adminState.memory.ram_total_mb) * 100,
-                              )
-                            : 0
-                        }%`,
+                        width: `${adminState.memory.ram_total_mb ? Math.round((adminState.memory.ram_used_mb / adminState.memory.ram_total_mb) * 100) : 0}%`,
                       }}
                     />
                   </div>
-                </div>
-                {/* Synthesis summary card (replaces old VRAM usage + old Recent batch panel) */}
-                <div className="rounded-3xl bg-white/70 p-5">
-                  <div className="text-sm uppercase tracking-[0.2em] text-stone-600">Synthesis</div>
+                </StatCard>
+
+                <StatCard label="Synthesis">
                   {recentBatch ? (
-                    <div className="mt-2 space-y-2">
-                      <div className="text-xs text-stone-500">
-                        Last batch:{" "}
-                        <span className="font-semibold text-stone-700">
-                          {recentBatch.batch_size} chunk{recentBatch.batch_size !== 1 ? "s" : ""}
-                        </span>
-                        <span className="mx-1">·</span>
-                        <span className="font-semibold text-stone-700">
-                          {recentBatch.duration_seconds.toFixed(1)}s
-                        </span>
+                    <div className="mt-1 space-y-1">
+                      <div className="text-xs text-[var(--ink-primary)]">
+                        {recentBatch.batch_size} chunk{recentBatch.batch_size !== 1 ? "s" : ""} · {recentBatch.duration_seconds.toFixed(1)}s
                       </div>
-                      <div className="text-xs text-stone-500">
-                        Batch VRAM:{" "}
-                        <span className="font-semibold text-stone-700">
-                          {recentBatch.reserved_vram_mb.toLocaleString()} MB
-                        </span>{" "}
-                        reserved ·{" "}
-                        <span className="font-semibold text-stone-700">
-                          {recentBatch.allocated_vram_mb.toLocaleString()} MB
-                        </span>{" "}
-                        allocated
-                      </div>
-                      <div className="flex items-center gap-3 text-xs">
-                        <span className="text-stone-500">
-                          OOM count:{" "}
-                          <span
-                            className={`font-semibold ${
-                              (adminState.telemetry?.oom_count ?? 0) > 0
-                                ? "text-red-600"
-                                : "text-stone-700"
-                            }`}
-                          >
-                            {adminState.telemetry?.oom_count ?? 0}
-                          </span>
-                        </span>
+                      <div className="text-[10px] text-[var(--ink-secondary)]">
+                        VRAM: {recentBatch.reserved_vram_mb.toLocaleString()} MB reserved · {recentBatch.allocated_vram_mb.toLocaleString()} MB allocated
                       </div>
                     </div>
                   ) : (
-                    <div className="mt-2 text-xs text-stone-400">No batches yet</div>
+                    <div className="mt-1 text-xs text-[var(--ink-secondary)]">No batches yet</div>
                   )}
-                </div>
+                </StatCard>
               </div>
             </>
           ) : (
-            <div aria-label="Memory stats unavailable" className="rounded-2xl border border-dashed border-stone-300 px-4 py-8 text-stone-600">
+            <div className="rounded-lg border border-dashed border-[var(--line)] px-4 py-8 text-center text-sm text-[var(--ink-secondary)]">
               Memory stats unavailable.
             </div>
           )}
