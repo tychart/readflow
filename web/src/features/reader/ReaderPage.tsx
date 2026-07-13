@@ -226,8 +226,6 @@ export function ReaderPage() {
   const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
 
-  const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
-
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
 
@@ -397,10 +395,10 @@ export function ReaderPage() {
   }, [activeChunks, activeProgress, activeContiguousReadyIndexes, playbackAnchorIndex, writtenAfterGapIndexes, missingExpectedIndexes]);
 
   const detailSlot = useMemo(() => {
-    const targetIndex = hoveredChunkIndex ?? activeProgress.activeChunkIndex;
+    const targetIndex = activeProgress.activeChunkIndex;
     if (targetIndex === null) return null;
     return activeChunks.find((c) => c.index === targetIndex) ?? null;
-  }, [activeProgress.activeChunkIndex, hoveredChunkIndex, activeChunks]);
+  }, [activeProgress.activeChunkIndex, activeChunks]);
 
   const shouldUsePollingFallback = !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
 
