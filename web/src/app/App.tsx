@@ -158,8 +158,8 @@ function Shell() {
         </div>
       </header>
 
-      {/* Main content */}
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 md:px-6 md:py-8">
+      {/* Main content — each page owns its own layout container */}
+      <main className="flex-1">
         <Routes>
           <Route element={<JobsPage />} path="/" />
           <Route element={<ReaderPage />} path="/jobs/:jobId" />

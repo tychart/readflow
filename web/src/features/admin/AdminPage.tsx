@@ -154,7 +154,8 @@ export function AdminPage() {
     adminState.memory.device !== "evicting";
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+      <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
       {/* ── Config Form ──────────────────────────────────── */}
       <form
         className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
@@ -460,6 +461,7 @@ export function AdminPage() {
           )}
         </div>
       </div>
+    </div>
     </div>
   );
 }

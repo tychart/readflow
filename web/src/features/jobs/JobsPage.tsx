@@ -78,7 +78,8 @@ export function JobsPage() {
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+      <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
       <div className="space-y-4">
         {/* Page heading */}
         <div>
@@ -144,6 +145,7 @@ export function JobsPage() {
 
       {/* Create form */}
       <JobCreateForm onSubmit={handleCreateJob} />
+    </div>
     </div>
   );
 }

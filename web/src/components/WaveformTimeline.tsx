@@ -36,6 +36,8 @@ export interface WaveformTimelineProps {
   onSeek: (chunkIndex: number, seekSeconds: number) => void;
   /** Called when a slot is clicked (not a seek). */
   onClickChunk?: (chunkIndex: number) => void;
+  /** When true, renders a compact timeline (smaller height, no labels/separators). */
+  compact?: boolean;
 }
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -102,6 +104,7 @@ export function WaveformTimeline({
   renderedDurationSeconds,
   onSeek,
   onClickChunk,
+  compact = false,
 }: WaveformTimelineProps) {
   const seekingPointerIdRef = useRef<number | null>(null);
   const suppressClickRef = useRef<number | null>(null);
@@ -203,11 +206,13 @@ export function WaveformTimeline({
     return times;
   }, [slots]);
 
+  const heightClass = compact ? 'h-10' : 'h-20';
+
   if (slots.length === 0) {
     return (
       <div
         aria-label="Timeline"
-        className="flex h-16 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)] text-xs text-[var(--ink-secondary)]"
+        className={`flex ${heightClass} items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)] text-xs text-[var(--ink-secondary)]`}
         role="slider"
       >
         No chunks to display
@@ -221,7 +226,9 @@ export function WaveformTimeline({
       aria-valuemax={renderedDurationSeconds}
       aria-valuemin={0}
       aria-valuenow={currentTimeSeconds}
-      className="relative flex h-16 w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
+      className={`relative flex w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] ${
+        compact ? 'h-10' : 'h-20'
+      }`}
       ref={containerRef}
       role="slider"
       tabIndex={-1}
@@ -364,16 +371,18 @@ export function WaveformTimeline({
               })}
             </div>
 
-            {/* Chunk index label */}
-            <div
-              aria-hidden="true"
-              className="absolute bottom-1 left-1/2 z-20 -translate-x-1/2 text-[9px] font-semibold tracking-wider text-white/40"
-            >
-              {slot.chunkIndex + 1}
-            </div>
+            {/* Chunk index label — hidden in compact mode */}
+            {!compact && (
+              <div
+                aria-hidden="true"
+                className="absolute bottom-1 left-1/2 z-20 -translate-x-1/2 text-[9px] font-semibold tracking-wider text-white/40"
+              >
+                {slot.chunkIndex + 1}
+              </div>
+            )}
 
-            {/* Separator line */}
-            {slot.chunkIndex < slots.length - 1 ? (
+            {/* Separator line — hidden in compact mode */}
+            {!compact && slot.chunkIndex < slots.length - 1 ? (
               <div
                 aria-hidden="true"
                 className="absolute inset-y-2 right-0 z-20 w-px bg-[var(--waveform-sep)]"

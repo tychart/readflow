@@ -680,6 +680,42 @@ export function ReaderPage() {
     }
   }, [activeProgress.activeChunkIndex]);
 
+  // ── Scroll-triggered compact playbar — must be before early returns ──
+  const [isCompact, setIsCompact] = useState(false);
+  const playbarWrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let rafId: number;
+    const checkScroll = () => {
+      const wrapper = playbarWrapperRef.current;
+      if (!wrapper) return;
+      // Get the wrapper's natural top position (before sticky kicks in)
+      const rect = wrapper.getBoundingClientRect();
+      // When the wrapper's natural position is above the sticky threshold,
+      // it means the user has scrolled past its original position
+      // Header is 56px, so sticky activates when top < 56.
+      // We trigger compact when the wrapper's bottom goes above the header (top + height < 56)
+      // Simpler: scrollY > wrapper offset top means we've scrolled past the playbar
+      const scrollY = window.scrollY;
+      const naturalTop = wrapper.offsetTop;
+      setIsCompact(scrollY > naturalTop + 10); // small buffer
+    };
+
+    const handleScroll = () => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(checkScroll);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    // Run once to set initial state
+    checkScroll();
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      cancelAnimationFrame(rafId);
+    };
+  }, []);
+
   // ── Loader / error states ───────────────────────────────
   if (loading) {
     return (
@@ -867,192 +903,208 @@ export function ReaderPage() {
 
   // ── Main render ──────────────────────────────────────────
   return (
-    <div className="flex flex-col gap-4">
-      {/* Warnings — fixed-height container prevents layout shift */}
-      <div className="h-[44px]">
-        <div
-          aria-live="polite"
-          className={`rounded-lg border px-4 py-3 text-xs transition-all duration-200 ${
-            ((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) || error || lastPlayerError || downloadError)
-              ? 'visible opacity-100 border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]'
-              : 'invisible opacity-0'
-          }`}
-        >
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
-            {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
-              <span>Live updates degraded, using fallback sync</span>
-            ) : null}
-            {error ? <span>{error}</span> : null}
-            {lastPlayerError ? <span>{lastPlayerError}</span> : null}
-            {downloadError ? <span>{downloadError}</span> : null}
-          </div>
+    <div className="flex flex-col">
+      {/* Sticky playbar wrapper — flush against the app header */}
+      <div
+        ref={playbarWrapperRef}
+        className={`sticky top-[56px] z-30 w-full transition-all duration-300 ${
+          isCompact
+            ? 'bg-[var(--surface)]/90 backdrop-blur-md border-b border-[var(--line)] shadow-sm'
+            : 'bg-transparent'
+        }`}
+      >
+        <div className={`mx-auto w-full transition-all duration-300 ${
+          isCompact ? 'px-3 py-2' : 'px-4 py-5 md:px-6'
+        }`}>
+          <Playbar
+            activeChunkIndex={activeProgress.activeChunkIndex}
+            audioRef={audioRef as React.RefObject<HTMLAudioElement | null>}
+            canDownload={canDownloadRenderedAudio}
+            compact={isCompact}
+            currentTimeSeconds={currentTimeSeconds}
+            isAutoplayBlocked={isAutoplayBlocked}
+            isDownloadComplete={isDownloadComplete}
+            isDownloading={isDownloading}
+            isJobTerminal={isJobTerminal}
+            isPlaying={isActuallyPlaying}
+            isWaitingForData={isWaitingForData}
+            playIntent={playIntent}
+            onDownload={handleDownload}
+            onPause={handlePause}
+            onPlay={handlePlay}
+            onSeek={handleSeek}
+            onSeekToChunk={handleSeekToChunk}
+            renderedDurationSeconds={renderedDurationSeconds}
+            slots={timelineSlots}
+            totalChunks={totalChunksInJob}
+            writtenChunks={writtenChunkCount}
+          />
         </div>
       </div>
-
-      {/* Playbar */}
-      <Playbar
-        activeChunkIndex={activeProgress.activeChunkIndex}
-        audioRef={audioRef as React.RefObject<HTMLAudioElement | null>}
-        canDownload={canDownloadRenderedAudio}
-        currentTimeSeconds={currentTimeSeconds}
-        isAutoplayBlocked={isAutoplayBlocked}
-        isDownloadComplete={isDownloadComplete}
-        isDownloading={isDownloading}
-        isJobTerminal={isJobTerminal}
-        isPlaying={isActuallyPlaying}
-        isWaitingForData={isWaitingForData}
-        playIntent={playIntent}
-        onDownload={handleDownload}
-        onPause={handlePause}
-        onPlay={handlePlay}
-        onSeek={handleSeek}
-        onSeekToChunk={handleSeekToChunk}
-        renderedDurationSeconds={renderedDurationSeconds}
-        slots={timelineSlots}
-        totalChunks={totalChunksInJob}
-        writtenChunks={writtenChunkCount}
-      />
 
       {/* Hidden audio element for MediaSource playback */}
       <audio aria-hidden="true" className="hidden" ref={audioRef as React.RefObject<HTMLAudioElement | null>} />
 
-      {/* Main content grid */}
-      <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">
-        {/* Left: source text with chunk highlighting */}
-        <div
-          className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
-        >
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
-                Reader
-              </p>
-              <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
-                {job.title ?? "Untitled job"}
-              </h2>
+      {/* Warnings — in content area, below the header */}
+      <div className="mx-auto w-full max-w-6xl px-4 pt-5 md:px-6">
+        <div className="h-[44px]">
+          <div
+            aria-live="polite"
+            className={`rounded-lg border px-4 py-3 text-xs transition-all duration-200 ${
+              ((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) || error || lastPlayerError || downloadError)
+                ? 'visible opacity-100 border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]'
+                : 'invisible opacity-0'
+            }`}
+          >
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
+                <span>Live updates degraded, using fallback sync</span>
+              ) : null}
+              {error ? <span>{error}</span> : null}
+              {lastPlayerError ? <span>{lastPlayerError}</span> : null}
+              {downloadError ? <span>{downloadError}</span> : null}
             </div>
-            <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
-              {job.status}
-            </span>
-          </div>
-
-          <div className="max-h-[60vh] space-y-2 overflow-y-auto" ref={contentRef}>
-            {sourceTextLines.length > 0 ? (
-              sourceTextLines
-            ) : (
-              <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
-                No chunks available yet. Press play to start.
-              </p>
-            )}
           </div>
         </div>
+      </div>
 
-        {/* Right: detail panel + controls */}
-        <div className="space-y-4">
-          {/* Chunk detail */}
-          {renderDetailPanel()}
+      {/* Main content grid — centered, readable width */}
+      <div className="mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6">
+        <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">
+          {/* Left: source text with chunk highlighting */}
+          <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
+                  Reader
+                </p>
+                <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
+                  {job.title ?? "Untitled job"}
+                </h2>
+              </div>
+              <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
+                {job.status}
+              </span>
+            </div>
 
-          {/* Voice selector */}
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-            <label
-              className="mb-2 block text-xs font-medium uppercase tracking-wider text-[var(--ink-secondary)]"
-              htmlFor="voice-change-select"
-            >
-              Voice for future chunks
-            </label>
-            <select
-              className="w-full rounded-md border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink-primary)]"
-              id="voice-change-select"
-              onChange={(event) => void handleVoiceChange(event.target.value)}
-              value={job.voice_id}
-            >
-              {voices.map((voice) => (
-                <option key={voice.id} value={voice.id}>
-                  {voice.display_name}
-                </option>
-              ))}
-            </select>
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto" ref={contentRef}>
+              {sourceTextLines.length > 0 ? (
+                sourceTextLines
+              ) : (
+                <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
+                  No chunks available yet. Press play to start.
+                </p>
+              )}
+            </div>
           </div>
 
-          {/* Live diagnostics (collapsible) */}
-          <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Live diagnostics
-            </summary>
-            <div className="mt-3 grid gap-2 text-xs text-[var(--ink-secondary)]">
-              <div className="flex justify-between"><span>Socket</span><span>{isJobTerminal ? "idle" : websocketStatus}{isSocketStale ? " (stale)" : ""}</span></div>
-              <div className="flex justify-between"><span>Last live event</span><span>{formatRelativeTime(lastSocketMessageAt)}</span></div>
-              <div className="flex justify-between"><span>Reader refresh</span><span>{formatRelativeTime(lastRefreshAt)} via {lastRefreshReason}</span></div>
-              <div className="flex justify-between"><span>Appended chunks</span><span>{appendedChunksCount}</span></div>
-              <div className="flex justify-between"><span>Playback anchor</span><span>Chunk {playbackAnchorIndex + 1}</span></div>
-              <div className="flex justify-between"><span>Expected next</span><span>{expectedNextChunkIndex === null ? "none" : `Chunk ${expectedNextChunkIndex + 1}`}</span></div>
-              <div className="flex justify-between"><span>Playback intent</span><span>{playIntent ? "armed" : "paused"}</span></div>
-              <div className="flex justify-between"><span>Player state</span><span>{playerState}</span></div>
-              <div className="flex justify-between"><span>Audio</span><span>{isActuallyPlaying ? "playing" : diagnostics.paused ? "paused" : "ready"}</span></div>
-              <div className="flex justify-between"><span>Waiting for data</span><span>{isWaitingForData ? "yes" : "no"}</span></div>
-              <div className="flex justify-between"><span>Buffered until</span><span>{bufferedUntilSeconds.toFixed(1)}s</span></div>
-              <div className="flex justify-between"><span>Current time</span><span>{currentTimeSeconds.toFixed(1)}s</span></div>
-              <div className="flex justify-between"><span>Audio ready/network</span><span>{diagnostics.readyState}/{diagnostics.networkState}</span></div>
-              {lastPlayerError || lastPlaybackSyncError || lastSocketError ? (
-                <div className="mt-2 rounded-md bg-[var(--rose)]/10 px-2 py-1 text-[var(--rose)]">
-                  {lastPlayerError ?? lastPlaybackSyncError ?? lastSocketError}
-                </div>
-              ) : null}
-            </div>
-          </details>
+          {/* Right: detail panel + controls */}
+          <div className="space-y-4">
+            {/* Chunk detail */}
+            {renderDetailPanel()}
 
-          {/* Chunk status list */}
-          <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-              All chunks ({activeChunks.length})
-            </summary>
-            <div className="mt-3 space-y-1">
-              {activeChunks.map((chunk) => {
-                const allVersions = knownChunks.filter((c) => c.index === chunk.index);
-                return (
-                  <div
-                    className={`flex items-center justify-between rounded-md px-3 py-2 text-xs ${
-                      chunk.index === activeProgress.activeChunkIndex
-                        ? "bg-[var(--amber-soft)]"
-                        : "bg-[var(--canvas)]/30"
-                    }`}
-                    key={chunk.index}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-[var(--ink-primary)]">Chunk {chunk.index + 1}</span>
-                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                        chunk.status === "written" ? "bg-[var(--emerald)]/10 text-[var(--emerald)]" :
-                        chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-[var(--rose)]/10 text-[var(--rose)]" :
-                        "bg-white/5 text-[var(--ink-secondary)]"
-                      }`}>
-                        {chunk.status}
-                      </span>
-                      {chunk.duration_seconds > 0 ? (
-                        <span className="text-[var(--ink-secondary)]">{chunk.duration_seconds.toFixed(1)}s</span>
-                      ) : null}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {allVersions.map((v) => (
-                        <button
-                          key={v.version}
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                            v.version === chunk.version
-                              ? "bg-[var(--amber)] text-white"
-                              : v.deprecated
-                                ? "text-[var(--ink-secondary)]/50 line-through"
-                                : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                          }`}
-                          onClick={() => handleVersionChange(chunk.index, v.version)}
-                        >
-                          V{v.version}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+            {/* Voice selector */}
+            <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
+              <label
+                className="mb-2 block text-xs font-medium uppercase tracking-wider text-[var(--ink-secondary)]"
+                htmlFor="voice-change-select"
+              >
+                Voice for future chunks
+              </label>
+              <select
+                className="w-full rounded-md border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink-primary)]"
+                id="voice-change-select"
+                onChange={(event) => void handleVoiceChange(event.target.value)}
+                value={job.voice_id}
+              >
+                {voices.map((voice) => (
+                  <option key={voice.id} value={voice.id}>
+                    {voice.display_name}
+                  </option>
+                ))}
+              </select>
             </div>
-          </details>
+
+            {/* Live diagnostics (collapsible) */}
+            <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
+              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+                Live diagnostics
+              </summary>
+              <div className="mt-3 grid gap-2 text-xs text-[var(--ink-secondary)]">
+                <div className="flex justify-between"><span>Socket</span><span>{isJobTerminal ? "idle" : websocketStatus}{isSocketStale ? " (stale)" : ""}</span></div>
+                <div className="flex justify-between"><span>Last live event</span><span>{formatRelativeTime(lastSocketMessageAt)}</span></div>
+                <div className="flex justify-between"><span>Reader refresh</span><span>{formatRelativeTime(lastRefreshAt)} via {lastRefreshReason}</span></div>
+                <div className="flex justify-between"><span>Appended chunks</span><span>{appendedChunksCount}</span></div>
+                <div className="flex justify-between"><span>Playback anchor</span><span>Chunk {playbackAnchorIndex + 1}</span></div>
+                <div className="flex justify-between"><span>Expected next</span><span>{expectedNextChunkIndex === null ? "none" : `Chunk ${expectedNextChunkIndex + 1}`}</span></div>
+                <div className="flex justify-between"><span>Playback intent</span><span>{playIntent ? "armed" : "paused"}</span></div>
+                <div className="flex justify-between"><span>Player state</span><span>{playerState}</span></div>
+                <div className="flex justify-between"><span>Audio</span><span>{isActuallyPlaying ? "playing" : diagnostics.paused ? "paused" : "ready"}</span></div>
+                <div className="flex justify-between"><span>Waiting for data</span><span>{isWaitingForData ? "yes" : "no"}</span></div>
+                <div className="flex justify-between"><span>Buffered until</span><span>{bufferedUntilSeconds.toFixed(1)}s</span></div>
+                <div className="flex justify-between"><span>Current time</span><span>{currentTimeSeconds.toFixed(1)}s</span></div>
+                <div className="flex justify-between"><span>Audio ready/network</span><span>{diagnostics.readyState}/{diagnostics.networkState}</span></div>
+                {lastPlayerError || lastPlaybackSyncError || lastSocketError ? (
+                  <div className="mt-2 rounded-md bg-[var(--rose)]/10 px-2 py-1 text-[var(--rose)]">
+                    {lastPlayerError ?? lastPlaybackSyncError ?? lastSocketError}
+                  </div>
+                ) : null}
+              </div>
+            </details>
+
+            {/* Chunk status list */}
+            <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
+              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+                All chunks ({activeChunks.length})
+              </summary>
+              <div className="mt-3 space-y-1">
+                {activeChunks.map((chunk) => {
+                  const allVersions = knownChunks.filter((c) => c.index === chunk.index);
+                  return (
+                    <div
+                      className={`flex items-center justify-between rounded-md px-3 py-2 text-xs ${
+                        chunk.index === activeProgress.activeChunkIndex
+                          ? "bg-[var(--amber-soft)]"
+                          : "bg-[var(--canvas)]/30"
+                      }`}
+                      key={chunk.index}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-[var(--ink-primary)]">Chunk {chunk.index + 1}</span>
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                          chunk.status === "written" ? "bg-[var(--emerald)]/10 text-[var(--emerald)]" :
+                          chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-[var(--rose)]/10 text-[var(--rose)]" :
+                          "bg-white/5 text-[var(--ink-secondary)]"
+                        }`}>
+                          {chunk.status}
+                        </span>
+                        {chunk.duration_seconds > 0 ? (
+                          <span className="text-[var(--ink-secondary)]">{chunk.duration_seconds.toFixed(1)}s</span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {allVersions.map((v) => (
+                          <button
+                            key={v.version}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                              v.version === chunk.version
+                                ? "bg-[var(--amber)] text-white"
+                                : v.deprecated
+                                  ? "text-[var(--ink-secondary)]/50 line-through"
+                                  : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                            }`}
+                            onClick={() => handleVersionChange(chunk.index, v.version)}
+                          >
+                            V{v.version}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+          </div>
         </div>
       </div>
     </div>

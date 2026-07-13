@@ -44,6 +44,8 @@ export interface PlaybarProps {
   totalChunks: number;
   /** Number of chunks currently written/ready. */
   writtenChunks: number;
+  /** When true, renders a slim compact version (play button + waveform only). */
+  compact?: boolean;
 }
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -84,6 +86,7 @@ export function Playbar({
   isDownloading = false,
   totalChunks,
   writtenChunks,
+  compact = false,
 }: PlaybarProps) {
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -206,7 +209,11 @@ export function Playbar({
   return (
     <div
       aria-label="Playback controls"
-      className="flex w-full flex-col gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4"
+      className={`flex w-full flex-col transition-all ${
+        compact
+          ? 'gap-2'
+          : 'gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5'
+      }`}
       ref={barRef}
       role="toolbar"
       tabIndex={-1}
@@ -216,24 +223,28 @@ export function Playbar({
         {/* Play/Pause button */}
         <button
           aria-label={playButtonLabel}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)]"
+          className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)] ${
+            compact ? 'h-9 w-9' : 'h-12 w-12'
+          }`}
           onClick={() => (isPlaying ? onPause() : onPlay())}
           type="button"
         >
           {showSpinner ? (
             <span
               aria-hidden="true"
-              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"
+              className={`inline-block animate-spin rounded-full border-2 border-white border-t-transparent ${
+                compact ? 'h-3 w-3' : 'h-4 w-4'
+              }`}
             />
           ) : isPlaying || playIntent ? (
             /* Pause icon */
-            <svg aria-hidden="true" className="h-4 w-4" fill="currentColor" viewBox="0 0 16 16">
+            <svg aria-hidden="true" className={compact ? 'h-3 w-3' : 'h-4 w-4'} fill="currentColor" viewBox="0 0 16 16">
               <rect height="14" rx="1" width="5" x="2.5" y="1" />
               <rect height="14" rx="1" width="5" x="8.5" y="1" />
             </svg>
           ) : (
             /* Play icon */
-            <svg aria-hidden="true" className="ml-0.5 h-4 w-4" fill="currentColor" viewBox="0 0 16 16">
+            <svg aria-hidden="true" className={`ml-0.5 ${compact ? 'h-3 w-3' : 'h-4 w-4'}`} fill="currentColor" viewBox="0 0 16 16">
               <path d="M3 1.5v13l11-6.5L3 1.5z" />
             </svg>
           )}
@@ -243,6 +254,7 @@ export function Playbar({
         <div className="min-w-0 flex-1">
           <WaveformTimeline
             capturedWaveforms={capturedWaveforms}
+            compact={compact}
             currentTimeSeconds={currentTimeSeconds}
             liveWaveform={liveWaveform}
             onClickChunk={handleTimelineClick}
@@ -253,81 +265,83 @@ export function Playbar({
         </div>
       </div>
 
-      {/* Bottom row: metadata + controls */}
-      <div className="flex items-center justify-between gap-4 text-xs text-[var(--ink-secondary)]">
-        {/* Left: time display — fixed widths prevent layout shift */}
-        <div className="flex items-center gap-3 font-mono tabular-nums">
-          {/* Current time */}
-          <span className="inline-block min-w-[32px] text-right font-semibold text-[var(--ink-primary)]">
-            {formatClock(currentTimeSeconds)}
-          </span>
-          <span className="opacity-40">/</span>
-          <span className="inline-block min-w-[32px]">{formatClock(renderedDurationSeconds)}</span>
+      {/* Bottom row: metadata + controls — hidden in compact mode */}
+      {!compact && (
+        <div className="flex items-center justify-between gap-4 text-xs text-[var(--ink-secondary)]">
+          {/* Left: time display — fixed widths prevent layout shift */}
+          <div className="flex items-center gap-3 font-mono tabular-nums">
+            {/* Current time */}
+            <span className="inline-block min-w-[32px] text-right font-semibold text-[var(--ink-primary)]">
+              {formatClock(currentTimeSeconds)}
+            </span>
+            <span className="opacity-40">/</span>
+            <span className="inline-block min-w-[32px]">{formatClock(renderedDurationSeconds)}</span>
 
-          {/* Player state — fixed min-width prevents layout shift */}
-          <span
-            aria-live="polite"
-            className={`ml-2 inline-block min-w-[100px] rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${
-              playerStateLabel === "Playing" || playerStateLabel === "Starting…" || playerStateLabel === "Preparing stream…"
-                ? "bg-[var(--amber-soft)] text-[var(--amber)]"
-                : playerStateLabel === "Playback complete"
-                  ? "bg-emerald-900/30 text-emerald-400"
-                  : playerStateLabel === "Buffering…"
-                    ? "bg-amber-900/30 text-amber-400"
-                    : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
-            }`}
-          >
-            {playerStateLabel}
-          </span>
+            {/* Player state — fixed min-width prevents layout shift */}
+            <span
+              aria-live="polite"
+              className={`ml-2 inline-block min-w-[100px] rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${
+                playerStateLabel === "Playing" || playerStateLabel === "Starting…" || playerStateLabel === "Preparing stream…"
+                  ? "bg-[var(--amber-soft)] text-[var(--amber)]"
+                  : playerStateLabel === "Playback complete"
+                    ? "bg-emerald-900/30 text-emerald-400"
+                    : playerStateLabel === "Buffering…"
+                      ? "bg-amber-900/30 text-amber-400"
+                      : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
+              }`}
+            >
+              {playerStateLabel}
+            </span>
+          </div>
+
+          {/* Right: chunk counter + download */}
+          <div className="flex items-center gap-4">
+            {/* Chunk counter */}
+            <span className="tabular-nums">
+              <span className="text-[var(--ink-primary)]">{writtenChunks}</span>
+              <span className="opacity-40">/{totalChunks}</span>
+              <span> chunks</span>
+            </span>
+
+            {/* Download button */}
+            <button
+              aria-label={isDownloadComplete ? "Download full audio" : canDownload ? "Download rendered audio" : "Download not available"}
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
+                canDownload
+                  ? "border-[var(--line)] text-[var(--ink-secondary)] hover:border-[var(--amber)] hover:text-[var(--amber)]"
+                  : "cursor-not-allowed border-[var(--line)] text-[var(--slate)] opacity-50"
+              }`}
+              disabled={!canDownload || isDownloading}
+              onClick={onDownload}
+              title={
+                isDownloadComplete
+                  ? "Download complete audio file"
+                  : canDownload
+                    ? "Download rendered audio so far"
+                    : "No audio data available yet"
+              }
+              type="button"
+            >
+              {isDownloading ? (
+                <>
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
+                  Preparing…
+                </>
+              ) : (
+                <>
+                  {/* Download icon */}
+                  <svg aria-hidden="true" className="h-3 w-3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" x2="12" y1="15" y2="3" />
+                  </svg>
+                  {isDownloadComplete ? "Full audio" : "Download"}
+                </>
+              )}
+            </button>
+          </div>
         </div>
-
-        {/* Right: chunk counter + download */}
-        <div className="flex items-center gap-4">
-          {/* Chunk counter */}
-          <span className="tabular-nums">
-            <span className="text-[var(--ink-primary)]">{writtenChunks}</span>
-            <span className="opacity-40">/{totalChunks}</span>
-            <span> chunks</span>
-          </span>
-
-          {/* Download button */}
-          <button
-            aria-label={isDownloadComplete ? "Download full audio" : canDownload ? "Download rendered audio" : "Download not available"}
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
-              canDownload
-                ? "border-[var(--line)] text-[var(--ink-secondary)] hover:border-[var(--amber)] hover:text-[var(--amber)]"
-                : "cursor-not-allowed border-[var(--line)] text-[var(--slate)] opacity-50"
-            }`}
-            disabled={!canDownload || isDownloading}
-            onClick={onDownload}
-            title={
-              isDownloadComplete
-                ? "Download complete audio file"
-                : canDownload
-                  ? "Download rendered audio so far"
-                  : "No audio data available yet"
-            }
-            type="button"
-          >
-            {isDownloading ? (
-              <>
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
-                Preparing…
-              </>
-            ) : (
-              <>
-                {/* Download icon */}
-                <svg aria-hidden="true" className="h-3 w-3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" x2="12" y1="15" y2="3" />
-                </svg>
-                {isDownloadComplete ? "Full audio" : "Download"}
-              </>
-            )}
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
