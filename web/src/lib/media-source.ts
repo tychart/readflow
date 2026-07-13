@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { JobManifest } from "../types/api";
 
@@ -747,10 +747,11 @@ export function useMediaSourcePlayer({
     setPlaybackRateState(clampedRate);
   }, []);
 
-  // Sync audio element playbackRate after every render so that it stays
-  // applied even if the audio element is recreated, a new source is loaded,
-  // or the browser otherwise resets the property.
-  useEffect(() => {
+  // Sync audio element playbackRate synchronously after every DOM commit
+  // (useLayoutEffect runs before the browser paints).  This ensures the rate
+  // is always applied on the real DOM element regardless of how or when the
+  // element was created, primed, or a new source was loaded.
+  useLayoutEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
       return;

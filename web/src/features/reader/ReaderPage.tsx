@@ -16,6 +16,7 @@ import { useMediaSourcePlayer, type PlayerState } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
 import { PlaybackSpeedControl } from "./PlaybackSpeedControl";
+import { SpeedSyncedAudio } from "./SpeedSyncedAudio";
 import { calculateChunkSeekTargetSeconds } from "./timeline";
 
 const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
@@ -1226,7 +1227,12 @@ export function ReaderPage() {
 
       <div className="space-y-6">
         <div className="panel rounded-[2rem] p-6">
-          <audio aria-hidden="true" className="hidden" ref={audioRef} />
+          <SpeedSyncedAudio
+            aria-hidden="true"
+            audioRef={audioRef}
+            className="hidden"
+            playbackRate={playbackRate}
+          />
 
           <div
             aria-label={`Playback status: ${liveStatus}`}
