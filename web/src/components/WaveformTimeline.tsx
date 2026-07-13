@@ -24,8 +24,6 @@ export interface WaveformTimelineProps {
   capturedWaveforms: Map<number, Float32Array>;
   /** The current live waveform frame from the AnalyserNode (0..1 normalized). */
   liveWaveform: Float32Array | null;
-  /** Index of the chunk currently being played, if any. */
-  activeChunkIndex: number | null;
   /**
    * Called when the user clicks/seeks within a slot.
    * `seekSeconds` is the audio-relative target timestamp.
@@ -95,7 +93,6 @@ export function WaveformTimeline({
   slots,
   capturedWaveforms,
   liveWaveform,
-  activeChunkIndex,
   onSeek,
   onClickChunk,
 }: WaveformTimelineProps) {

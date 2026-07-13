@@ -34,16 +34,6 @@ type TimelineSlotState =
   | "missing_expected"
   | "failed";
 
-interface TimelineSlot {
-  chunk: Chunk;
-  state: TimelineSlotState;
-  fillPercent: number;
-  isAnchor: boolean;
-  visualDurationSeconds: number;
-  version: number;
-  deprecated: boolean;
-  reprocessing: boolean;
-}
 
 interface StreamEventPayload {
   job?: JobDetail;
@@ -97,17 +87,6 @@ function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null): 
   return [];
 }
 
-function chunkStatusText(state: TimelineSlotState): string {
-  switch (state) {
-    case "played": return "played";
-    case "playing": return "active";
-    case "ready": return "ready";
-    case "ready_after_gap": return "ready after gap";
-    case "missing_expected": return "expected but not received";
-    case "failed": return "failed";
-    default: return "unknown";
-  }
-}
 
 function normalizeText(text: string): string {
   return text
@@ -230,8 +209,8 @@ export function ReaderPage() {
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
-  const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
-  const [pendingAnchorSeekSeconds, setPendingAnchorSeekSeconds] = useState<number | null>(null);
+
+
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null);
@@ -246,6 +225,8 @@ export function ReaderPage() {
   const queuedRefreshReasonRef = useRef<string | null>(null);
   const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
+
+  const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
 
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
@@ -379,15 +360,6 @@ export function ReaderPage() {
     [contiguousReadyChunks, currentTimeSeconds],
   );
 
-  const streamStartByIndex = useMemo(() => {
-    let runningStart = 0;
-    const starts = new Map<number, number>();
-    for (const chunk of contiguousReadyChunks) {
-      starts.set(chunk.index, runningStart);
-      runningStart += chunk.duration_seconds;
-    }
-    return starts;
-  }, [contiguousReadyChunks]);
 
   // ── Timeline slots (for WaveformTimeline) ───────────────
   const timelineSlots = useMemo<TimelineSlotData[]>(() => {
@@ -712,7 +684,11 @@ export function ReaderPage() {
     if (activeIdx === null) return;
     const el = chunkRefs.current.get(activeIdx);
     if (!el || !contentRef.current) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    try {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {
+      // scrollIntoView may not be available in all environments (e.g. jsdom)
+    }
   }, [activeProgress.activeChunkIndex]);
 
   // ── Loader / error states ───────────────────────────────
@@ -758,7 +734,6 @@ export function ReaderPage() {
       >
         {/* Chunk number indicator */}
         <div
-          aria-hidden="true"
           className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${
             isActive ? "text-[var(--amber)]" : "text-[var(--ink-secondary)]"
           }`}

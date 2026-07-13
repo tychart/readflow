@@ -41,8 +41,6 @@ function getSnapshot(): Theme {
   return resolveTheme();
 }
 
-let lastSnapshot = getSnapshot();
-
 function subscribe(callback: () => void): () => void {
   // Listen for storage changes from other tabs
   const handleStorage = (event: StorageEvent) => {
@@ -77,7 +75,6 @@ function subscribe(callback: () => void): () => void {
  * Applies the given theme to the document.
  */
 export function applyTheme(theme: Theme): void {
-  lastSnapshot = theme;
   if (theme === "dark") {
     document.documentElement.classList.remove("light");
     document.documentElement.classList.add("dark");

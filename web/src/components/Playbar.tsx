@@ -107,7 +107,6 @@ export function Playbar({
   // ── Waveform analyser ─────────────────────────────────────
   const {
     liveWaveform,
-    isConnected,
     captureSnapshot,
     getCaptured,
     reset: resetWaveforms,
@@ -257,7 +256,6 @@ export function Playbar({
         {/* Waveform Timeline */}
         <div className="min-w-0 flex-1">
           <WaveformTimeline
-            activeChunkIndex={activeChunkIndex}
             capturedWaveforms={capturedWaveforms}
             liveWaveform={liveWaveform}
             onClickChunk={handleTimelineClick}
