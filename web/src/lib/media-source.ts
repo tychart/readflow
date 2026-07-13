@@ -175,6 +175,8 @@ export function useMediaSourcePlayer({
   const isTerminalRef = useRef(isTerminal);
   const renderedDurationRef = useRef(0);
   const playbackRateRef = useRef(3);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaElementSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
@@ -310,6 +312,38 @@ export function useMediaSourcePlayer({
       }
       if (!hasBufferedAhead(audio, bufferedUntilSeconds)) {
         return false;
+      }
+
+      // Route the audio element through the Web Audio API so that
+      // playbackRate is respected by Firefox's MSE implementation.
+      // Firefox's MSE audio pipeline ignores playbackRate unless the
+      // element is connected to an AudioContext (via createMediaElementSource).
+      // This is a targeted workaround for Firefox bug 1517199 / 1660534.
+      // createMediaElementSource can only be called once per element.
+      if (!mediaElementSourceRef.current) {
+        try {
+          const AudioContextClass =
+            window.AudioContext ??
+            (window as unknown as { webkitAudioContext?: typeof AudioContext })
+              .webkitAudioContext;
+          if (AudioContextClass) {
+            const ctx = new AudioContextClass();
+            const source = ctx.createMediaElementSource(audio);
+            source.connect(ctx.destination);
+            audioContextRef.current = ctx;
+            mediaElementSourceRef.current = source;
+          }
+        } catch {
+          // If createMediaElementSource fails (e.g. already called),
+          // continue without Web Audio API routing.
+        }
+      }
+      if (audioContextRef.current?.state === "suspended") {
+        try {
+          await audioContextRef.current.resume();
+        } catch {
+          // Resume can fail if not triggered by user gesture; ignore.
+        }
       }
 
       try {
@@ -796,6 +830,28 @@ export function useMediaSourcePlayer({
     audio.playbackRate = playbackRate;
     audio.defaultPlaybackRate = playbackRate;
   });
+
+  // Clean up the AudioContext when the hook unmounts.
+  useEffect(() => {
+    return () => {
+      if (mediaElementSourceRef.current) {
+        try {
+          mediaElementSourceRef.current.disconnect();
+        } catch {
+          // Ignore disconnect errors during cleanup.
+        }
+        mediaElementSourceRef.current = null;
+      }
+      if (audioContextRef.current) {
+        try {
+          void audioContextRef.current.close();
+        } catch {
+          // Ignore close errors during cleanup.
+        }
+        audioContextRef.current = null;
+      }
+    };
+  }, []);
 
   const seekToSeconds = useCallback(
     (targetSeconds: number) => {
