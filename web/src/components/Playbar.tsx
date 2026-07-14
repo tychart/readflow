@@ -112,9 +112,14 @@ export function Playbar({
     prevActiveRef.current = activeChunkIndex;
   }, [activeChunkIndex, captureSnapshot]);
 
-  // Reset captured waveforms when slots change (new job loaded)
+  // Reset captured waveforms when slot count drops (new job loaded, not chunk append)
+  // Only reset when slots shrink, which indicates a new job was loaded
+  const prevSlotCountRef = useRef(slots.length);
   useEffect(() => {
-    resetWaveforms();
+    if (slots.length < prevSlotCountRef.current) {
+      resetWaveforms();
+    }
+    prevSlotCountRef.current = slots.length;
   }, [slots.length, resetWaveforms]);
 
   // Build capturedWaveforms map for the timeline
@@ -224,7 +229,7 @@ export function Playbar({
   return (
     <div
       aria-label="Playback controls"
-      className="flex w-full flex-col"
+      className="relative flex w-full flex-col"
       ref={barRef}
       role="toolbar"
       style={{ gap: `${gap}px` }}

@@ -499,12 +499,20 @@ export function ReaderPage() {
     };
   }, [audioRef, isJobTerminal, isWaitingForData, job, playIntent, renderedDurationSeconds, syncPlaybackState]);
 
+  // Seek override: waits for stream + buffer to be ready
   useEffect(() => {
     if (seekOverride === null) return;
     if (!isStreamPrimed || renderedDurationSeconds <= 0) return;
+    if (seekOverride > bufferedUntilSeconds) return;
     seekToSeconds(Math.min(seekOverride, renderedDurationSeconds));
     setSeekOverride(null);
-  }, [isStreamPrimed, seekOverride, renderedDurationSeconds, seekToSeconds]);
+  }, [
+    bufferedUntilSeconds,
+    isStreamPrimed,
+    renderedDurationSeconds,
+    seekOverride,
+    seekToSeconds,
+  ]);
 
   useEffect(() => {
     if (!isJobTerminal || !playIntent || isActuallyPlaying || renderedDurationSeconds <= 0 || currentTimeSeconds < Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)) return;
