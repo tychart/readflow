@@ -499,14 +499,38 @@ export function ReaderPage() {
     };
   }, [audioRef, isJobTerminal, isWaitingForData, job, playIntent, renderedDurationSeconds, syncPlaybackState]);
 
-  // Seek override: waits for stream + buffer to be ready
+  // Compute the original timeline position of the playback anchor.
+  // When the anchor is non-zero (user sought to a later chunk), the
+  // stream sent to useMediaSourcePlayer normalizes chunk start_seconds
+  // to 0. So seekOverride (in original coords) must be normalized by
+  // subtracting this offset before comparing with bufferedUntilSeconds.
+  // Original timeline position of the playback anchor (for display coordinate conversion)
+  const anchorOffset = useMemo(
+    () =>
+      knownChunks
+        .filter((c) => c.index < playbackAnchorIndex)
+        .reduce((acc, c) => acc + c.duration_seconds, 0),
+    [knownChunks, playbackAnchorIndex],
+  );
+
+  // Time display values in original (non-normalized) coordinates
+  const displayTimeSeconds = currentTimeSeconds + anchorOffset;
+  const displayDurationSeconds = useMemo(
+    () => knownChunks.reduce((acc, c) => acc + c.duration_seconds, 0),
+    [knownChunks],
+  );
+
+  // Seek override: waits for stream + buffer to be ready, in normalized coords
   useEffect(() => {
     if (seekOverride === null) return;
     if (!isStreamPrimed || renderedDurationSeconds <= 0) return;
-    if (seekOverride > bufferedUntilSeconds) return;
-    seekToSeconds(Math.min(seekOverride, renderedDurationSeconds));
+    // Normalize the seek target from original timeline coords to stream coords
+    const normalizedSeek = Math.max(0, seekOverride - anchorOffset);
+    if (normalizedSeek > bufferedUntilSeconds) return;
+    seekToSeconds(Math.min(normalizedSeek, renderedDurationSeconds));
     setSeekOverride(null);
   }, [
+    anchorOffset,
     bufferedUntilSeconds,
     isStreamPrimed,
     renderedDurationSeconds,
@@ -551,9 +575,11 @@ export function ReaderPage() {
     }
   };
 
+  // Keyboard/direct seeks use normalized stream coords and seek immediately
+  // (no need to wait for buffer — the stream is already set up)
   const handleSeek = useCallback((seconds: number) => {
-    setSeekOverride(seconds);
-  }, []);
+    seekToSeconds(seconds);
+  }, [seekToSeconds]);
 
   const handleSeekToChunk = useCallback(
     async (chunkIndex: number, seekSeconds: number) => {
@@ -888,6 +914,8 @@ export function ReaderPage() {
             canDownload={canDownloadRenderedAudio}
             scrollProgress={scrollProgress}
             currentTimeSeconds={currentTimeSeconds}
+            displayDurationSeconds={displayDurationSeconds}
+            displayTimeSeconds={displayTimeSeconds}
             isAutoplayBlocked={isAutoplayBlocked}
             isDownloadComplete={isDownloadComplete}
             isDownloading={isDownloading}
@@ -898,12 +926,7 @@ export function ReaderPage() {
             onDownload={handleDownload}
             onPause={handlePause}
             onPlay={handlePlay}
-            onSeek={(seconds) => {
-              // Mark user seek so scroll-into-view triggers
-              const activeIdx = activeProgress.activeChunkIndex;
-              if (activeIdx !== null) userScrolledChunkRef.current = activeIdx;
-              handleSeek(seconds);
-            }}
+            onSeek={handleSeek}
             onSeekToChunk={handleSeekToChunkWithScroll}
             renderedDurationSeconds={renderedDurationSeconds}
             slots={timelineSlots}

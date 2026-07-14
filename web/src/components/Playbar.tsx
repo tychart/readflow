@@ -11,10 +11,14 @@ export interface PlaybarProps {
   slots: TimelineSlotData[];
   /** Index of the chunk currently being played, or null. */
   activeChunkIndex: number | null;
-  /** Current playhead position in seconds. */
+  /** Current playhead position in seconds (stream-normalized for the playhead visual). */
   currentTimeSeconds: number;
-  /** Total rendered duration, or 0 if none. */
+  /** Total rendered duration in the stream, or 0 if none. */
   renderedDurationSeconds: number;
+  /** Position to display on the clock (original timeline coords, not normalized). */
+  displayTimeSeconds: number;
+  /** Total duration to display on the clock (original timeline). */
+  displayDurationSeconds: number;
   /** True when audio is actually playing (not paused/blocked). */
   isPlaying: boolean;
   /** True when the user has requested playback (even if not started yet). */
@@ -76,6 +80,8 @@ export function Playbar({
   activeChunkIndex,
   currentTimeSeconds,
   renderedDurationSeconds,
+  displayTimeSeconds,
+  displayDurationSeconds,
   isPlaying,
   playIntent,
   isAutoplayBlocked,
@@ -137,7 +143,7 @@ export function Playbar({
   // ── Player state for display ──────────────────────────────
   const playerStateLabel = useMemo(() => {
     if (isAutoplayBlocked) return "Playback blocked by browser";
-    if (isJobTerminal && renderedDurationSeconds > 0 && currentTimeSeconds >= renderedDurationSeconds) {
+    if (isJobTerminal && renderedDurationSeconds > 0 && displayTimeSeconds >= displayDurationSeconds) {
       return "Playback complete";
     }
     if (isPlaying) return "Playing";
@@ -145,7 +151,7 @@ export function Playbar({
     if (playIntent && !isPlaying && renderedDurationSeconds <= 0) return "Preparing stream…";
     if (playIntent) return "Starting…";
     return "Ready";
-  }, [isAutoplayBlocked, isJobTerminal, renderedDurationSeconds, currentTimeSeconds, isPlaying, playIntent, isWaitingForData]);
+  }, [isAutoplayBlocked, isJobTerminal, renderedDurationSeconds, displayTimeSeconds, displayDurationSeconds, isPlaying, playIntent, isWaitingForData]);
 
   const showSpinner = (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
 
@@ -302,14 +308,13 @@ export function Playbar({
           paddingBottom: `${containerPad > 0 ? containerPad : 0}px`,
         }}
       >
-        {/* Left: time display — fixed widths prevent layout shift */}
+        {/* Left: time display — uses original timeline coords, fixed-width */}
         <div className="flex items-center gap-3 font-mono tabular-nums">
-          {/* Current time */}
-          <span className="inline-block min-w-[32px] text-right font-semibold text-[var(--ink-primary)]">
-            {formatClock(currentTimeSeconds)}
+          <span className="inline-block min-w-[44px] text-right font-semibold text-[var(--ink-primary)]">
+            {formatClock(displayTimeSeconds)}
           </span>
           <span className="opacity-40">/</span>
-          <span className="inline-block min-w-[32px]">{formatClock(renderedDurationSeconds)}</span>
+          <span className="inline-block min-w-[44px]">{formatClock(displayDurationSeconds)}</span>
 
           {/* Player state — fixed min-width prevents layout shift */}
           <span
