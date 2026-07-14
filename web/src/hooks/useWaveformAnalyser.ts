@@ -13,6 +13,19 @@ export interface WaveformAnalyserState {
 }
 
 /**
+ * Returns the nearest power of two >= n (minimum 32, maximum 32768).
+ * The Web Audio API requires AnalyserNode.fftSize to be a power of two
+ * in the range [32, 32768].
+ */
+function nearestPowerOfTwo(n: number): number {
+  const powers = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768];
+  for (const p of powers) {
+    if (p >= n) return p;
+  }
+  return 32768;
+}
+
+/**
  * useWaveformAnalyser — Connects an AnalyserNode to an <audio> element via
  * createMediaElementSource, then runs a requestAnimationFrame loop sampling
  * getFloatTimeDomainData().
@@ -27,7 +40,11 @@ export function useWaveformAnalyser(
   audioRef: React.RefObject<HTMLAudioElement | null>,
   options?: WaveformOptions,
 ) {
-  const binCount = options?.binCount ?? 128;
+  const requestedBinCount = options?.binCount ?? 128;
+  // Compute fftSize as the smallest power of two >= requestedBinCount * 2
+  // fftSize must be a power of two in [32, 32768] per Web Audio API spec
+  const fftSize = Math.max(32, nearestPowerOfTwo(requestedBinCount * 2));
+  const binCount = fftSize / 2;
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -65,10 +82,9 @@ export function useWaveformAnalyser(
       }
       analyserRef.current = null;
     }
-    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
+    // Keep the AudioContext alive across reconnects to avoid repeated
+    // "prevented from starting automatically" warnings on every seek.
+    // It will be suspended by the browser initially and resumed on user gesture.
 
     liveWaveformRef.current = null;
     setState({ liveWaveform: null, isConnected: false });
@@ -79,21 +95,39 @@ export function useWaveformAnalyser(
    */
   const connect = useCallback(
     (audio: HTMLAudioElement) => {
-      // Tear down existing connection first
-      disconnect();
+      // Keep AudioContext alive across connects (avoid autoplay warnings)
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = 0;
+
+      // Disconnect old analyser (NOT the source — createMediaElementSource
+      // can only be called once per audio element)
+      if (analyserRef.current) {
+        try { analyserRef.current.disconnect(); } catch {}
+        analyserRef.current = null;
+      }
 
       try {
-        const ctx = new AudioContext();
+        // Reuse existing AudioContext or create one if needed
+        let ctx = audioContextRef.current;
+        if (!ctx || ctx.state === "closed") {
+          ctx = new AudioContext();
+          audioContextRef.current = ctx;
+        }
+
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = binCount * 2;
+        analyser.fftSize = fftSize;
 
-        const source = ctx.createMediaElementSource(audio);
-        source.connect(analyser);
+        // createMediaElementSource can only be called ONCE per <audio> element.
+        // If we already have a source, just reconnect the new analyser to it.
+        if (sourceRef.current) {
+          sourceRef.current.connect(analyser);
+        } else {
+          const source = ctx.createMediaElementSource(audio);
+          source.connect(analyser);
+          sourceRef.current = source;
+        }
         analyser.connect(ctx.destination);
-
-        audioContextRef.current = ctx;
         analyserRef.current = analyser;
-        sourceRef.current = source;
 
         const buffer = new Float32Array(analyser.frequencyBinCount);
 

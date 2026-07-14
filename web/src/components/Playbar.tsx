@@ -93,8 +93,6 @@ export function Playbar({
   writtenChunks,
   scrollProgress,
 }: PlaybarProps) {
-  // Binary compact state derived from scroll progress for structural logic
-  const compact = scrollProgress > 0.95;
   const barRef = useRef<HTMLDivElement>(null);
 
   // ── Waveform analyser ─────────────────────────────────────

@@ -572,6 +572,16 @@ export function ReaderPage() {
     [isJobTerminal, job, requestUserGesturePlay],
   );
 
+  // Set userScrolledChunkRef so the scroll-into-view effect can distinguish
+  // user-initiated seeks from automatic playback progression
+  const handleSeekToChunkWithScroll = useCallback(
+    async (chunkIndex: number, seekSeconds: number) => {
+      userScrolledChunkRef.current = chunkIndex;
+      await handleSeekToChunk(chunkIndex, seekSeconds);
+    },
+    [handleSeekToChunk],
+  );
+
   const handleDownload = useCallback(async () => {
     if (!job || downloadableChunks.length === 0) return;
     setDownloadError(null);
@@ -662,9 +672,22 @@ export function ReaderPage() {
   const contentRef = useRef<HTMLDivElement>(null);
   const chunkRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
+  // Track the last user-initiated chunk change so we can scroll on explicit seeks
+  // but NOT during automatic playback (which causes scroll-anchoring conflicts)
+  const userScrolledChunkRef = useRef<number | null>(null);
+
+  // Reset userScrolledChunkRef after a brief window
+  useEffect(() => {
+    if (userScrolledChunkRef.current === null) return;
+    const timer = setTimeout(() => { userScrolledChunkRef.current = null; }, 400);
+    return () => clearTimeout(timer);
+  }, [playbackAnchorIndex]);
+
   useEffect(() => {
     const activeIdx = activeProgress.activeChunkIndex;
     if (activeIdx === null) return;
+    // Only scroll if this was a user-initiated change (via seek/click), not during playback
+    if (userScrolledChunkRef.current !== activeIdx) return;
     const el = chunkRefs.current.get(activeIdx);
     if (!el || !contentRef.current) return;
     try {
@@ -748,6 +771,84 @@ export function ReaderPage() {
   // ── Chunk detail panel (for sidebar) ────────────────────
   const detailChunk = detailSlot ?? activeChunks.find((c) => c.index === activeProgress.activeChunkIndex) ?? null;
 
+  // ── ReaderContent sub-component (used in both centered and side-by-side layouts) ──
+  const ReaderContent = ({
+    contentRef: contentRefProp,
+  }: {
+    contentRef: React.RefObject<HTMLDivElement | null>;
+  }) => (
+    <>
+      {/* Header row with title + toggle */}
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
+            Reader
+          </p>
+          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
+            {job?.title ?? "Untitled job"}
+          </h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
+            {job?.status}
+          </span>
+          {/* Sidebar toggle — only on large screens when sidebar is inline */}
+          {isLargeScreen && (
+            <button
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] transition-colors"
+              onClick={toggleSidebar}
+              type="button"
+            >
+              {sidebarOpen ? (
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+                  <line x1="15" x2="15" y1="3" y2="21" />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+                  <line x1="9" x2="9" y1="3" y2="21" />
+                </svg>
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Source text — no inner scroll, flows with page */}
+      <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5" ref={contentRefProp}>
+        <div className="space-y-2">
+          {sourceTextLines.length > 0 ? (
+            sourceTextLines
+          ) : (
+            <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
+              No chunks available yet. Press play to start.
+            </p>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
   // ── Main render ──────────────────────────────────────────
   return (
     <div className="flex flex-col">
@@ -789,8 +890,13 @@ export function ReaderPage() {
             onDownload={handleDownload}
             onPause={handlePause}
             onPlay={handlePlay}
-            onSeek={handleSeek}
-            onSeekToChunk={handleSeekToChunk}
+            onSeek={(seconds) => {
+              // Mark user seek so scroll-into-view triggers
+              const activeIdx = activeProgress.activeChunkIndex;
+              if (activeIdx !== null) userScrolledChunkRef.current = activeIdx;
+              handleSeek(seconds);
+            }}
+            onSeekToChunk={handleSeekToChunkWithScroll}
             renderedDurationSeconds={renderedDurationSeconds}
             slots={timelineSlots}
             totalChunks={totalChunksInJob}
@@ -827,118 +933,61 @@ export function ReaderPage() {
 
       {/* Main content area — reader text + sidebar */}
       <div className="mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6">
-        <div className="flex gap-6">
-          {/* Reader text — scrolls naturally with the page */}
-          <div className="min-w-0 flex-1">
-            {/* Header row with title + toggle */}
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
-                  Reader
-                </p>
-                <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
-                  {job.title ?? "Untitled job"}
-                </h2>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
-                  {job.status}
-                </span>
-                {/* Sidebar toggle — only on large screens when sidebar is inline */}
-                {isLargeScreen && (
-                  <button
-                    aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] transition-colors"
-                    onClick={toggleSidebar}
-                    type="button"
-                  >
-                    {sidebarOpen ? (
-                      <svg
-                        aria-hidden="true"
-                        className="h-4 w-4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="2"
-                        viewBox="0 0 24 24"
-                      >
-                        <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
-                        <line x1="15" x2="15" y1="3" y2="21" />
-                      </svg>
-                    ) : (
-                      <svg
-                        aria-hidden="true"
-                        className="h-4 w-4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="2"
-                        viewBox="0 0 24 24"
-                      >
-                        <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
-                        <line x1="9" x2="9" y1="3" y2="21" />
-                      </svg>
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Source text — no inner scroll, flows with page */}
-            <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5" ref={contentRef}>
-              <div className="space-y-2">
-                {sourceTextLines.length > 0 ? (
-                  sourceTextLines
-                ) : (
-                  <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
-                    No chunks available yet. Press play to start.
-                  </p>
-                )}
-              </div>
-            </div>
+        {isLargeScreen && !sidebarOpen ? (
+          /* ── Sidebar closed: reader centered ── */
+          <div className="mx-auto flex w-full max-w-4xl flex-col">
+            <ReaderContent
+              contentRef={contentRef}
+            />
           </div>
+        ) : (
+          /* ── Sidebar open (or mobile): side-by-side ── */
+          <div className="flex gap-6">
+            <div className="min-w-0 flex-1">
+              <ReaderContent
+                contentRef={contentRef}
+              />
+            </div>
 
-          {/* Sidebar — inline on large screens, overlay on small */}
-          <ReaderSidebar
-            detailChunk={detailChunk}
-            activeChunks={activeChunks}
-            knownChunks={knownChunks}
-            activeVersions={activeVersions}
-            activeChunkIndex={activeProgress.activeChunkIndex}
-            job={job}
-            editingChunkIndex={editingChunkIndex}
-            editText={editText}
-            setEditText={setEditText}
-            reprocessingChunkIndex={reprocessingChunkIndex}
-            reprocessError={reprocessError}
-            onVoiceChange={handleVoiceChange}
-            onVersionChange={handleVersionChange}
-            onReprocess={handleReprocess}
-            onStartEdit={handleStartEdit}
-            onSaveEdit={handleSaveEdit}
-            onCancelEdit={handleCancelEdit}
-            appendedChunksCount={appendedChunksCount}
-            playbackAnchorIndex={playbackAnchorIndex}
-            expectedNextChunkIndex={expectedNextChunkIndex}
-            playIntent={playIntent}
-            playerState={playerState}
-            isActuallyPlaying={isActuallyPlaying}
-            audioDiagnostics={diagnostics}
-            isWaitingForData={isWaitingForData}
-            bufferedUntilSeconds={bufferedUntilSeconds}
-            currentTimeSeconds={currentTimeSeconds}
-            lastPlayerError={lastPlayerError}
-            lastPlaybackSyncError={lastPlaybackSyncError}
-            isJobTerminal={isJobTerminal}
-            lastRefreshAt={lastRefreshAt}
-            lastRefreshReason={lastRefreshReason}
-            isOpen={sidebarOpen}
-            onToggle={toggleSidebar}
-            isOverlay={!isLargeScreen}
-          />
-        </div>
+            <ReaderSidebar
+              detailChunk={detailChunk}
+              activeChunks={activeChunks}
+              knownChunks={knownChunks}
+              activeVersions={activeVersions}
+              activeChunkIndex={activeProgress.activeChunkIndex}
+              job={job}
+              editingChunkIndex={editingChunkIndex}
+              editText={editText}
+              setEditText={setEditText}
+              reprocessingChunkIndex={reprocessingChunkIndex}
+              reprocessError={reprocessError}
+              onVoiceChange={handleVoiceChange}
+              onVersionChange={handleVersionChange}
+              onReprocess={handleReprocess}
+              onStartEdit={handleStartEdit}
+              onSaveEdit={handleSaveEdit}
+              onCancelEdit={handleCancelEdit}
+              appendedChunksCount={appendedChunksCount}
+              playbackAnchorIndex={playbackAnchorIndex}
+              expectedNextChunkIndex={expectedNextChunkIndex}
+              playIntent={playIntent}
+              playerState={playerState}
+              isActuallyPlaying={isActuallyPlaying}
+              audioDiagnostics={diagnostics}
+              isWaitingForData={isWaitingForData}
+              bufferedUntilSeconds={bufferedUntilSeconds}
+              currentTimeSeconds={currentTimeSeconds}
+              lastPlayerError={lastPlayerError}
+              lastPlaybackSyncError={lastPlaybackSyncError}
+              isJobTerminal={isJobTerminal}
+              lastRefreshAt={lastRefreshAt}
+              lastRefreshReason={lastRefreshReason}
+              isOpen={sidebarOpen}
+              onToggle={toggleSidebar}
+              isOverlay={!isLargeScreen}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
