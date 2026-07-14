@@ -336,6 +336,7 @@ export function ReaderPage() {
     playbackAnchorIndex,
     playIntent,
     isTerminal: isJobTerminal,
+    pendingSeek: seekOverride !== null,
   });
 
   const activeProgress = useMemo(

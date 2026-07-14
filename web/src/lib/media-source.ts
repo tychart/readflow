@@ -20,6 +20,8 @@ interface UseMediaSourcePlayerOptions {
   playbackAnchorIndex: number;
   playIntent: boolean;
   isTerminal: boolean;
+  /** When true, auto-play is deferred until the seek is applied externally. */
+  pendingSeek: boolean;
 }
 
 interface QueuedChunk {
@@ -152,6 +154,7 @@ export function useMediaSourcePlayer({
   playbackAnchorIndex,
   playIntent,
   isTerminal,
+  pendingSeek,
 }: UseMediaSourcePlayerOptions) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
@@ -172,6 +175,7 @@ export function useMediaSourcePlayer({
   });
   const playIntentRef = useRef(playIntent);
   const isTerminalRef = useRef(isTerminal);
+  const pendingSeekRef = useRef(pendingSeek);
   const renderedDurationRef = useRef(0);
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
@@ -212,6 +216,10 @@ export function useMediaSourcePlayer({
   useEffect(() => {
     isTerminalRef.current = isTerminal;
   }, [isTerminal]);
+
+  useEffect(() => {
+    pendingSeekRef.current = pendingSeek;
+  }, [pendingSeek]);
 
   useEffect(() => {
     renderedDurationRef.current = renderedDurationSeconds;
@@ -613,7 +621,7 @@ export function useMediaSourcePlayer({
   }, [isActuallyPlaying, isWaitingForData, playIntent, updatePlaybackState]);
 
   useEffect(() => {
-    if (!playIntent || isAutoplayBlocked) {
+    if (!playIntent || isAutoplayBlocked || pendingSeekRef.current) {
       return;
     }
     const audio = audioRef.current;
@@ -635,6 +643,7 @@ export function useMediaSourcePlayer({
     isStreamPrimed,
     isWaitingForData,
     playIntent,
+    pendingSeek,
   ]);
 
   useEffect(() => {
