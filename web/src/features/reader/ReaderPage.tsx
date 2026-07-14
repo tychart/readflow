@@ -16,6 +16,7 @@ import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
+import { ReaderSidebar } from "./ReaderSidebar";
 
 /* ── Constants ────────────────────────────────────────────── */
 
@@ -39,12 +40,6 @@ interface ActiveChunkProgress {
 }
 
 /* ── Helpers ──────────────────────────────────────────────── */
-
-function formatRelativeTime(timestamp: number | null): string {
-  if (!timestamp) return "never";
-  const deltaSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  return deltaSeconds === 0 ? "just now" : `${deltaSeconds}s ago`;
-}
 
 function isTerminalStatus(status: JobStatus | undefined): boolean {
   return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
@@ -103,21 +98,8 @@ function deriveActiveVersions(chunks: Chunk[]): Map<number, number> {
   return versions;
 }
 
-function getLatestVersion(chunks: Chunk[], index: number): number {
-  let max = -1;
-  for (const chunk of chunks) {
-    if (chunk.index === index && chunk.version > max) max = chunk.version;
-  }
-  return max;
-}
-
 function isReprocessing(status: ChunkStatus): boolean {
   return status === "planned" || status === "queued" || status === "rendering" || status === "reprocessing";
-}
-
-function getRetryCount(status: ChunkStatus, version: number): number {
-  if (status === "max_retries_exceeded") return 3;
-  return version;
 }
 
 function buildStreamManifest(
@@ -159,11 +141,8 @@ function deriveActiveChunkProgress(
 /* ── Store state type ─────────────────────────────────────── */
 
 interface ReaderPageStoreState {
-  voices: ReturnType<typeof useAppStore.getState>["voices"];
   lastEvent: ReturnType<typeof useAppStore.getState>["lastEvent"];
   websocketStatus: ReturnType<typeof useAppStore.getState>["websocketStatus"];
-  lastSocketMessageAt: ReturnType<typeof useAppStore.getState>["lastSocketMessageAt"];
-  lastSocketError: ReturnType<typeof useAppStore.getState>["lastSocketError"];
   isSocketStale: ReturnType<typeof useAppStore.getState>["isSocketStale"];
 }
 
@@ -172,20 +151,14 @@ interface ReaderPageStoreState {
 export function ReaderPage() {
   const { jobId = "" } = useParams();
   const {
-    voices,
     lastEvent,
     websocketStatus,
-    lastSocketMessageAt,
-    lastSocketError,
     isSocketStale,
   } = useAppStore(
     useShallow(
       (state): ReaderPageStoreState => ({
-        voices: state.voices,
         lastEvent: state.lastEvent,
         websocketStatus: state.websocketStatus,
-        lastSocketMessageAt: state.lastSocketMessageAt,
-        lastSocketError: state.lastSocketError,
         isSocketStale: state.isSocketStale,
       }),
     ),
@@ -209,6 +182,27 @@ export function ReaderPage() {
   const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<number | null>(null);
   const [reprocessError, setReprocessError] = useState<string | null>(null);
   const [seekOverride, setSeekOverride] = useState<number | null>(null);
+
+  // ── Sidebar state ────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isLargeScreen, setIsLargeScreen] = useState(
+    typeof window !== "undefined" ? window.innerWidth >= 1024 : true,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const handler = (e: MediaQueryListEvent) => {
+      setIsLargeScreen(e.matches);
+      // Auto-open sidebar when going to large, auto-close when going to small
+      if (e.matches) setSidebarOpen(true);
+      else setSidebarOpen(false);
+    };
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  const toggleSidebar = useCallback(() => setSidebarOpen((prev) => !prev), []);
 
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
@@ -751,134 +745,8 @@ export function ReaderPage() {
     );
   });
 
-  // ── Chunk detail panel ───────────────────────────────────
+  // ── Chunk detail panel (for sidebar) ────────────────────
   const detailChunk = detailSlot ?? activeChunks.find((c) => c.index === activeProgress.activeChunkIndex) ?? null;
-
-  const renderDetailPanel = () => {
-    if (!detailChunk) {
-      return (
-        <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-          <p className="text-sm text-[var(--ink-secondary)]">
-            Hover a chunk or start playback to see details.
-          </p>
-        </div>
-      );
-    }
-
-    const chunk = detailChunk;
-    const chunkText = job ? getChunkText(chunk, job.source_text) : "";
-    const isEditing = editingChunkIndex === chunk.index;
-    const allVersions = knownChunks.filter((c) => c.index === chunk.index);
-    const maxVersion = getLatestVersion(knownChunks, chunk.index);
-    const maxRetriesReached = chunk.status === "max_retries_exceeded" || maxVersion >= 3;
-
-    return (
-      <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-semibold text-[var(--ink-primary)]">
-            Chunk {chunk.index + 1}
-          </span>
-          {allVersions.length > 1 ? (
-            <select
-              className="rounded-md border border-[var(--line)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--ink-primary)]"
-              value={activeVersions.get(chunk.index) ?? chunk.version}
-              onChange={(e) => handleVersionChange(chunk.index, Number(e.target.value))}
-            >
-              {allVersions.map((v) => (
-                <option key={v.version} value={v.version}>V{v.version} {v.status === "written" ? "✓" : v.status}</option>
-              ))}
-            </select>
-          ) : null}
-        </div>
-
-        {/* Text */}
-        <div className="mb-3 rounded-md bg-[var(--canvas)]/50 p-3">
-          {isEditing ? (
-            <div className="space-y-2">
-              <textarea
-                className="w-full resize-none rounded-md border border-[var(--line)] bg-[var(--surface)] p-2 text-sm leading-relaxed text-[var(--ink-primary)]"
-                rows={3}
-                value={editText}
-                onChange={(e) => setEditText(e.target.value)}
-              />
-              <div className="flex gap-2">
-                <button
-                  className="rounded-md bg-[var(--amber)] px-3 py-1.5 text-xs font-semibold text-white"
-                  onClick={handleSaveEdit}
-                >
-                  Save &amp; Reprocess
-                </button>
-                <button
-                  className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs font-semibold text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                  onClick={handleCancelEdit}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <p className="max-h-20 overflow-y-auto text-sm leading-relaxed text-[var(--ink-primary)]">
-                {chunkText || "(empty text)"}
-              </p>
-              <button
-                className="mt-1 text-xs text-[var(--ink-secondary)] hover:text-[var(--amber)]"
-                onClick={() => handleStartEdit(chunk)}
-              >
-                Edit text
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Status badges */}
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <span className={`rounded-md px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
-            chunk.status === "written" ? "bg-[var(--emerald)]/10 text-[var(--emerald)] border border-[var(--emerald)]/20" :
-            chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-[var(--rose)]/10 text-[var(--rose)] border border-[var(--rose)]/20" :
-            "bg-white/5 text-[var(--ink-secondary)] border border-[var(--line)]"
-          }`}>
-            {chunk.status}
-          </span>
-          {chunk.duration_seconds > 0 ? (
-            <span className="text-xs text-[var(--ink-secondary)]">{chunk.duration_seconds.toFixed(1)}s</span>
-          ) : null}
-          <span className="text-xs text-[var(--ink-secondary)]">V{chunk.version}</span>
-        </div>
-
-        {/* Reprocess button */}
-        {!maxRetriesReached && (chunk.status === "written" || chunk.status === "failed") ? (
-          <button
-            className={`w-full rounded-md px-3 py-2 text-xs font-semibold transition ${
-              reprocessingChunkIndex === chunk.index
-                ? "bg-[var(--surface-raised)] text-[var(--ink-secondary)]"
-                : "bg-[var(--amber-soft)] text-[var(--amber)] hover:brightness-110"
-            }`}
-            onClick={() => isEditing ? handleSaveEdit() : void handleReprocess(chunk.index)}
-            disabled={reprocessingChunkIndex === chunk.index}
-          >
-            {reprocessingChunkIndex === chunk.index
-              ? "Reprocessing…"
-              : chunk.status === "failed"
-                ? `Retry (${getRetryCount(chunk.status, chunk.version)}/3)`
-                : `Reprocess (${getRetryCount(chunk.status, chunk.version)}/3)`}
-          </button>
-        ) : null}
-
-        {maxRetriesReached ? (
-          <div className="rounded-md bg-[var(--rose)]/10 px-3 py-2 text-xs text-[var(--rose)]">
-            Max retries exceeded (3/3)
-          </div>
-        ) : null}
-
-        {reprocessError ? (
-          <div className="mt-2 rounded-md bg-[var(--rose)]/10 px-3 py-2 text-xs text-[var(--rose)]">
-            {reprocessError}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
 
   // ── Main render ──────────────────────────────────────────
   return (
@@ -957,11 +825,12 @@ export function ReaderPage() {
         </div>
       </div>
 
-      {/* Main content grid — centered, readable width */}
+      {/* Main content area — reader text + sidebar */}
       <div className="mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6">
-        <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">
-          {/* Left: source text with chunk highlighting */}
-          <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5">
+        <div className="flex gap-6">
+          {/* Reader text — scrolls naturally with the page */}
+          <div className="min-w-0 flex-1">
+            {/* Header row with title + toggle */}
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
@@ -971,129 +840,104 @@ export function ReaderPage() {
                   {job.title ?? "Untitled job"}
                 </h2>
               </div>
-              <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
-                {job.status}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
+                  {job.status}
+                </span>
+                {/* Sidebar toggle — only on large screens when sidebar is inline */}
+                {isLargeScreen && (
+                  <button
+                    aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] transition-colors"
+                    onClick={toggleSidebar}
+                    type="button"
+                  >
+                    {sidebarOpen ? (
+                      <svg
+                        aria-hidden="true"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        viewBox="0 0 24 24"
+                      >
+                        <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+                        <line x1="15" x2="15" y1="3" y2="21" />
+                      </svg>
+                    ) : (
+                      <svg
+                        aria-hidden="true"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        viewBox="0 0 24 24"
+                      >
+                        <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+                        <line x1="9" x2="9" y1="3" y2="21" />
+                      </svg>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="max-h-[60vh] space-y-2 overflow-y-auto" ref={contentRef}>
-              {sourceTextLines.length > 0 ? (
-                sourceTextLines
-              ) : (
-                <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
-                  No chunks available yet. Press play to start.
-                </p>
-              )}
+            {/* Source text — no inner scroll, flows with page */}
+            <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5" ref={contentRef}>
+              <div className="space-y-2">
+                {sourceTextLines.length > 0 ? (
+                  sourceTextLines
+                ) : (
+                  <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
+                    No chunks available yet. Press play to start.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Right: detail panel + controls */}
-          <div className="space-y-4">
-            {/* Chunk detail */}
-            {renderDetailPanel()}
-
-            {/* Voice selector */}
-            <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-              <label
-                className="mb-2 block text-xs font-medium uppercase tracking-wider text-[var(--ink-secondary)]"
-                htmlFor="voice-change-select"
-              >
-                Voice for future chunks
-              </label>
-              <select
-                className="w-full rounded-md border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink-primary)]"
-                id="voice-change-select"
-                onChange={(event) => void handleVoiceChange(event.target.value)}
-                value={job.voice_id}
-              >
-                {voices.map((voice) => (
-                  <option key={voice.id} value={voice.id}>
-                    {voice.display_name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Live diagnostics (collapsible) */}
-            <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-                Live diagnostics
-              </summary>
-              <div className="mt-3 grid gap-2 text-xs text-[var(--ink-secondary)]">
-                <div className="flex justify-between"><span>Socket</span><span>{isJobTerminal ? "idle" : websocketStatus}{isSocketStale ? " (stale)" : ""}</span></div>
-                <div className="flex justify-between"><span>Last live event</span><span>{formatRelativeTime(lastSocketMessageAt)}</span></div>
-                <div className="flex justify-between"><span>Reader refresh</span><span>{formatRelativeTime(lastRefreshAt)} via {lastRefreshReason}</span></div>
-                <div className="flex justify-between"><span>Appended chunks</span><span>{appendedChunksCount}</span></div>
-                <div className="flex justify-between"><span>Playback anchor</span><span>Chunk {playbackAnchorIndex + 1}</span></div>
-                <div className="flex justify-between"><span>Expected next</span><span>{expectedNextChunkIndex === null ? "none" : `Chunk ${expectedNextChunkIndex + 1}`}</span></div>
-                <div className="flex justify-between"><span>Playback intent</span><span>{playIntent ? "armed" : "paused"}</span></div>
-                <div className="flex justify-between"><span>Player state</span><span>{playerState}</span></div>
-                <div className="flex justify-between"><span>Audio</span><span>{isActuallyPlaying ? "playing" : diagnostics.paused ? "paused" : "ready"}</span></div>
-                <div className="flex justify-between"><span>Waiting for data</span><span>{isWaitingForData ? "yes" : "no"}</span></div>
-                <div className="flex justify-between"><span>Buffered until</span><span>{bufferedUntilSeconds.toFixed(1)}s</span></div>
-                <div className="flex justify-between"><span>Current time</span><span>{currentTimeSeconds.toFixed(1)}s</span></div>
-                <div className="flex justify-between"><span>Audio ready/network</span><span>{diagnostics.readyState}/{diagnostics.networkState}</span></div>
-                {lastPlayerError || lastPlaybackSyncError || lastSocketError ? (
-                  <div className="mt-2 rounded-md bg-[var(--rose)]/10 px-2 py-1 text-[var(--rose)]">
-                    {lastPlayerError ?? lastPlaybackSyncError ?? lastSocketError}
-                  </div>
-                ) : null}
-              </div>
-            </details>
-
-            {/* Chunk status list */}
-            <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-                All chunks ({activeChunks.length})
-              </summary>
-              <div className="mt-3 space-y-1">
-                {activeChunks.map((chunk) => {
-                  const allVersions = knownChunks.filter((c) => c.index === chunk.index);
-                  return (
-                    <div
-                      className={`flex items-center justify-between rounded-md px-3 py-2 text-xs ${
-                        chunk.index === activeProgress.activeChunkIndex
-                          ? "bg-[var(--amber-soft)]"
-                          : "bg-[var(--canvas)]/30"
-                      }`}
-                      key={chunk.index}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-[var(--ink-primary)]">Chunk {chunk.index + 1}</span>
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                          chunk.status === "written" ? "bg-[var(--emerald)]/10 text-[var(--emerald)]" :
-                          chunk.status === "failed" || chunk.status === "max_retries_exceeded" ? "bg-[var(--rose)]/10 text-[var(--rose)]" :
-                          "bg-white/5 text-[var(--ink-secondary)]"
-                        }`}>
-                          {chunk.status}
-                        </span>
-                        {chunk.duration_seconds > 0 ? (
-                          <span className="text-[var(--ink-secondary)]">{chunk.duration_seconds.toFixed(1)}s</span>
-                        ) : null}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {allVersions.map((v) => (
-                          <button
-                            key={v.version}
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                              v.version === chunk.version
-                                ? "bg-[var(--amber)] text-white"
-                                : v.deprecated
-                                  ? "text-[var(--ink-secondary)]/50 line-through"
-                                  : "text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                            }`}
-                            onClick={() => handleVersionChange(chunk.index, v.version)}
-                          >
-                            V{v.version}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </details>
-          </div>
+          {/* Sidebar — inline on large screens, overlay on small */}
+          <ReaderSidebar
+            detailChunk={detailChunk}
+            activeChunks={activeChunks}
+            knownChunks={knownChunks}
+            activeVersions={activeVersions}
+            activeChunkIndex={activeProgress.activeChunkIndex}
+            job={job}
+            editingChunkIndex={editingChunkIndex}
+            editText={editText}
+            setEditText={setEditText}
+            reprocessingChunkIndex={reprocessingChunkIndex}
+            reprocessError={reprocessError}
+            onVoiceChange={handleVoiceChange}
+            onVersionChange={handleVersionChange}
+            onReprocess={handleReprocess}
+            onStartEdit={handleStartEdit}
+            onSaveEdit={handleSaveEdit}
+            onCancelEdit={handleCancelEdit}
+            appendedChunksCount={appendedChunksCount}
+            playbackAnchorIndex={playbackAnchorIndex}
+            expectedNextChunkIndex={expectedNextChunkIndex}
+            playIntent={playIntent}
+            playerState={playerState}
+            isActuallyPlaying={isActuallyPlaying}
+            audioDiagnostics={diagnostics}
+            isWaitingForData={isWaitingForData}
+            bufferedUntilSeconds={bufferedUntilSeconds}
+            currentTimeSeconds={currentTimeSeconds}
+            lastPlayerError={lastPlayerError}
+            lastPlaybackSyncError={lastPlaybackSyncError}
+            isJobTerminal={isJobTerminal}
+            lastRefreshAt={lastRefreshAt}
+            lastRefreshReason={lastRefreshReason}
+            isOpen={sidebarOpen}
+            onToggle={toggleSidebar}
+            isOverlay={!isLargeScreen}
+          />
         </div>
       </div>
     </div>
