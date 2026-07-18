@@ -18,5 +18,7 @@ tmp/
 
 web/tsconfig.node.tsbuildinfo
 
+.vscode/
+
 plans/
 .pi-subagents/
