@@ -19,6 +19,7 @@ class SynthesisOOMError(RuntimeError):
 
 class ModelVRAMError(RuntimeError):
     """Raised when there is insufficient VRAM to load the model."""
+
     pass
 
 
@@ -370,8 +371,15 @@ class QwenProvider:
             vram_total = torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
             vram_free = vram_total - vram_reserved
             return (
-                is_cuda, vram_total, vram_allocated, vram_reserved, vram_free,
-                ram_total, ram_free, ram_used, self._resolved_device,
+                is_cuda,
+                vram_total,
+                vram_allocated,
+                vram_reserved,
+                vram_free,
+                ram_total,
+                ram_free,
+                ram_used,
+                self._resolved_device,
             )
 
         # No CUDA or model not on GPU

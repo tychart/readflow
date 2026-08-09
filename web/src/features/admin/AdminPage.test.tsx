@@ -210,7 +210,7 @@ test("form initializes from adminState.config once", () => {
   mockFetch();
   setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
 
-  const { rerender } = render(<AdminPage />);
+  render(<AdminPage />);
 
   const input = screen.getByLabelText(/Idle unload/i) as HTMLInputElement;
   expect(input.value).toBe("300");

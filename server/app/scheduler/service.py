@@ -54,9 +54,7 @@ class SchedulerService:
         self._stop_memory_broadcast()
 
     def _start_memory_broadcast(self) -> None:
-        self._memory_broadcast_task = asyncio.create_task(
-            self._memory_broadcast_loop()
-        )
+        self._memory_broadcast_task = asyncio.create_task(self._memory_broadcast_loop())
 
     def _stop_memory_broadcast(self) -> None:
         if self._memory_broadcast_task is not None:
@@ -182,9 +180,7 @@ class SchedulerService:
             return
         except ModelVRAMError as exc:
             for chunk in batch:
-                self._job_manager.mark_chunk_failed(
-                    chunk, f"Failed to load model: {exc}"
-                )
+                self._job_manager.mark_chunk_failed(chunk, f"Failed to load model: {exc}")
             return
 
         for chunk, result in zip(batch, results, strict=True):
@@ -206,8 +202,6 @@ class SchedulerService:
                     },
                 ).model_dump()
             )
-
-
 
     def _choose_batch_size(self, available: int, vram_used_mb: int, vram_total_mb: int) -> int:
         candidates = list(self._config.batch_candidates_small_model)

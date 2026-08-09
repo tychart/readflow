@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from time import time
 from uuid import uuid4
 
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, ChunkStatus
+from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 
 
 class JobManager:

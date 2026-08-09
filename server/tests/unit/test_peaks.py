@@ -57,8 +57,7 @@ def test_custom_bin_count() -> None:
 def test_sine_wave_produces_bounded_peaks() -> None:
     sample_rate = 22_050
     samples = [
-        int(12_000 * math.sin(2 * math.pi * 440 * (i / sample_rate)))
-        for i in range(sample_rate)
+        int(12_000 * math.sin(2 * math.pi * 440 * (i / sample_rate))) for i in range(sample_rate)
     ]
     peaks = compute_peaks(_build_wav(samples, sample_rate=sample_rate))
     assert len(peaks) == PEAK_BINS

@@ -100,8 +100,15 @@ class ModelManager:
         else:
             device = "unloaded"
         return (
-            device, vram_total, vram_allocated, vram_reserved, vram_free,
-            ram_total, ram_free, ram_used, resolved_device,
+            device,
+            vram_total,
+            vram_allocated,
+            vram_reserved,
+            vram_free,
+            ram_total,
+            ram_free,
+            ram_used,
+            resolved_device,
         )
 
     def _touch(self) -> None:

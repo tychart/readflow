@@ -105,7 +105,10 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         if selected_model not in SUPPORTED_MODEL_IDS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported model '{selected_model}'. Supported models: {', '.join(sorted(SUPPORTED_MODEL_IDS))}",
+                detail=(
+                    f"Unsupported model '{selected_model}'. Supported models: "
+                    f"{', '.join(sorted(SUPPORTED_MODEL_IDS))}"
+                ),
             )
         job = app_services.job_manager.create_job(
             source_text=payload_text,

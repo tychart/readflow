@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.jobs.models import ChunkRecord, ChunkStatus, Job
+from app.jobs.models import ChunkRecord, Job
 
 
 class ChunkResponse(BaseModel):

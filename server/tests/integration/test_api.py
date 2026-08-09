@@ -268,7 +268,11 @@ async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_
 async def test_create_job_with_custom_model_id(client, services):
     response = await client.post(
         "/api/jobs",
-        data={"text": "Hello world.", "voice_id": "howard", "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base"},
+        data={
+            "text": "Hello world.",
+            "voice_id": "howard",
+            "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        },
     )
     assert response.status_code == 200
     job = response.json()["job"]
@@ -321,9 +325,7 @@ async def test_admin_config_change_device_propagates_to_provider(client, service
     assert services.provider._device == "auto"
 
     # Update to "cpu"
-    response = await client.post(
-        "/api/admin/config", json={"device": "cpu"}
-    )
+    response = await client.post("/api/admin/config", json={"device": "cpu"})
     assert response.status_code == 200
 
     # Both runtime config and provider should be updated
@@ -331,9 +333,7 @@ async def test_admin_config_change_device_propagates_to_provider(client, service
     assert services.provider._device == "cpu"
 
     # Update to "gpu"
-    response = await client.post(
-        "/api/admin/config", json={"device": "gpu"}
-    )
+    response = await client.post("/api/admin/config", json={"device": "gpu"})
     assert response.status_code == 200
 
     assert services.settings.runtime.device == "gpu"
@@ -341,34 +341,18 @@ async def test_admin_config_change_device_propagates_to_provider(client, service
 
 
 async def test_admin_config_change_device_broadcasts_event(client, services):
-    class _TestWebSocket:
-        def __init__(self) -> None:
-            self.messages: list[str] = []
-
-        async def accept(self) -> None:
-            return None
-
-        async def send_text(self, payload: str) -> None:
-            import json
-            self.messages.append(json.loads(payload))
-
-    ws = _TestWebSocket()
+    ws = _FakeWebSocket()
     await services.hub.connect(ws)
 
     try:
-        await client.post(
-            "/api/admin/config", json={"device": "cpu"}
-        )
+        await client.post("/api/admin/config", json={"device": "cpu"})
     finally:
         await services.hub.disconnect(ws)
 
     # Should have received an admin_config_updated event
-    config_events = [
-        m for m in ws.messages
-        if m.get("type") == "admin_config_updated"
-    ]
+    config_events = [m for m in ws.messages if m.get("type") == "admin_config_updated"]
     assert len(config_events) >= 1
-    payload = config_events[-1].get("payload", {})
+    payload = cast(dict[str, Any], config_events[-1].get("payload", {}))
     assert payload.get("device") == "cpu"
 
 
@@ -379,9 +363,7 @@ async def test_admin_config_change_device_resets_not_enough_vram_state(client, s
     services.model_manager._telemetry.set_model_state("not_enough_vram")
 
     # Change device
-    response = await client.post(
-        "/api/admin/config", json={"device": "cpu"}
-    )
+    response = await client.post("/api/admin/config", json={"device": "cpu"})
 
     assert response.status_code == 200
     # State should have been reset

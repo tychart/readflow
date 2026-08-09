@@ -135,7 +135,12 @@ class Job:
         for index, version in self.active_chunk_version.items():
             for chunk in self.chunks:
                 if chunk.index == index and chunk.version == version:
-                    if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING, ChunkStatus.REPROCESSING}:
+                    if chunk.status in {
+                        ChunkStatus.PLANNED,
+                        ChunkStatus.QUEUED,
+                        ChunkStatus.RENDERING,
+                        ChunkStatus.REPROCESSING,
+                    }:
                         result.append(chunk)
                     break
         return result

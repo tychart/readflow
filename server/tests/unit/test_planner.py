@@ -45,8 +45,9 @@ def test_planner_produces_uniform_chunk_sizes():
 
     chunks = [planner.plan_next(job) for _ in range(4)]
 
-    assert all(chunk is not None for chunk in chunks)
-    first = chunks[0]
-    last = chunks[-1]
+    planned = [chunk for chunk in chunks if chunk is not None]
+    assert len(planned) == len(chunks)
+    first = planned[0]
+    last = planned[-1]
     assert len(first.text) >= 70
     assert len(last.text) >= 70

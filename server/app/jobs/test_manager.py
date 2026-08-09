@@ -1,6 +1,7 @@
 """Tests for JobManager versioning and reprocessing methods."""
+
 from app.jobs.manager import JobManager
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
+from app.jobs.models import ChunkRecord, ChunkStatus, JobStatus
 
 
 class TestJobManagerVersionedChunk:
@@ -83,7 +84,7 @@ class TestJobManagerVersionedChunk:
             parent_index=0,
         )
         job = self.manager.get_job(self.job.id)
-        version_0 = [c for c in job.chunks if c.version == 0][0]
+        version_0 = next(c for c in job.chunks if c.version == 0)
         assert version_0.deprecated is True
 
     def test_add_versioned_chunk_sets_reprocessing_true(self):
@@ -125,7 +126,7 @@ class TestJobManagerVersionedChunk:
             parent_index=0,
         )
         job = self.manager.get_job(new_job.id)
-        v1_chunk = [c for c in job.chunks if c.version == 1][0]
+        v1_chunk = next(c for c in job.chunks if c.version == 1)
         assert v1_chunk.parent_chunk_index == 0
 
     def test_add_versioned_chunk_sets_total_versioned_chunks(self):
@@ -215,10 +216,10 @@ class TestJobManagerSetActiveVersion:
         assert job.active_chunk_version[0] == 1
 
     def test_set_active_chunk_version_undeprecates_active_version(self):
-        v1 = [c for c in self.manager.get_job(self.job.id).chunks if c.version == 1][0]
+        v1 = next(c for c in self.manager.get_job(self.job.id).chunks if c.version == 1)
         v1.deprecated = True
         self.manager.set_active_chunk_version(self.job.id, 0, 1)
-        v1 = [c for c in self.manager.get_job(self.job.id).chunks if c.version == 1][0]
+        v1 = next(c for c in self.manager.get_job(self.job.id).chunks if c.version == 1)
         assert v1.deprecated is False
 
 
@@ -301,9 +302,12 @@ class TestJobManagerMarkChunkWritten:
         # Set active_chunk_version so versioned count works
         self.job_in_manager.active_chunk_version[0] = 0
         # Let mark_chunk_written set the status to WRITTEN
-        job = self.manager.mark_chunk_written(chunk, duration_seconds=2.0,
-                                              segment_path="/path/segment.m4s",
-                                              wav_path="/path/audio.wav")
+        job = self.manager.mark_chunk_written(
+            chunk,
+            duration_seconds=2.0,
+            segment_path="/path/segment.m4s",
+            wav_path="/path/audio.wav",
+        )
         # Verify the chunk is now written
         assert chunk.status == ChunkStatus.WRITTEN
         # total_versioned_completed should be 1 (v0 is the active version)
@@ -321,9 +325,12 @@ class TestJobManagerMarkChunkWritten:
         )
         # Set active_chunk_version so versioned count works
         self.job_in_manager.active_chunk_version[0] = 0
-        job = self.manager.mark_chunk_written(chunk_v0, duration_seconds=2.0,
-                                              segment_path="/path/segment.m4s",
-                                              wav_path="/path/audio.wav")
+        job = self.manager.mark_chunk_written(
+            chunk_v0,
+            duration_seconds=2.0,
+            segment_path="/path/segment.m4s",
+            wav_path="/path/audio.wav",
+        )
         # Should count v0 as written (it's the active version)
         assert job.total_versioned_completed == 1
 
@@ -464,7 +471,7 @@ class TestJobManagerQueueDepth:
             model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
             voice_id="suzy",
         )
-        chunk = self.manager.add_planned_chunk(
+        self.manager.add_planned_chunk(
             job.id,
             text="Test chunk",
             char_start=0,

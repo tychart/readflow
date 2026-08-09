@@ -34,7 +34,11 @@ class ChunkPlanner:
             job.planner_cursor.offset = -1
             return None
 
-        emitted = job.planner_cursor.chunks_emitted
+        offset = job.planner_cursor.offset
+        if offset >= len(normalized):
+            job.planner_cursor.offset = -1
+            return None
+
         target_chars = self._target_chars(job)
         start = offset
         remaining = normalized[start:]
