@@ -17,6 +17,7 @@ export interface Chunk {
   version: number;
   voice_id: string;
   segment_url: string | null;
+  peaks_url: string | null;
   deprecated: boolean;
   reprocessing: boolean;
   char_start: number;

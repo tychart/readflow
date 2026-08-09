@@ -244,6 +244,15 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             raise HTTPException(status_code=404, detail="Chunk not ready")
         return FileResponse(path, media_type=app_services.settings.chunk_mime_type)
 
+    @router.get("/jobs/{job_id}/chunks/{chunk_index}/peaks")
+    async def get_chunk_peaks(
+        job_id: str, chunk_index: int, app_services: AppServices = Depends(services)
+    ) -> FileResponse:
+        path = app_services.media_store.peaks_path(job_id, chunk_index)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Chunk peaks not ready")
+        return FileResponse(path, media_type="application/json")
+
     @router.get("/jobs/{job_id}/download")
     async def download_job_audio(
         job_id: str, app_services: AppServices = Depends(services)

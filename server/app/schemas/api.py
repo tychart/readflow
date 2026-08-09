@@ -16,6 +16,7 @@ class ChunkResponse(BaseModel):
     version: int = 0
     voice_id: str
     segment_url: str | None
+    peaks_url: str | None = None
     deprecated: bool = False
     reprocessing: bool = False
     char_start: int = 0
@@ -139,8 +140,10 @@ class WsEnvelope(BaseModel):
 
 def chunk_to_response(job: Job, chunk: ChunkRecord) -> ChunkResponse:
     segment_url = None
+    peaks_url = None
     if chunk.segment_path:
         segment_url = f"/api/jobs/{job.id}/chunks/{chunk.index}"
+        peaks_url = f"/api/jobs/{job.id}/chunks/{chunk.index}/peaks"
     return ChunkResponse(
         index=chunk.index,
         status=chunk.status,
@@ -150,6 +153,7 @@ def chunk_to_response(job: Job, chunk: ChunkRecord) -> ChunkResponse:
         version=chunk.version,
         voice_id=chunk.voice_id,
         segment_url=segment_url,
+        peaks_url=peaks_url,
         deprecated=chunk.deprecated,
         reprocessing=chunk.reprocessing,
         char_start=chunk.char_start,

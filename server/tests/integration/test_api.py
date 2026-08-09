@@ -62,7 +62,20 @@ async def test_create_job_and_fetch_manifest(client, services):
     manifest = manifest_response.json()
     assert manifest["mime_type"].startswith("audio/mp4")
     assert manifest["init_segment_url"] is not None
-    assert any(chunk["status"] == "written" for chunk in manifest["chunks"])
+    written = [chunk for chunk in manifest["chunks"] if chunk["status"] == "written"]
+    assert written, "expected at least one written chunk"
+    chunk = written[0]
+    assert chunk["peaks_url"] == f"/api/jobs/{job['id']}/chunks/{chunk['index']}/peaks"
+
+    peaks_response = await client.get(chunk["peaks_url"])
+    assert peaks_response.status_code == 200
+    assert peaks_response.headers["content-type"].startswith("application/json")
+    peaks_payload = peaks_response.json()
+    assert peaks_payload["bins"] == len(peaks_payload["peaks"]) > 0
+    assert all(0.0 <= peak <= 1.0 for peak in peaks_payload["peaks"])
+
+    missing_response = await client.get(f"/api/jobs/{job['id']}/chunks/999/peaks")
+    assert missing_response.status_code == 404
 
 
 async def test_job_creation_broadcasts_websocket_event(client, services):

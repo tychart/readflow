@@ -217,6 +217,10 @@ Key files:
 - `web/src/features/reader/ReaderPage.tsx`
 - `web/src/lib/media-source.ts`
 - `web/src/features/reader/timeline.ts`
+- `web/src/components/WaveformTimeline.tsx`
+- `web/src/components/Playbar.tsx`
+- `web/src/hooks/useChunkWaveforms.ts`
+- `server/app/media/peaks.py`
 
 Current architecture:
 
@@ -230,6 +234,34 @@ Important design rules:
 - the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
 - `playIntent` is user intent, not identical to "the browser is currently making sound"
 - real playback state comes from the hook and must stay synchronized with the custom controls
+
+### Static waveform playbar (replaces the old live analyser)
+
+The waveform is **static** — it never vibrates with playback. It is built from
+backend-computed peaks, not live audio analysis.
+
+How it works:
+
+- `server/app/media/peaks.py` computes per-chunk max-amplitude peaks (256 bins,
+  normalized per chunk) from the WAV during packaging and writes a small JSON
+  file next to each `.m4s` segment
+- each chunk response carries `peaks_url`, served by the router
+- `useChunkWaveforms` fetches peaks per written chunk (keyed by `index:version`;
+  reprocessing bumps the version and re-fetches) and exposes a
+  `Map<chunkIndex, Float32Array>`
+- `WaveformTimeline` renders thin pill bars at a px-based resolution that adapts
+  to the container width; playback progress is the amber fill sweeping
+  left-to-right as the playhead passes
+- chunks without peaks yet (or unrendered) render a dim deterministic
+  placeholder; missing/failed chunks keep the broken-signal pattern
+
+Styling knobs (`BAR_WIDTH_PX`, `BAR_GAP_PX`, `MIN_BAR_HEIGHT`, …) live in a
+single tunable constants block at the top of `WaveformTimeline.tsx`.
+
+Do **not** reintroduce a live Web Audio analyser for the playbar visualization —
+`useWaveformAnalyser.ts` was intentionally deleted. If playback visuals drift,
+the fix belongs in the peaks pipeline or the timeline rendering, not in live
+capture.
 
 ### Gap-aware playback model
 
@@ -738,6 +770,7 @@ Future agents should know that the following were created or materially changed 
 - current `Makefile` testing workflow
 - Vite HTTP/WS proxy for same-origin local dev
 - custom streaming reader/player with gap-aware playback
+- static backend-computed waveform playbar (replaces the live Web Audio analyser)
 - server-side `.m4a` export for contiguous rendered audio
 - completed-job local-only playback behavior
 

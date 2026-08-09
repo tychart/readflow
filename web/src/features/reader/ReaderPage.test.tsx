@@ -44,6 +44,7 @@ function buildReaderJob(
       version: 0,
       voice_id: "suzy",
       segment_url: `/api/jobs/job-1/chunks/${index}`,
+      peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
     })),
@@ -64,6 +65,7 @@ function buildManifest(chunkCount: number) {
       version: 0,
       voice_id: "suzy",
       segment_url: `/api/jobs/job-1/chunks/${index}`,
+      peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
     })),
@@ -136,22 +138,6 @@ beforeEach(() => {
       };
     },
   });
-
-  // Stub AudioContext for useWaveformAnalyser (jsdom doesn't have it)
-  if (typeof AudioContext === "undefined") {
-    vi.stubGlobal("AudioContext", vi.fn().mockImplementation(() => ({
-      createAnalyser: vi.fn().mockReturnValue({
-        fftSize: 256,
-        frequencyBinCount: 128,
-        connect: vi.fn(),
-        disconnect: vi.fn(),
-        getFloatTimeDomainData: vi.fn(),
-      }),
-      createMediaElementSource: vi.fn().mockReturnValue({ connect: vi.fn(), disconnect: vi.fn() }),
-      close: vi.fn().mockResolvedValue(undefined),
-      state: "running",
-    })));
-  }
 });
 
 afterEach(() => {
@@ -305,6 +291,7 @@ test("stays in buffering mode when playback reaches the end of the current conti
       version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/0",
+      peaks_url: "/api/jobs/job-1/chunks/0/peaks",
       deprecated: false,
       reprocessing: false,
     },
@@ -317,6 +304,7 @@ test("stays in buffering mode when playback reaches the end of the current conti
       version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/1",
+      peaks_url: "/api/jobs/job-1/chunks/1/peaks",
       deprecated: false,
       reprocessing: false,
     },
@@ -329,6 +317,7 @@ test("stays in buffering mode when playback reaches the end of the current conti
       version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/2",
+      peaks_url: "/api/jobs/job-1/chunks/2/peaks",
       deprecated: false,
       reprocessing: false,
     },
@@ -401,6 +390,7 @@ test("stays in buffering mode when playback reaches the end of the current conti
       plan_version: 1,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/3",
+      peaks_url: "/api/jobs/job-1/chunks/3/peaks",
     },
   ];
 
@@ -423,6 +413,59 @@ test("stays in buffering mode when playback reaches the end of the current conti
   expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
 });
 
+test("renders analyzed waveform bars fetched from the backend", async () => {
+  seedStore();
+
+  const chunks: Chunk[] = [
+    {
+      index: 0,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 0,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/0",
+      peaks_url: "/api/jobs/job-1/chunks/0/peaks",
+      deprecated: false,
+      reprocessing: false,
+    },
+  ];
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/peaks")) {
+      return { ok: true, json: async () => ({ bins: 2, peaks: [0.25, 0.75] }) };
+    }
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  const { container } = render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+
+  // The written chunk's bar heights come from the fetched peaks.
+  // jsdom has no layout, so the timeline renders a single bar whose height
+  // is the max-pooled peak (0.75 → 75%).
+  await waitFor(() => {
+    const bars = container.querySelectorAll("[data-wave-bar]");
+    expect(bars.length).toBeGreaterThan(0);
+    expect((bars[0] as HTMLElement).style.height).toBe("75%");
+  });
+});
+
 describe("chunk versioning & reprocessing", () => {
   beforeEach(() => {
     seedStore();
@@ -439,6 +482,7 @@ describe("chunk versioning & reprocessing", () => {
         version: 0,
         voice_id: "suzy",
         segment_url: "/api/jobs/job-1/chunks/0",
+        peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: true,
         reprocessing: false,
       },
@@ -451,6 +495,7 @@ describe("chunk versioning & reprocessing", () => {
         version: 1,
         voice_id: "suzy",
         segment_url: "/api/jobs/job-1/chunks/0",
+        peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: false,
         reprocessing: false,
       },
@@ -507,6 +552,7 @@ describe("chunk versioning & reprocessing", () => {
         version: 0,
         voice_id: "suzy",
         segment_url: "/api/jobs/job-1/chunks/0",
+        peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: false,
         reprocessing: false,
       },
@@ -562,6 +608,7 @@ describe("chunk versioning & reprocessing", () => {
         version: 1,
         voice_id: "suzy",
         segment_url: "/api/jobs/job-1/chunks/0",
+        peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: false,
         reprocessing: false,
       },

@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { WaveformTimeline, type TimelineSlotData } from "./WaveformTimeline";
-import { useWaveformAnalyser } from "../hooks/useWaveformAnalyser";
 
 /* ── Types ────────────────────────────────────────────────── */
 
 export interface PlaybarProps {
-  audioRef: React.RefObject<HTMLAudioElement | null>;
   /** Ordered timeline slots. Updated as chunks arrive. */
   slots: TimelineSlotData[];
-  /** Index of the chunk currently being played, or null. */
-  activeChunkIndex: number | null;
+  /**
+   * Analyzed waveform peaks per chunk index (from the backend), rendered
+   * statically by the timeline.
+   */
+  waveforms: Map<number, Float32Array>;
   /** Current playhead position in seconds (stream-normalized for the playhead visual). */
   currentTimeSeconds: number;
   /** Total rendered duration in the stream, or 0 if none. */
@@ -71,13 +72,12 @@ function formatClock(seconds: number): string {
 /**
  * Playbar — Full-width playback control bar for the Reader page.
  *
- * Orchestrates the audio waveform analyser and timeline, providing
- * play/pause, seek, time display, download, and keyboard shortcuts.
+ * Orchestrates the static waveform timeline, providing play/pause, seek,
+ * time display, download, and keyboard shortcuts.
  */
 export function Playbar({
-  audioRef,
   slots,
-  activeChunkIndex,
+  waveforms,
   currentTimeSeconds,
   renderedDurationSeconds,
   displayTimeSeconds,
@@ -100,45 +100,6 @@ export function Playbar({
   scrollProgress,
 }: PlaybarProps) {
   const barRef = useRef<HTMLDivElement>(null);
-
-  // ── Waveform analyser ─────────────────────────────────────
-  const {
-    liveWaveform,
-    captureSnapshot,
-    getCaptured,
-    reset: resetWaveforms,
-  } = useWaveformAnalyser(audioRef, { binCount: 96 });
-
-  // Capture waveform snapshot when the active chunk changes
-  const prevActiveRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (prevActiveRef.current !== activeChunkIndex && prevActiveRef.current !== null) {
-      captureSnapshot(prevActiveRef.current);
-    }
-    prevActiveRef.current = activeChunkIndex;
-  }, [activeChunkIndex, captureSnapshot]);
-
-  // Reset captured waveforms when slot count drops (new job loaded, not chunk append)
-  // Only reset when slots shrink, which indicates a new job was loaded
-  const prevSlotCountRef = useRef(slots.length);
-  useEffect(() => {
-    if (slots.length < prevSlotCountRef.current) {
-      resetWaveforms();
-    }
-    prevSlotCountRef.current = slots.length;
-  }, [slots.length, resetWaveforms]);
-
-  // Build capturedWaveforms map for the timeline
-  const capturedWaveforms = useMemo(() => {
-    const map = new Map<number, Float32Array>();
-    for (const slot of slots) {
-      const captured = getCaptured(slot.chunkIndex);
-      if (captured) {
-        map.set(slot.chunkIndex, captured);
-      }
-    }
-    return map;
-  }, [slots, getCaptured]);
 
   // ── Player state for display ──────────────────────────────
   const playerStateLabel = useMemo(() => {
@@ -284,14 +245,13 @@ export function Playbar({
         {/* Waveform Timeline */}
         <div className="min-w-0 flex-1">
           <WaveformTimeline
-            capturedWaveforms={capturedWaveforms}
             scrollProgress={scrollProgress}
             currentTimeSeconds={currentTimeSeconds}
-            liveWaveform={liveWaveform}
             onClickChunk={handleTimelineClick}
             onSeek={handleTimelineSeek}
             renderedDurationSeconds={renderedDurationSeconds}
             slots={slots}
+            waveforms={waveforms}
           />
         </div>
       </div>

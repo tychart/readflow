@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -10,12 +11,14 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.media.mp4 import split_fragmented_mp4
+from app.media.peaks import compute_peaks
 
 
 @dataclass(slots=True)
 class PackagedChunk:
     init_segment_path: str
     segment_path: str
+    peaks_path: str
     wav_path: str
     duration_seconds: float
 
@@ -37,6 +40,10 @@ class MediaStore:
         suffix = f"_v{version}" if version > 0 else ""
         return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.m4s"
 
+    def peaks_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
+        suffix = f"_v{version}" if version > 0 else ""
+        return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.peaks.json"
+
     def wav_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
         suffix = f"_v{version}" if version > 0 else ""
         return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.wav"
@@ -48,6 +55,11 @@ class MediaStore:
         wav_path = self.wav_path(job_id, chunk_index, version)
         mp4_path = job_dir / f"{chunk_index:05d}_v{version}.mp4"
         wav_path.write_bytes(wav_bytes)
+        peaks_path = self.peaks_path(job_id, chunk_index, version)
+        peaks = compute_peaks(wav_bytes)
+        peaks_path.write_text(
+            json.dumps({"bins": len(peaks), "peaks": peaks}, separators=(",", ":"))
+        )
         self._run_ffmpeg(wav_path, mp4_path)
         payload = mp4_path.read_bytes()
         segments = split_fragmented_mp4(payload)
@@ -61,6 +73,7 @@ class MediaStore:
         return PackagedChunk(
             init_segment_path=str(init_path),
             segment_path=str(segment_path),
+            peaks_path=str(peaks_path),
             wav_path=str(wav_path),
             duration_seconds=duration,
         )

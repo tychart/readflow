@@ -13,6 +13,7 @@ import { liveClient } from "../../lib/live-client";
 import { Playbar } from "../../components/Playbar";
 import type { TimelineSlotData, TimelineSlotState } from "../../components/WaveformTimeline";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
+import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
@@ -344,6 +345,10 @@ export function ReaderPage() {
     [contiguousReadyChunks, currentTimeSeconds],
   );
 
+  // Static waveform peaks for the playbar, fetched from the backend per chunk.
+  // Updates automatically as chunks arrive or are reprocessed.
+  const waveforms = useChunkWaveforms(activeChunks);
+
 
   // ── Timeline slots (for WaveformTimeline) ───────────────
   const timelineSlots = useMemo<TimelineSlotData[]>(() => {
@@ -375,7 +380,6 @@ export function ReaderPage() {
         chunkIndex: chunk.index,
         state,
         durationSeconds: chunk.duration_seconds > 0 ? chunk.duration_seconds : 4,
-        isLive: state === "playing",
       };
     });
   }, [activeChunks, activeProgress, activeContiguousReadyIndexes, playbackAnchorIndex, writtenAfterGapIndexes, missingExpectedIndexes]);
@@ -910,8 +914,6 @@ export function ReaderPage() {
           }}
         >
           <Playbar
-            activeChunkIndex={activeProgress.activeChunkIndex}
-            audioRef={audioRef as React.RefObject<HTMLAudioElement | null>}
             canDownload={canDownloadRenderedAudio}
             scrollProgress={scrollProgress}
             currentTimeSeconds={currentTimeSeconds}
@@ -932,6 +934,7 @@ export function ReaderPage() {
             renderedDurationSeconds={renderedDurationSeconds}
             slots={timelineSlots}
             totalChunks={totalChunksInJob}
+            waveforms={waveforms}
             writtenChunks={writtenChunkCount}
           />
         </div>

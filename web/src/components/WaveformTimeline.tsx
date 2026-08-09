@@ -1,4 +1,6 @@
-import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { maxPool } from "../lib/waveform";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -14,17 +16,16 @@ export interface TimelineSlotData {
   chunkIndex: number;
   state: TimelineSlotState;
   durationSeconds: number;
-  /** True when this slot is the currently-active/live chunk */
-  isLive: boolean;
 }
 
 export interface WaveformTimelineProps {
   /** Ordered list of timeline slots to render. */
   slots: TimelineSlotData[];
-  /** Captured waveform data per chunk index (0..1 normalized amplitudes). */
-  capturedWaveforms: Map<number, Float32Array>;
-  /** The current live waveform frame from the AnalyserNode (0..1 normalized). */
-  liveWaveform: Float32Array | null;
+  /**
+   * Analyzed waveform peaks per chunk index (0..1 normalized), fetched
+   * from the backend. Chunks without peaks render a dim placeholder.
+   */
+  waveforms: Map<number, Float32Array>;
   /** Current playback position in seconds (for the playhead). */
   currentTimeSeconds: number;
   /** Total rendered duration in seconds (for the playhead position). */
@@ -44,19 +45,28 @@ export interface WaveformTimelineProps {
   scrollProgress: number;
 }
 
-/* ── Constants ────────────────────────────────────────────── */
+/* ── Tunable waveform style ─────────────────────────────────
+ * All visual knobs for the static playbar waveform live here so the look
+ * can be tuned without touching the rendering logic. */
 
-/** Number of waveform bars to render per chunk. */
-const BARS_PER_CHUNK = 48;
-
+/** Bar thickness in px. */
+const BAR_WIDTH_PX = 3;
+/** Gap between bars in px. */
+const BAR_GAP_PX = 2;
+/** Corner radius in px (BAR_WIDTH_PX / 2 = fully rounded pill). */
+const BAR_RADIUS_PX = 2;
 /** Minimum bar height as a fraction of the slot height. */
-const MIN_BAR_HEIGHT = 0.05;
+const MIN_BAR_HEIGHT = 0.06;
+/** Horizontal padding inside each chunk slot (matches px-1 = 4px each side). */
+const SLOT_H_PADDING_PX = 8;
 
-/** Placeholder waveform for future/ready chunks (deterministic from index). */
+/* ── Helpers ──────────────────────────────────────────────── */
+
+/** Placeholder waveform for unrendered/not-yet-analyzed chunks (deterministic from index). */
 function generatePlaceholderWaveform(chunkIndex: number, length: number): Float32Array {
   const data = new Float32Array(length);
   for (let i = 0; i < length; i++) {
-    // Deterministic pseudo-random from chunkIndex + bin position
+    // Deterministic pseudo-random from chunkIndex + bar position
     const seed = (chunkIndex * 31 + i * 7) % 9973;
     const norm = seed / 9973;
     // Create a soft wave-like pattern
@@ -78,8 +88,6 @@ function generateBrokenWaveform(chunkIndex: number, length: number): Float32Arra
   return data;
 }
 
-/* ── Helpers ──────────────────────────────────────────────── */
-
 function calculateChunkSeekTargetSeconds(
   clientX: number,
   rect: { left: number; width: number },
@@ -96,14 +104,15 @@ function calculateChunkSeekTargetSeconds(
 /**
  * WaveformTimeline — The signature visual element of ReadFlow.
  *
- * Renders each narration chunk as a waveform visualization with
- * real captured audio data. The timeline is full-width, interactive,
- * and supports click/seek via pointer events.
+ * Renders each narration chunk as a static waveform visualization built
+ * from backend-computed peaks. The waveform never animates; playback
+ * progress is shown by the amber fill sweeping left-to-right as the
+ * playhead passes each bar. The timeline is full-width, interactive, and
+ * supports click/seek via pointer events.
  */
 export function WaveformTimeline({
   slots,
-  capturedWaveforms,
-  liveWaveform,
+  waveforms,
   currentTimeSeconds,
   renderedDurationSeconds,
   onSeek,
@@ -114,6 +123,19 @@ export function WaveformTimeline({
   const seekingPointerIdRef = useRef<number | null>(null);
   const suppressClickRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  // Track the rendered container width so bar count adapts to it.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) setContainerWidth(Math.round(width));
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => {
@@ -211,8 +233,14 @@ export function WaveformTimeline({
     return times;
   }, [slots]);
 
+  const totalSlotDuration = useMemo(
+    () => slots.reduce((acc, slot) => acc + slot.durationSeconds, 0),
+    [slots],
+  );
+
   // Smooth height interpolation: 80px (h-20) → 40px (h-10)
   const timelineHeight = Math.round(80 - scrollProgress * 40);
+  const barStepPx = BAR_WIDTH_PX + BAR_GAP_PX;
 
   if (slots.length === 0) {
     return (
@@ -240,12 +268,23 @@ export function WaveformTimeline({
       tabIndex={-1}
     >
       {slots.map((slot, slotIndex) => {
-        const waveform = slot.isLive && liveWaveform
-          ? liveWaveform
-          : (capturedWaveforms.get(slot.chunkIndex) ??
-             (slot.state === "missing_expected" || slot.state === "failed"
-               ? generateBrokenWaveform(slot.chunkIndex, BARS_PER_CHUNK)
-               : generatePlaceholderWaveform(slot.chunkIndex, BARS_PER_CHUNK)));
+        const chunkWidthPx =
+          totalSlotDuration > 0
+            ? Math.max(0, containerWidth * (slot.durationSeconds / totalSlotDuration))
+            : containerWidth;
+        const barCount = Math.max(1, Math.floor((chunkWidthPx - SLOT_H_PADDING_PX) / barStepPx));
+
+        // Pick the waveform source for this slot:
+        // analyzed peaks → dim placeholder → broken signal (missing/failed)
+        let waveform: Float32Array;
+        const analyzed = waveforms.get(slot.chunkIndex);
+        if (analyzed) {
+          waveform = maxPool(analyzed, barCount);
+        } else if (slot.state === "missing_expected" || slot.state === "failed") {
+          waveform = generateBrokenWaveform(slot.chunkIndex, barCount);
+        } else {
+          waveform = generatePlaceholderWaveform(slot.chunkIndex, barCount);
+        }
 
         const chunkStartSeconds = cumulativeStartTimes[slotIndex] ?? 0;
 
@@ -283,9 +322,7 @@ export function WaveformTimeline({
                     ? "bg-rose-900/15"
                     : slot.state === "playing"
                       ? "bg-[var(--amber-soft)]"
-                      : slot.state === "played"
-                        ? "bg-[var(--waveform-bar-muted)]"
-                        : "bg-[var(--waveform-bar-muted)]"
+                      : "bg-[var(--waveform-bar-muted)]"
               }`}
             />
 
@@ -309,15 +346,17 @@ export function WaveformTimeline({
               />
             ) : null}
 
-            {/* Waveform bars — smooth left-to-right amber fill, pixel-perfect at playhead */}
-            <div className="relative z-10 flex h-[calc(100%-8px)] w-full items-end gap-[2px] px-1">
-              {Array.from({ length: BARS_PER_CHUNK }, (_, i) => {
-                const binIndex = Math.floor((i / BARS_PER_CHUNK) * waveform.length);
-                const amplitude = Math.max(MIN_BAR_HEIGHT, waveform[binIndex] ?? MIN_BAR_HEIGHT);
+            {/* Waveform bars — static shape, amber fill sweeps left-to-right with playhead */}
+            <div
+              className="relative z-10 flex h-[calc(100%-8px)] w-full items-end overflow-hidden px-1"
+              style={{ gap: BAR_GAP_PX }}
+            >
+              {Array.from({ length: barCount }, (_, i) => {
+                const amplitude = Math.max(MIN_BAR_HEIGHT, waveform[i] ?? MIN_BAR_HEIGHT);
 
                 // Compute horizontal (left-to-right) fill percentage for this bar
-                const barStartTime = chunkStartSeconds + (i / BARS_PER_CHUNK) * slot.durationSeconds;
-                const barEndTime = chunkStartSeconds + ((i + 1) / BARS_PER_CHUNK) * slot.durationSeconds;
+                const barStartTime = chunkStartSeconds + (i / barCount) * slot.durationSeconds;
+                const barEndTime = chunkStartSeconds + ((i + 1) / barCount) * slot.durationSeconds;
 
                 // horizontalFillPercent: how much of this bar's width is amber (left-to-right)
                 // - Playhead fully right of bar → 1.0 (entire bar amber)
@@ -340,33 +379,37 @@ export function WaveformTimeline({
 
                 return (
                   <div
-                    className="relative w-full"
+                    className="relative shrink-0"
+                    data-wave-bar
                     key={i}
-                    style={{ height: `${amplitude * 100}%` }}
+                    style={{ width: BAR_WIDTH_PX, height: `${amplitude * 100}%` }}
                   >
                     {isSpecialState ? (
                       <div
-                        className={`absolute inset-0 w-full rounded-[2px] ${
+                        className={`absolute inset-0 w-full ${
                           slot.state === "failed" ? "bg-rose-500/60" : "bg-[var(--waveform-bar-muted)]"
                         }`}
+                        style={{ borderRadius: BAR_RADIUS_PX }}
                       />
                     ) : (
                       <>
                         {/* Muted background — full bar height & width */}
                         <div
-                          className={`absolute inset-0 w-full rounded-[2px] ${
+                          className={`absolute inset-0 w-full ${
                             isGap ? "bg-[var(--waveform-bar-dim)]/50" : "bg-[var(--waveform-bar-dim)]"
                           }`}
+                          style={{ borderRadius: BAR_RADIUS_PX }}
                         />
                         {/* Amber foreground — fills left-to-right with playhead */}
                         {horizontalFillPercent > 0 ? (
                           <div
-                            className={`absolute inset-y-0 left-0 rounded-[2px] ${
+                            className={`absolute inset-y-0 left-0 ${
                               isGap ? "bg-[var(--amber)]/70" : "bg-[var(--amber)]"
                             }`}
                             style={{
                               width: `${horizontalFillPercent * 100}%`,
                               minWidth: '1px',
+                              borderRadius: BAR_RADIUS_PX,
                             }}
                           />
                         ) : null}
