@@ -466,6 +466,123 @@ test("renders analyzed waveform bars fetched from the backend", async () => {
   });
 });
 
+test("sidebar toggle button stays stable across re-renders and toggles the sidebar", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(1) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(1) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+
+  // Large screen: the reader header toggle is the first "Close sidebar" button.
+  const toggleButton = screen.getAllByRole("button", { name: "Close sidebar" })[0];
+
+  // A job_updated event re-renders the page (as playback polling does).
+  act(() => {
+    useAppStore.getState().applyEvent({
+      type: "job_updated",
+      payload: { job: buildReaderJob(1, "playing") },
+    });
+  });
+
+  // The toggle must be the same DOM node — the content subtree must not
+  // unmount/remount on re-renders (that swallowed clicks during playback).
+  expect(screen.getAllByRole("button", { name: "Close sidebar" })[0]).toBe(toggleButton);
+
+  // And toggling still works: close, then reopen.
+  await user.click(toggleButton);
+  expect(screen.getByRole("button", { name: "Open sidebar" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Open sidebar" }));
+  expect(screen.getAllByRole("button", { name: "Close sidebar" }).length).toBeGreaterThan(0);
+});
+
+test("returns to Play (no spinner) after a completed job finishes playing", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  const bufferedEnd = 60;
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get() {
+      return {
+        length: bufferedEnd > 0 ? 1 : 0,
+        start: () => 0,
+        end: () => bufferedEnd,
+      };
+    },
+  });
+
+  const chunks: Chunk[] = [
+    {
+      index: 0,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 0,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/0",
+      peaks_url: "/api/jobs/job-1/chunks/0/peaks",
+      deprecated: false,
+      reprocessing: false,
+    },
+  ];
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "completed") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/peaks")) {
+      return { ok: true, json: async () => ({ bins: 1, peaks: [0.5] }) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  const { container } = render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+
+  await user.click(screen.getByRole("button", { name: "Play" }));
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  act(() => {
+    audio!.currentTime = 4;
+    audio!.dispatchEvent(new Event("ended"));
+  });
+
+  // The button must return to Play with no spinner / no stuck Pause state.
+  await waitFor(() => expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument());
+  expect(container.querySelector(".animate-spin")).toBeNull();
+});
+
 describe("chunk versioning & reprocessing", () => {
   beforeEach(() => {
     seedStore();

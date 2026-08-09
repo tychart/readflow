@@ -3,6 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JobManifest } from "../types/api";
 
 const PLAYABLE_EPSILON_SECONDS = 0.05;
+/**
+ * How close to the end of the buffered stream a terminal job's playhead must
+ * be before we treat it as finished. Mirrors the reader's end-detection.
+ */
+const TERMINAL_END_EPSILON_SECONDS = 0.5;
 
 export type PlayerState =
   | "idle"
@@ -242,6 +247,46 @@ export function useMediaSourcePlayer({
       networkState: audio?.networkState ?? 0,
     } satisfies PlaybackSnapshot;
     const previousSnapshot = lastPlaybackSnapshotRef.current;
+
+    // A terminal job has no future data: a playhead that stops at the end of
+    // the buffered stream is *ended*, not waiting. Reconcile the flags even
+    // when nothing else changed (frozen playhead) so the UI never keeps a
+    // spinner after playback completes without a browser 'ended' event.
+    const advancedSinceLastSnapshot =
+      nextSnapshot.currentTimeSeconds >
+      previousSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
+    const terminalEnded =
+      !pendingSeekRef.current &&
+      isTerminalRef.current &&
+      renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
+      nextSnapshot.bufferedUntilSeconds >=
+        renderedDurationRef.current - TERMINAL_END_EPSILON_SECONDS &&
+      nextSnapshot.currentTimeSeconds > PLAYABLE_EPSILON_SECONDS &&
+      !hasBufferedAhead(audio, nextSnapshot.bufferedUntilSeconds) &&
+      nextSnapshot.currentTimeSeconds >= Math.max(
+        0,
+        nextSnapshot.bufferedUntilSeconds - TERMINAL_END_EPSILON_SECONDS,
+      ) &&
+      !advancedSinceLastSnapshot;
+
+    if (terminalEnded) {
+      if (audio && !audio.paused) {
+        safePause(audio);
+      }
+      lastPlaybackSnapshotRef.current = nextSnapshot;
+      setBufferedUntilSeconds(nextSnapshot.bufferedUntilSeconds);
+      setCurrentTimeSeconds(nextSnapshot.currentTimeSeconds);
+      setDiagnostics({
+        paused: nextSnapshot.paused,
+        readyState: nextSnapshot.readyState,
+        networkState: nextSnapshot.networkState,
+      });
+      setIsActuallyPlaying(false);
+      setIsWaitingForData(false);
+      setHasEnded(true);
+      return;
+    }
+
     const shouldCommit =
       force ||
       Math.abs(nextSnapshot.currentTimeSeconds - previousSnapshot.currentTimeSeconds) >= 0.05 ||

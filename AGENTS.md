@@ -263,6 +263,24 @@ Do **not** reintroduce a live Web Audio analyser for the playbar visualization �
 the fix belongs in the peaks pipeline or the timeline rendering, not in live
 capture.
 
+### Two historical bugs worth protecting against
+
+1. **Never define a component inside `ReaderPage`.** `ReaderContent` was once
+   defined inline, giving it a new identity on every render; during playback
+   the reader re-renders ~20×/s, so React unmounted/remounted the whole content
+   subtree (including the sidebar toggle button) on every tick, swallowing
+   clicks. It now lives at module scope and takes props. If you add a new
+   sub-render, keep it a module-level component.
+
+2. **A finished terminal job must converge to "ended" without a browser
+   `ended` event.** MSE does not always fire `ended` at the end of the stream.
+   `useMediaSourcePlayer.updatePlaybackState` reconciles this: for a terminal
+   job whose playhead is frozen at the end of the fully-buffered stream
+   (within `TERMINAL_END_EPSILON_SECONDS`), it pauses the audio and clears
+   `isActuallyPlaying`/`isWaitingForData`, which lets `ReaderPage` reset
+   `playIntent` and clears the stuck spinner. Do not gate this on extra UI
+   conditions in `Playbar` — fix it in the player/controller layer.
+
 ### Gap-aware playback model
 
 The frontend intentionally supports the backend finishing chunks out of order.

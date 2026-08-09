@@ -612,3 +612,108 @@ test("shows waiting for data when playback stalls at the rendered boundary witho
   );
   expect(container.firstChild).toHaveAttribute("data-waiting", "yes");
 });
+
+test("reconciles a terminal job that stops at the end of the stream to ended (no stuck spinner)", async () => {
+  let bufferedEnd = 0;
+  let simulatedCurrentTime = 0;
+  const pauseMock = vi.fn();
+  const animationFrameCallbacks: FrameRequestCallback[] = [];
+
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+  HTMLMediaElement.prototype.pause = pauseMock;
+
+  const requestAnimationFrameSpy = vi
+    .spyOn(window, "requestAnimationFrame")
+    .mockImplementation((callback: FrameRequestCallback) => {
+      animationFrameCallbacks.push(callback);
+      return animationFrameCallbacks.length;
+    });
+  const cancelAnimationFrameSpy = vi
+    .spyOn(window, "cancelAnimationFrame")
+    .mockImplementation(() => {});
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 4;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  function Harness() {
+    const { audioRef, isActuallyPlaying, isWaitingForData, playerState } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0, 1]),
+      playbackAnchorIndex: 0,
+      playIntent: true,
+      isTerminal: true,
+    });
+
+    useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+      Object.defineProperty(audio, "currentTime", {
+        configurable: true,
+        get: () => simulatedCurrentTime,
+        set: (value: number) => {
+          simulatedCurrentTime = value;
+        },
+      });
+      Object.defineProperty(audio, "paused", {
+        configurable: true,
+        get: () => false,
+      });
+    }, [audioRef]);
+
+    return (
+      <div
+        data-playing={isActuallyPlaying ? "yes" : "no"}
+        data-state={playerState}
+        data-waiting={isWaitingForData ? "yes" : "no"}
+      >
+        <audio ref={audioRef} />
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  await waitFor(() => expect(requestAnimationFrameSpy).toHaveBeenCalled());
+
+  // Playback advances near the end of the buffered stream…
+  act(() => {
+    simulatedCurrentTime = 3.9;
+    audio?.dispatchEvent(new Event("play"));
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+
+  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-state", "playing"));
+
+  // …then the playhead freezes at the end without a browser 'ended' event.
+  act(() => {
+    simulatedCurrentTime = 4;
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+
+  // One more frozen tick: the playhead stopped at the end of the buffered
+  // stream, so the player must reconcile to ended on its own.
+  act(() => {
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+
+  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-state", "ended"));
+  expect(container.firstChild).toHaveAttribute("data-playing", "no");
+  expect(container.firstChild).toHaveAttribute("data-waiting", "no");
+  expect(pauseMock).toHaveBeenCalled();
+
+  requestAnimationFrameSpy.mockRestore();
+  cancelAnimationFrameSpy.mockRestore();
+});

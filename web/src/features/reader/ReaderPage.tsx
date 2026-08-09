@@ -147,6 +147,96 @@ interface ReaderPageStoreState {
   isSocketStale: ReturnType<typeof useAppStore.getState>["isSocketStale"];
 }
 
+/* ── ReaderContent — stable top-level component ────────────
+ * Must stay at module scope: defining it inside ReaderPage would give it a
+ * new identity on every render, which makes React unmount/remount the whole
+ * content subtree (including the sidebar toggle button) on each playback
+ * tick, swallowing clicks during playback. */
+
+function ReaderContent({
+  contentRef,
+  title,
+  status,
+  lines,
+  isLargeScreen,
+  sidebarOpen,
+  onToggleSidebar,
+}: {
+  contentRef: React.RefObject<HTMLDivElement | null>;
+  title: string;
+  status: string | undefined;
+  lines: React.ReactNode;
+  isLargeScreen: boolean;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+}) {
+  return (
+    <>
+      {/* Header row with title + toggle */}
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
+            Reader
+          </p>
+          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">{title}</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
+            {status}
+          </span>
+          {/* Sidebar toggle — only on large screens when sidebar is inline */}
+          {isLargeScreen && (
+            <button
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] transition-colors"
+              onClick={onToggleSidebar}
+              type="button"
+            >
+              {sidebarOpen ? (
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+                  <line x1="15" x2="15" y1="3" y2="21" />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+                  <line x1="9" x2="9" y1="3" y2="21" />
+                </svg>
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Source text — no inner scroll, flows with page */}
+      <div
+        className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
+        ref={contentRef}
+      >
+        <div className="space-y-2">{lines}</div>
+      </div>
+    </>
+  );
+}
+
 /* ── Component ────────────────────────────────────────────── */
 
 export function ReaderPage() {
@@ -810,83 +900,14 @@ export function ReaderPage() {
   // ── Chunk detail panel (for sidebar) ────────────────────
   const detailChunk = detailSlot ?? activeChunks.find((c) => c.index === activeProgress.activeChunkIndex) ?? null;
 
-  // ── ReaderContent sub-component (used in both centered and side-by-side layouts) ──
-  const ReaderContent = ({
-    contentRef: contentRefProp,
-  }: {
-    contentRef: React.RefObject<HTMLDivElement | null>;
-  }) => (
-    <>
-      {/* Header row with title + toggle */}
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
-            Reader
-          </p>
-          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
-            {job?.title ?? "Untitled job"}
-          </h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
-            {job?.status}
-          </span>
-          {/* Sidebar toggle — only on large screens when sidebar is inline */}
-          {isLargeScreen && (
-            <button
-              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] transition-colors"
-              onClick={toggleSidebar}
-              type="button"
-            >
-              {sidebarOpen ? (
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                >
-                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
-                  <line x1="15" x2="15" y1="3" y2="21" />
-                </svg>
-              ) : (
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                >
-                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
-                  <line x1="9" x2="9" y1="3" y2="21" />
-                </svg>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Source text — no inner scroll, flows with page */}
-      <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5" ref={contentRefProp}>
-        <div className="space-y-2">
-          {sourceTextLines.length > 0 ? (
-            sourceTextLines
-          ) : (
-            <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
-              No chunks available yet. Press play to start.
-            </p>
-          )}
-        </div>
-      </div>
-    </>
-  );
+  const readerLines: React.ReactNode =
+    sourceTextLines.length > 0 ? (
+      sourceTextLines
+    ) : (
+      <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
+        No chunks available yet. Press play to start.
+      </p>
+    );
 
   // ── Main render ──────────────────────────────────────────
   return (
@@ -973,6 +994,12 @@ export function ReaderPage() {
           <div className="mx-auto flex w-full max-w-4xl flex-col">
             <ReaderContent
               contentRef={contentRef}
+              title={job?.title ?? "Untitled job"}
+              status={job?.status}
+              lines={readerLines}
+              isLargeScreen={isLargeScreen}
+              sidebarOpen={sidebarOpen}
+              onToggleSidebar={toggleSidebar}
             />
           </div>
         ) : (
@@ -981,6 +1008,12 @@ export function ReaderPage() {
             <div className="min-w-0 flex-1">
               <ReaderContent
                 contentRef={contentRef}
+                title={job?.title ?? "Untitled job"}
+                status={job?.status}
+                lines={readerLines}
+                isLargeScreen={isLargeScreen}
+                sidebarOpen={sidebarOpen}
+                onToggleSidebar={toggleSidebar}
               />
             </div>
 
