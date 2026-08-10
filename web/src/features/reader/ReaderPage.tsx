@@ -614,6 +614,15 @@ export function ReaderPage() {
     () => knownChunks.reduce((acc, c) => acc + c.duration_seconds, 0),
     [knownChunks],
   );
+  // End of the playable range in original timeline coordinates. The player's
+  // renderedDurationSeconds is stream-normalized (resets at the playback
+  // anchor), so it must be shifted back by the anchor offset before the
+  // timeline — which renders in original coordinates — can use it as the
+  // playhead maximum.
+  const displayRenderedDurationSeconds = useMemo(
+    () => anchorOffset + renderedDurationSeconds,
+    [anchorOffset, renderedDurationSeconds],
+  );
 
   // Seek override: waits for stream + buffer to be ready, in normalized coords
   useEffect(() => {
@@ -679,14 +688,19 @@ export function ReaderPage() {
   const handleSeekToChunk = useCallback(
     async (chunkIndex: number, seekSeconds: number) => {
       if (!job) return;
+      // Seeking preserves the current play state: a playing player stays
+      // playing (resuming once the new stream is ready), a paused player
+      // stays paused at the new position. Only an actively-playing player
+      // needs the job re-activated for backend scheduling.
+      const resumeAfterSeek = playIntent;
       setPlaybackAnchorIndex(chunkIndex);
-      setPlayIntent(true);
       setSeekOverride(seekSeconds);
       setError(null);
       if (isJobTerminal) {
-        await requestUserGesturePlay();
+        if (resumeAfterSeek) await requestUserGesturePlay();
         return;
       }
+      if (!resumeAfterSeek) return;
       try {
         const nextJob = await api.activateJob(job.id);
         setJob(nextJob);
@@ -698,7 +712,7 @@ export function ReaderPage() {
         setError(activationError instanceof Error ? activationError.message : "Unable to activate playback");
       }
     },
-    [isJobTerminal, job, requestUserGesturePlay],
+    [isJobTerminal, job, playIntent, requestUserGesturePlay],
   );
 
   // Set userScrolledChunkRef so the scroll-into-view effect can distinguish
@@ -939,6 +953,7 @@ export function ReaderPage() {
             scrollProgress={scrollProgress}
             currentTimeSeconds={currentTimeSeconds}
             displayDurationSeconds={displayDurationSeconds}
+            displayRenderedDurationSeconds={displayRenderedDurationSeconds}
             displayTimeSeconds={displayTimeSeconds}
             isAutoplayBlocked={isAutoplayBlocked}
             isDownloadComplete={isDownloadComplete}

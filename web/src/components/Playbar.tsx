@@ -20,6 +20,11 @@ export interface PlaybarProps {
   displayTimeSeconds: number;
   /** Total duration to display on the clock (original timeline). */
   displayDurationSeconds: number;
+  /**
+   * End of the playable range in original timeline coordinates (not
+   * stream-normalized). Drives the timeline's playhead maximum.
+   */
+  displayRenderedDurationSeconds: number;
   /** True when audio is actually playing (not paused/blocked). */
   isPlaying: boolean;
   /** True when the user has requested playback (even if not started yet). */
@@ -82,6 +87,7 @@ export function Playbar({
   renderedDurationSeconds,
   displayTimeSeconds,
   displayDurationSeconds,
+  displayRenderedDurationSeconds,
   isPlaying,
   playIntent,
   isAutoplayBlocked,
@@ -246,10 +252,10 @@ export function Playbar({
         <div className="min-w-0 flex-1">
           <WaveformTimeline
             scrollProgress={scrollProgress}
-            currentTimeSeconds={currentTimeSeconds}
+            playheadSeconds={displayTimeSeconds}
             onClickChunk={handleTimelineClick}
             onSeek={handleTimelineSeek}
-            renderedDurationSeconds={renderedDurationSeconds}
+            renderedDurationSeconds={displayRenderedDurationSeconds}
             slots={slots}
             waveforms={waveforms}
           />

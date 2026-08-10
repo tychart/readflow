@@ -26,13 +26,25 @@ export interface WaveformTimelineProps {
    * from the backend. Chunks without peaks render a dim placeholder.
    */
   waveforms: Map<number, Float32Array>;
-  /** Current playback position in seconds (for the playhead). */
-  currentTimeSeconds: number;
-  /** Total rendered duration in seconds (for the playhead position). */
+  /**
+   * Current playback position in seconds, in the same coordinate space as the
+   * slots (job-timeline coordinates: 0 = start of the first slot).
+   *
+   * Do NOT pass a stream-normalized position: the media stream resets to 0 at
+   * the playback anchor, so a normalized value misplaces the fill whenever the
+   * anchor is non-zero (i.e. after seeking to a later chunk).
+   */
+  playheadSeconds: number;
+  /**
+   * End of the playable range in seconds, in the same coordinate space as
+   * `playheadSeconds`. Used as the playhead maximum (aria) and to gate fill
+   * rendering until rendered audio exists.
+   */
   renderedDurationSeconds: number;
   /**
-   * Called when the user clicks/seeks within a slot.
-   * `seekSeconds` is the audio-relative target timestamp.
+   * Called when the user clicks/drags to seek. `seekSeconds` is an absolute
+   * position in job-timeline coordinates (0 = start of the first slot).
+   * For drags this fires once, on pointer-up, with the final position.
    */
   onSeek: (chunkIndex: number, seekSeconds: number) => void;
   /** Called when a slot is clicked (not a seek). */
@@ -88,17 +100,6 @@ function generateBrokenWaveform(chunkIndex: number, length: number): Float32Arra
   return data;
 }
 
-function calculateChunkSeekTargetSeconds(
-  clientX: number,
-  rect: { left: number; width: number },
-  chunkStartSeconds: number,
-  chunkDurationSeconds: number,
-): number {
-  if (rect.width <= 0 || chunkDurationSeconds <= 0) return chunkStartSeconds;
-  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  return chunkStartSeconds + ratio * chunkDurationSeconds;
-}
-
 /* ── Component ────────────────────────────────────────────── */
 
 /**
@@ -113,7 +114,7 @@ function calculateChunkSeekTargetSeconds(
 export function WaveformTimeline({
   slots,
   waveforms,
-  currentTimeSeconds,
+  playheadSeconds,
   renderedDurationSeconds,
   onSeek,
   onClickChunk,
@@ -124,6 +125,13 @@ export function WaveformTimeline({
   const suppressClickRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  /**
+   * While the user is dragging, the fill previews the position under the
+   * pointer immediately (standard scrubber behavior) instead of waiting for
+   * the audio seek to land. The real seek is committed once on pointer-up.
+   * Stored in job-timeline coordinates, matching the slots.
+   */
+  const [dragPreviewSeconds, setDragPreviewSeconds] = useState<number | null>(null);
 
   // Track the rendered container width so bar count adapts to it.
   useEffect(() => {
@@ -136,91 +144,6 @@ export function WaveformTimeline({
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
-
-  const handlePointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => {
-      if (event.button !== 0) return;
-
-      const target = event.currentTarget;
-      const rect = target.getBoundingClientRect();
-
-      if (slot.state === "failed") {
-        onClickChunk?.(slot.chunkIndex);
-        return;
-      }
-
-      // Calculate seek target
-      const chunkStartSeconds = slots
-        .slice(0, slot.chunkIndex < slots.length ? slot.chunkIndex : slots.length)
-        .reduce((acc, s) => acc + (s.state !== "failed" ? s.durationSeconds : 0), 0);
-
-      const seekSeconds = calculateChunkSeekTargetSeconds(
-        event.clientX,
-        rect,
-        chunkStartSeconds,
-        slot.durationSeconds,
-      );
-
-      onSeek(slot.chunkIndex, seekSeconds);
-
-      // Start drag-seeking
-      suppressClickRef.current = slot.chunkIndex;
-      seekingPointerIdRef.current = event.pointerId;
-      if (typeof target.setPointerCapture === "function") {
-        target.setPointerCapture(event.pointerId);
-      }
-      event.preventDefault();
-    },
-    [onSeek, onClickChunk, slots],
-  );
-
-  const handlePointerMove = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => {
-      if (seekingPointerIdRef.current !== event.pointerId) return;
-
-      const target = event.currentTarget;
-      const rect = target.getBoundingClientRect();
-
-      const chunkStartSeconds = slots
-        .slice(0, slot.chunkIndex < slots.length ? slot.chunkIndex : slots.length)
-        .reduce((acc, s) => acc + (s.state !== "failed" ? s.durationSeconds : 0), 0);
-
-      const seekSeconds = calculateChunkSeekTargetSeconds(
-        event.clientX,
-        rect,
-        chunkStartSeconds,
-        slot.durationSeconds,
-      );
-
-      onSeek(slot.chunkIndex, seekSeconds);
-    },
-    [onSeek, slots],
-  );
-
-  const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (seekingPointerIdRef.current === event.pointerId) {
-      seekingPointerIdRef.current = null;
-    }
-  }, []);
-
-  const handlePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (seekingPointerIdRef.current === event.pointerId) {
-      seekingPointerIdRef.current = null;
-    }
-  }, []);
-
-  const handleClick = useCallback(
-    (slot: TimelineSlotData) => {
-      if (suppressClickRef.current === slot.chunkIndex) {
-        suppressClickRef.current = null;
-        return;
-      }
-
-      if (slot.state === "failed") return;
-      onClickChunk?.(slot.chunkIndex);
-    },
-    [onClickChunk],
-  );
 
   // Must be before early return — React hook ordering rule
   const cumulativeStartTimes = useMemo(() => {
@@ -238,9 +161,109 @@ export function WaveformTimeline({
     [slots],
   );
 
+  /**
+   * Maps a client X position to an absolute job-timeline position (seconds)
+   * using the same proportional mapping the layout uses (slot width is
+   * proportional to slot duration), so the scrub preview and the committed
+   * seek always agree with what the user sees.
+   */
+  const computeTimelinePositionSeconds = useCallback(
+    (clientX: number): number => {
+      const container = containerRef.current;
+      if (!container || totalSlotDuration <= 0) return 0;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return 0;
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return ratio * totalSlotDuration;
+    },
+    [totalSlotDuration],
+  );
+
+  /** Index of the slot containing an absolute job-timeline position. */
+  const slotIndexAtSeconds = useCallback(
+    (seconds: number): number => {
+      let index = 0;
+      for (let i = 0; i < cumulativeStartTimes.length; i += 1) {
+        if (seconds >= cumulativeStartTimes[i]) index = i;
+        else break;
+      }
+      return index;
+    },
+    [cumulativeStartTimes],
+  );
+
+  const handlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => {
+      if (event.button !== 0) return;
+
+      const target = event.currentTarget;
+
+      if (slot.state === "failed") {
+        onClickChunk?.(slot.chunkIndex);
+        return;
+      }
+
+      // Enter scrub mode: the fill previews the pointer position immediately,
+      // but the audio seek is committed once on pointer-up (no per-move seeks).
+      const seekSeconds = computeTimelinePositionSeconds(event.clientX);
+      suppressClickRef.current = slot.chunkIndex;
+      seekingPointerIdRef.current = event.pointerId;
+      setDragPreviewSeconds(seekSeconds);
+      if (typeof target.setPointerCapture === "function") {
+        target.setPointerCapture(event.pointerId);
+      }
+      event.preventDefault();
+    },
+    [computeTimelinePositionSeconds, onClickChunk],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (seekingPointerIdRef.current !== event.pointerId) return;
+      setDragPreviewSeconds(computeTimelinePositionSeconds(event.clientX));
+    },
+    [computeTimelinePositionSeconds],
+  );
+
+  const handlePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (seekingPointerIdRef.current !== event.pointerId) return;
+      seekingPointerIdRef.current = null;
+      const seekSeconds = computeTimelinePositionSeconds(event.clientX);
+      const slot = slots[slotIndexAtSeconds(seekSeconds)];
+      setDragPreviewSeconds(null);
+      if (slot) {
+        onSeek(slot.chunkIndex, seekSeconds);
+      }
+    },
+    [computeTimelinePositionSeconds, onSeek, slotIndexAtSeconds, slots],
+  );
+
+  const handlePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (seekingPointerIdRef.current !== event.pointerId) return;
+    seekingPointerIdRef.current = null;
+    setDragPreviewSeconds(null);
+  }, []);
+
+  const handleClick = useCallback(
+    (slot: TimelineSlotData) => {
+      if (suppressClickRef.current === slot.chunkIndex) {
+        suppressClickRef.current = null;
+        return;
+      }
+
+      if (slot.state === "failed") return;
+      onClickChunk?.(slot.chunkIndex);
+    },
+    [onClickChunk],
+  );
+
   // Smooth height interpolation: 80px (h-20) → 40px (h-10)
   const timelineHeight = Math.round(80 - scrollProgress * 40);
   const barStepPx = BAR_WIDTH_PX + BAR_GAP_PX;
+  // The fill follows the pointer during a drag; otherwise it tracks the real
+  // playback position (both in job-timeline coordinates).
+  const effectivePlayheadSeconds = dragPreviewSeconds ?? playheadSeconds;
 
   if (slots.length === 0) {
     return (
@@ -260,7 +283,7 @@ export function WaveformTimeline({
       aria-label="Audio waveform timeline"
       aria-valuemax={renderedDurationSeconds}
       aria-valuemin={0}
-      aria-valuenow={currentTimeSeconds}
+      aria-valuenow={Math.min(effectivePlayheadSeconds, renderedDurationSeconds)}
       className="relative flex w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
       style={{ height: timelineHeight }}
       ref={containerRef}
@@ -292,7 +315,7 @@ export function WaveformTimeline({
           <div
             aria-label={`Chunk ${slot.chunkIndex + 1}: ${slot.state}`}
             className={`relative flex h-full cursor-pointer items-end overflow-hidden transition-colors ${
-              slot.state === "played" && currentTimeSeconds > (chunkStartSeconds + slot.durationSeconds)
+              slot.state === "played" && effectivePlayheadSeconds > (chunkStartSeconds + slot.durationSeconds)
                 ? "opacity-40"
                 : ""
             }`}
@@ -309,7 +332,7 @@ export function WaveformTimeline({
               }
             }}
             onPointerDown={(e) => handlePointerDown(e, slot)}
-            onPointerMove={(e) => handlePointerMove(e, slot)}
+            onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerCancel}
           >
@@ -367,12 +390,12 @@ export function WaveformTimeline({
 
                 let horizontalFillPercent = 0;
                 if (!isSpecialState && renderedDurationSeconds > 0) {
-                  if (currentTimeSeconds >= barEndTime) {
+                  if (effectivePlayheadSeconds >= barEndTime) {
                     horizontalFillPercent = 1;
-                  } else if (currentTimeSeconds > barStartTime) {
+                  } else if (effectivePlayheadSeconds > barStartTime) {
                     const barDuration = barEndTime - barStartTime;
                     horizontalFillPercent = barDuration > 0
-                      ? Math.min(1, (currentTimeSeconds - barStartTime) / barDuration)
+                      ? Math.min(1, (effectivePlayheadSeconds - barStartTime) / barDuration)
                       : 0;
                   }
                 }
@@ -406,6 +429,7 @@ export function WaveformTimeline({
                             className={`absolute inset-y-0 left-0 ${
                               isGap ? "bg-[var(--amber)]/70" : "bg-[var(--amber)]"
                             }`}
+                            data-wave-fill
                             style={{
                               width: `${horizontalFillPercent * 100}%`,
                               minWidth: '1px',

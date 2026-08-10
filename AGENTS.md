@@ -263,6 +263,30 @@ Do **not** reintroduce a live Web Audio analyser for the playbar visualization �
 the fix belongs in the peaks pipeline or the timeline rendering, not in live
 capture.
 
+### Playhead coordinate rule (protect against a seek-position bug)
+
+`WaveformTimeline` renders slots in **job-timeline coordinates** (0 = start of
+the first slot). Its playhead prop (`playheadSeconds`) and playable-range prop
+(`renderedDurationSeconds`) MUST be passed in those same coordinates.
+
+The player's `currentTimeSeconds`/`renderedDurationSeconds` are
+**stream-normalized** — the media stream resets to 0 at the playback anchor —
+so they must be shifted by `anchorOffset` before reaching the timeline.
+`ReaderPage` owns this conversion: `displayTimeSeconds` (clock + timeline
+playhead) and `displayRenderedDurationSeconds` (timeline playhead maximum).
+
+Historical bug this protects against: when a stream-normalized position leaked
+into the timeline, any seek to a later chunk made the amber fill jump to the
+beginning of the timeline and sweep from the left, because the playhead was
+compared against wrong coordinates. Do not "fix" playhead drift by re-deriving
+positions inside `WaveformTimeline`; the coordinate conversion belongs in
+`ReaderPage`/`Playbar`.
+
+Drag-seeking commits exactly one `onSeek` on pointer-up; while dragging, the
+fill previews the pointer position via local `dragPreviewSeconds` (standard
+scrubber behavior). Do not add per-pointer-move `onSeek` calls — that used to
+trigger a backend activation HTTP call on every drag frame.
+
 ### Two historical bugs worth protecting against
 
 1. **Never define a component inside `ReaderPage`.** `ReaderContent` was once

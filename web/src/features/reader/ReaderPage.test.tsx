@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
@@ -6,6 +6,26 @@ import { afterEach, vi } from "vitest";
 import { ReaderPage } from "./ReaderPage";
 import { useAppStore } from "../../state/store";
 import type { Chunk } from "../../types/api";
+
+/* jsdom does not implement PointerEvent; provide a minimal polyfill so the
+ * timeline's pointer-based seek interactions can be exercised. */
+class TestPointerEvent extends MouseEvent {
+  readonly pointerId: number;
+  readonly pointerType: string;
+  readonly isPrimary: boolean;
+
+  constructor(type: string, init: PointerEventInit = {}) {
+    super(type, init);
+    this.pointerId = init.pointerId ?? 1;
+    this.pointerType = init.pointerType ?? "mouse";
+    this.isPrimary = init.isPrimary ?? true;
+  }
+}
+
+Object.defineProperty(window, "PointerEvent", {
+  configurable: true,
+  value: TestPointerEvent,
+});
 
 const originalFetch = global.fetch;
 
@@ -768,5 +788,167 @@ describe("chunk versioning & reprocessing", () => {
     await waitFor(() =>
       expect(screen.queryAllByText("V1").length).toBeGreaterThan(0),
     );
+  });
+
+  test("seeking while paused stays paused at the new position (no backend activation)", async () => {
+    seedStore();
+    const chunks: Chunk[] = Array.from({ length: 3 }, (_, index) => ({
+      index,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: index * 4,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: `/api/jobs/job-1/chunks/${index}`,
+      peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
+      deprecated: false,
+      reprocessing: false,
+    }));
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/peaks")) {
+        return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
+      }
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "paused") };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+
+    // 300px maps to 12s of timeline, so x=225 → 9s → 1s into chunk 2.
+    const timeline = screen.getByLabelText("Audio waveform timeline");
+    vi.spyOn(timeline, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      right: 300,
+      top: 0,
+      bottom: 40,
+      width: 300,
+      height: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const slotEls = container.querySelectorAll<HTMLElement>("[data-slot-state]");
+    expect(slotEls.length).toBe(3);
+
+    fireEvent.pointerDown(slotEls[2], { button: 0, clientX: 225, pointerId: 1 });
+    fireEvent.pointerUp(slotEls[2], { clientX: 225, pointerId: 1 });
+
+    // A paused seek must not re-activate the job for backend scheduling.
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object));
+    // The player stays paused.
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+
+    // The stream rebuilds from the new anchor (chunk 2), so the playhead sits
+    // at the anchor start: 8s in job-timeline coordinates → chunks 0-1 are
+    // fully filled and chunk 2 is not filled yet (this would be at the very
+    // beginning of the timeline if the stream-normalized position leaked in).
+    await waitFor(() => {
+      const bars = container.querySelectorAll<HTMLElement>("[data-wave-bar]");
+      expect(bars.length).toBe(3);
+      const fills = Array.from(bars).map((bar) => bar.querySelector("[data-wave-fill]"));
+      expect(fills[0]).not.toBeNull();
+      expect(fills[1]).not.toBeNull();
+      expect(fills[2]).toBeNull();
+    });
+  });
+
+  test("seeking while playing keeps playing and re-activates the job", async () => {
+    const user = userEvent.setup();
+    seedStore();
+    const chunks: Chunk[] = Array.from({ length: 3 }, (_, index) => ({
+      index,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: index * 4,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: `/api/jobs/job-1/chunks/${index}`,
+      peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
+      deprecated: false,
+      reprocessing: false,
+    }));
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/peaks")) {
+        return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
+      }
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+      }
+      if (url.endsWith("/activate")) {
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      }
+      if (url.endsWith("/playback")) {
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+    await user.click(screen.getByRole("button", { name: "Play" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object)),
+    );
+
+    // 300px maps to 12s of timeline, so x=225 → 9s → 1s into chunk 2.
+    const timeline = screen.getByLabelText("Audio waveform timeline");
+    vi.spyOn(timeline, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      right: 300,
+      top: 0,
+      bottom: 40,
+      width: 300,
+      height: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const slotEls = container.querySelectorAll<HTMLElement>("[data-slot-state]");
+    fireEvent.pointerDown(slotEls[2], { button: 0, clientX: 225, pointerId: 1 });
+    fireEvent.pointerUp(slotEls[2], { clientX: 225, pointerId: 1 });
+
+    // The playing seek re-activates the job (play activation + seek activation).
+    await waitFor(() => {
+      const activations = fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/activate"),
+      );
+      expect(activations.length).toBe(2);
+    });
+    // Playback intent is preserved across the seek.
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
   });
 });
