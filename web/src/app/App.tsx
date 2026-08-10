@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
 import { AdminPage } from "../features/admin/AdminPage";
@@ -113,8 +112,12 @@ function Shell() {
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 md:px-6">
           {/* Brand + Nav */}
           <div className="flex items-center gap-6">
-            {/* Brand */}
-            <div className="flex items-center gap-2">
+            {/* Brand — click to return to the jobs page */}
+            <Link
+              aria-label="ReadFlow home"
+              className="flex items-center gap-2 transition hover:opacity-80"
+              to="/"
+            >
               <span
                 aria-hidden="true"
                 className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--amber)] text-[10px] font-bold text-[var(--canvas)]"
@@ -124,7 +127,7 @@ function Shell() {
               <span className="text-sm font-semibold tracking-wide text-[var(--ink-primary)]">
                 ReadFlow
               </span>
-            </div>
+            </Link>
 
             {/* Navigation tabs */}
             <nav className="flex gap-1">
@@ -164,6 +167,8 @@ function Shell() {
           <Route element={<JobsPage />} path="/" />
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
           <Route element={<AdminPage />} path="/admin" />
+          {/* Unknown URLs redirect to the jobs page (replace keeps history clean) */}
+          <Route element={<Navigate replace to="/" />} path="*" />
         </Routes>
       </main>
     </div>

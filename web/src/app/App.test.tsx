@@ -1,4 +1,5 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { App } from "./App";
 import { liveClient } from "../lib/live-client";
@@ -174,4 +175,34 @@ test("socket reconnects and surfaces reconnecting state", async () => {
   await waitFor(() => expect(screen.getByText(/just now/i)).toBeInTheDocument(), {
     timeout: 2_500,
   });
+});
+
+test("unknown routes redirect to the jobs page", async () => {
+  window.history.pushState({}, "", "/this-page-does-not-exist");
+
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  // The catch-all redirect replaces the bad URL and lands on the jobs page.
+  expect(await screen.findByText("Live job")).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/");
+});
+
+test("clicking the brand navigates back to the jobs page", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/admin");
+
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  expect(window.location.pathname).toBe("/admin");
+
+  await user.click(screen.getByRole("link", { name: "ReadFlow home" }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  expect(await screen.findByText("Live job")).toBeInTheDocument();
 });
