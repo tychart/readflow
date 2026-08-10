@@ -25,8 +25,15 @@ interface UseMediaSourcePlayerOptions {
   playbackAnchorIndex: number;
   playIntent: boolean;
   isTerminal: boolean;
-  /** When true, auto-play is deferred until the seek is applied externally. */
-  pendingSeek: boolean;
+  /**
+   * Target playback position in stream (normalized) coordinates that the
+   * player should seek to once the current stream is primed and buffered
+   * past it. `null`/omitted when there is no pending seek. Auto-play is
+   * deferred while a pending seek exists.
+   */
+  pendingSeekSeconds?: number | null;
+  /** Called once a pending seek has been applied to the audio element. */
+  onSeekApplied?: () => void;
 }
 
 interface QueuedChunk {
@@ -159,8 +166,11 @@ export function useMediaSourcePlayer({
   playbackAnchorIndex,
   playIntent,
   isTerminal,
-  pendingSeek,
+  pendingSeekSeconds,
+  onSeekApplied,
 }: UseMediaSourcePlayerOptions) {
+  // Normalize an omitted/undefined prop to the same "no pending seek" state.
+  const pendingSeekTargetSeconds = pendingSeekSeconds ?? null;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -180,8 +190,18 @@ export function useMediaSourcePlayer({
   });
   const playIntentRef = useRef(playIntent);
   const isTerminalRef = useRef(isTerminal);
-  const pendingSeekRef = useRef(pendingSeek);
+  const pendingSeekSecondsRef = useRef<number | null>(pendingSeekTargetSeconds);
   const renderedDurationRef = useRef(0);
+  // Latest stream-primed / buffered state, updated *synchronously* wherever
+  // the stream lifecycle changes it. State values are stale within the same
+  // effect flush (a stream reset for a new anchor and the pending-seek
+  // application can run in the same commit), so the pending-seek logic must
+  // consult these refs instead of the state values.
+  const isStreamPrimedRef = useRef(false);
+  const bufferedUntilRef = useRef(0);
+  // Guards against re-applying the same pending seek while the parent's
+  // onSeekApplied state round-trip is still in flight.
+  const lastAppliedPendingSeekRef = useRef<number | null>(null);
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
@@ -223,8 +243,8 @@ export function useMediaSourcePlayer({
   }, [isTerminal]);
 
   useEffect(() => {
-    pendingSeekRef.current = pendingSeek;
-  }, [pendingSeek]);
+    pendingSeekSecondsRef.current = pendingSeekTargetSeconds;
+  }, [pendingSeekTargetSeconds]);
 
   useEffect(() => {
     renderedDurationRef.current = renderedDurationSeconds;
@@ -246,6 +266,7 @@ export function useMediaSourcePlayer({
       readyState: audio?.readyState ?? 0,
       networkState: audio?.networkState ?? 0,
     } satisfies PlaybackSnapshot;
+    bufferedUntilRef.current = nextSnapshot.bufferedUntilSeconds;
     const previousSnapshot = lastPlaybackSnapshotRef.current;
 
     // A terminal job has no future data: a playhead that stops at the end of
@@ -256,7 +277,7 @@ export function useMediaSourcePlayer({
       nextSnapshot.currentTimeSeconds >
       previousSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
     const terminalEnded =
-      !pendingSeekRef.current &&
+      pendingSeekSecondsRef.current === null &&
       isTerminalRef.current &&
       renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
       nextSnapshot.bufferedUntilSeconds >=
@@ -442,9 +463,11 @@ export function useMediaSourcePlayer({
       currentTimeSeconds: 0,
     };
     setBufferedUntilSeconds(0);
+    bufferedUntilRef.current = 0;
     setCurrentTimeSeconds(0);
     setIsReady(false);
     setIsStreamPrimed(false);
+    isStreamPrimedRef.current = false;
     setIsActuallyPlaying(false);
     setIsWaitingForData(false);
     setLastPlayerError(null);
@@ -491,6 +514,8 @@ export function useMediaSourcePlayer({
       processingQueueRef.current = false;
       setIsReady(false);
       setIsStreamPrimed(false);
+      isStreamPrimedRef.current = false;
+      bufferedUntilRef.current = 0;
       setHasEnded(false);
       setIsAutoplayBlocked(false);
       safePause(audio);
@@ -529,7 +554,8 @@ export function useMediaSourcePlayer({
           return;
         }
         initSegmentAppendedRef.current = true;
-       setIsStreamPrimed(true);
+        isStreamPrimedRef.current = true;
+        setIsStreamPrimed(true);
         setLastPlayerError(null);
         updatePlaybackState(true);
         void processQueue();
@@ -666,7 +692,7 @@ export function useMediaSourcePlayer({
   }, [isActuallyPlaying, isWaitingForData, playIntent, updatePlaybackState]);
 
   useEffect(() => {
-    if (!playIntent || isAutoplayBlocked || pendingSeekRef.current) {
+    if (!playIntent || isAutoplayBlocked || pendingSeekTargetSeconds !== null) {
       return;
     }
     const audio = audioRef.current;
@@ -688,7 +714,7 @@ export function useMediaSourcePlayer({
     isStreamPrimed,
     isWaitingForData,
     playIntent,
-    pendingSeek,
+    pendingSeekTargetSeconds,
   ]);
 
   useEffect(() => {
@@ -803,6 +829,40 @@ export function useMediaSourcePlayer({
     },
     [renderedDurationSeconds, updatePlaybackState],
   );
+
+  // Applies a pending seek (from a timeline click/drag) once the *current*
+  // stream is primed and buffered past the target. This lives inside the hook
+  // — not the reader — because it must run after the stream-reset effect
+  // within the same commit: that reset updates isStreamPrimedRef and
+  // bufferedUntilRef synchronously, so a pending seek is never applied against
+  // stale (previous anchor's) stream state. The stale-state race previously
+  // consumed the pending seek on the first click of a different chunk and
+  // left the playhead at the start of the newly anchored chunk.
+  useEffect(() => {
+    if (pendingSeekTargetSeconds === null) {
+      lastAppliedPendingSeekRef.current = null;
+      return;
+    }
+    if (lastAppliedPendingSeekRef.current === pendingSeekTargetSeconds) {
+      return;
+    }
+    if (!isStreamPrimedRef.current || renderedDurationSeconds <= 0) {
+      return;
+    }
+    if (pendingSeekTargetSeconds > bufferedUntilRef.current) {
+      return;
+    }
+    seekToSeconds(Math.min(pendingSeekTargetSeconds, renderedDurationSeconds));
+    lastAppliedPendingSeekRef.current = pendingSeekTargetSeconds;
+    onSeekApplied?.();
+  }, [
+    bufferedUntilSeconds,
+    isStreamPrimed,
+    onSeekApplied,
+    pendingSeekTargetSeconds,
+    renderedDurationSeconds,
+    seekToSeconds,
+  ]);
 
   return {
     audioRef,

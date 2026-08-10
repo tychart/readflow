@@ -1,5 +1,5 @@
 import { act, render, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { useMediaSourcePlayer } from "./media-source";
 import type { JobManifest } from "../types/api";
@@ -533,6 +533,120 @@ test("keeps the custom player clock in sync while audio time advances live", asy
 
   requestAnimationFrameSpy.mockRestore();
   cancelAnimationFrameSpy.mockRestore();
+});
+
+test("applies a pending seek only after the new stream (anchor change) is primed and buffered", async () => {
+  let bufferedEnd = 0;
+  let simulatedCurrentTime = 0;
+  const appendedMarkers: number[] = [];
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource(appendedMarkers, () => bufferedEnd);
+
+  const manifestAnchor0 = buildManifest([0, 1]);
+  // A stream anchored at chunk 1 is normalized: chunk 1 starts at 0s.
+  const manifestAnchor1: JobManifest = {
+    mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+    init_segment_url: "/api/jobs/job-1/chunks/init",
+    chunks: [
+      {
+        index: 1,
+        status: "written",
+        duration_seconds: 2,
+        start_seconds: 0,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/1",
+      },
+      {
+        index: 2,
+        status: "written",
+        duration_seconds: 2,
+        start_seconds: 2,
+        plan_version: 1,
+        voice_id: "suzy",
+        segment_url: "/api/jobs/job-1/chunks/2",
+      },
+    ],
+  };
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    if (url.endsWith("/chunks/0")) {
+      bufferedEnd = 2;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }
+    if (url.endsWith("/chunks/1")) {
+      bufferedEnd = 3;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([2]).buffer };
+    }
+    bufferedEnd = 4;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([3]).buffer };
+  }) as typeof fetch;
+
+  const onSeekApplied = vi.fn();
+
+  function Harness() {
+    const [seekIntent, setSeekIntent] = useState<{ anchor: number; target: number } | null>(null);
+    const { audioRef, currentTimeSeconds, isStreamPrimed } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: seekIntent ? manifestAnchor1 : manifestAnchor0,
+      playbackAnchorIndex: seekIntent?.anchor ?? 0,
+      playIntent: false,
+      isTerminal: false,
+      pendingSeekSeconds: seekIntent?.target ?? null,
+      onSeekApplied,
+    });
+
+    useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+      Object.defineProperty(audio, "currentTime", {
+        configurable: true,
+        get: () => simulatedCurrentTime,
+        set: (value: number) => {
+          simulatedCurrentTime = value;
+        },
+      });
+    }, [audioRef]);
+
+    return (
+      <div data-current-time={currentTimeSeconds.toFixed(1)} data-primed={isStreamPrimed ? "yes" : "no"}>
+        <audio ref={audioRef} />
+        <button onClick={() => setSeekIntent({ anchor: 1, target: 1.2 })} type="button">
+          seek
+        </button>
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+
+  // The anchor-0 stream primes and fully buffers chunks 0 and 1.
+  await waitFor(() => expect(appendedMarkers).toEqual([9, 1, 2]));
+
+  // Click a different chunk mid-way through it (chunk 1, 1.2s in): the anchor
+  // changes and a pending seek is set in the same batch — exactly what a
+  // timeline click on another chunk does.
+  act(() => {
+    (container.querySelector("button") as HTMLButtonElement).click();
+  });
+
+  // The pending seek must NOT be applied against the old stream's primed/
+  // buffered state while the new stream is resetting and priming.
+  expect(onSeekApplied).not.toHaveBeenCalled();
+  expect(simulatedCurrentTime).toBe(0);
+
+  // Once the new stream primes and buffers past the target, the seek lands
+  // exactly at 1.2s (not at the start of chunk 1, and not at 0).
+  await waitFor(() => expect(onSeekApplied).toHaveBeenCalledTimes(1));
+  expect(simulatedCurrentTime).toBeCloseTo(1.2, 5);
+  expect(container.firstChild).toHaveAttribute("data-current-time", "1.2");
 });
 
 test("shows waiting for data when playback stalls at the rendered boundary without a waiting event", async () => {

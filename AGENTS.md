@@ -2,6 +2,12 @@
 
 This file is the internal handoff document for future agents working in this repository.
 
+When making modifications, these are what the user values:
+- Building and fixing in the best practice possible way
+- The user values long term maintainability and best practice archetecture
+- Simplicity as much as possible, and maintainablity
+- Best practice python code and best practice React and typescript
+
 It is intentionally more operational and opinionated than `README.md`. Use it to understand:
 
 - what the user asked for
@@ -286,6 +292,29 @@ Drag-seeking commits exactly one `onSeek` on pointer-up; while dragging, the
 fill previews the pointer position via local `dragPreviewSeconds` (standard
 scrubber behavior). Do not add per-pointer-move `onSeek` calls — that used to
 trigger a backend activation HTTP call on every drag frame.
+
+### Pending-seek ownership (player hook, not the reader)
+
+Applying a timeline seek is owned by `useMediaSourcePlayer` via the
+`pendingSeekSeconds` option (stream-normalized target) + `onSeekApplied`
+callback. `ReaderPage` only converts the click position (original coords →
+stream coords via `anchorOffset`) and clears its `seekOverride` state when the
+hook reports the seek applied.
+
+Historical bug this protects against: the seek application previously lived in
+a `ReaderPage` effect that ran in the **same commit** as the player's
+stream-reset effect (anchor change = stream rebuild). The reader's effect read
+stale state from the old stream (primed + buffered), applied the seek against
+the new, not-yet-opened MediaSource (clamped to 0), and consumed the pending
+seek — so the first click on a different chunk always landed at the start of
+that chunk, and only a second click landed at the real position.
+
+The hook avoids this by gating the pending seek on `isStreamPrimedRef` /
+`bufferedUntilRef`, which the stream-reset effect updates **synchronously**
+(state closures are stale within the same effect flush; refs are not). The
+pending-seek effect is defined after the stream-setup effect so it always runs
+after the reset within a commit. Do not move seek application back into
+`ReaderPage`; cross-component effect ordering cannot guarantee this.
 
 ### Two historical bugs worth protecting against
 

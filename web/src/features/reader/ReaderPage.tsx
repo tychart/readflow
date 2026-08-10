@@ -405,6 +405,23 @@ export function ReaderPage() {
   const canDownloadRenderedAudio = downloadableChunks.length > 0;
   const isDownloadComplete = !!job && isJobTerminal && downloadableChunks.length > 0 && downloadableChunks.length === knownChunks.length;
 
+  // Original timeline position of the playback anchor (for display coordinate
+  // conversion). When the anchor is non-zero (user sought to a later chunk),
+  // the stream sent to useMediaSourcePlayer normalizes chunk start_seconds to
+  // 0, so original-timeline positions (seekOverride, currentTimeSeconds) must
+  // be shifted by this offset to become stream positions.
+  const anchorOffset = useMemo(
+    () =>
+      knownChunks
+        .filter((c) => c.index < playbackAnchorIndex)
+        .reduce((acc, c) => acc + c.duration_seconds, 0),
+    [knownChunks, playbackAnchorIndex],
+  );
+
+  // Called by the player once a pending seek has been applied; clears the
+  // reader's pending-seek state so auto-play can resume.
+  const handleSeekApplied = useCallback(() => setSeekOverride(null), []);
+
   const {
     audioRef,
     appendedChunksCount,
@@ -414,7 +431,6 @@ export function ReaderPage() {
     isActuallyPlaying,
     isAutoplayBlocked,
     isWaitingForData,
-    isStreamPrimed,
     lastPlayerError,
     pausePlayback,
     playerState,
@@ -427,7 +443,9 @@ export function ReaderPage() {
     playbackAnchorIndex,
     playIntent,
     isTerminal: isJobTerminal,
-    pendingSeek: seekOverride !== null,
+    pendingSeekSeconds:
+      seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
+    onSeekApplied: handleSeekApplied,
   });
 
   const activeProgress = useMemo(
@@ -594,20 +612,6 @@ export function ReaderPage() {
     };
   }, [audioRef, isJobTerminal, isWaitingForData, job, playIntent, renderedDurationSeconds, syncPlaybackState]);
 
-  // Compute the original timeline position of the playback anchor.
-  // When the anchor is non-zero (user sought to a later chunk), the
-  // stream sent to useMediaSourcePlayer normalizes chunk start_seconds
-  // to 0. So seekOverride (in original coords) must be normalized by
-  // subtracting this offset before comparing with bufferedUntilSeconds.
-  // Original timeline position of the playback anchor (for display coordinate conversion)
-  const anchorOffset = useMemo(
-    () =>
-      knownChunks
-        .filter((c) => c.index < playbackAnchorIndex)
-        .reduce((acc, c) => acc + c.duration_seconds, 0),
-    [knownChunks, playbackAnchorIndex],
-  );
-
   // Time display values in original (non-normalized) coordinates
   const displayTimeSeconds = currentTimeSeconds + anchorOffset;
   const displayDurationSeconds = useMemo(
@@ -623,24 +627,6 @@ export function ReaderPage() {
     () => anchorOffset + renderedDurationSeconds,
     [anchorOffset, renderedDurationSeconds],
   );
-
-  // Seek override: waits for stream + buffer to be ready, in normalized coords
-  useEffect(() => {
-    if (seekOverride === null) return;
-    if (!isStreamPrimed || renderedDurationSeconds <= 0) return;
-    // Normalize the seek target from original timeline coords to stream coords
-    const normalizedSeek = Math.max(0, seekOverride - anchorOffset);
-    if (normalizedSeek > bufferedUntilSeconds) return;
-    seekToSeconds(Math.min(normalizedSeek, renderedDurationSeconds));
-    setSeekOverride(null);
-  }, [
-    anchorOffset,
-    bufferedUntilSeconds,
-    isStreamPrimed,
-    renderedDurationSeconds,
-    seekOverride,
-    seekToSeconds,
-  ]);
 
   useEffect(() => {
     if (!isJobTerminal || !playIntent || isActuallyPlaying || renderedDurationSeconds <= 0 || currentTimeSeconds < Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)) return;
