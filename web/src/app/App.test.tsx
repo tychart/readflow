@@ -233,6 +233,9 @@ test("jobs page navbar is expanded with the full lockup at the top", async () =>
 
   expect(screen.getByTestId("navbar")).toHaveStyle({ height: "96px" });
   expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "false");
+  // Nav tabs stay visible even while the navbar is expanded.
+  expect(screen.getByRole("link", { name: "Jobs" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Admin" })).toBeVisible();
 });
 
 test("navbar shrinks smoothly with scroll and collapses to icon + wordmark", async () => {

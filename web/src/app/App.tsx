@@ -89,8 +89,8 @@ function ConnectionBadge() {
                 : "bg-[var(--ink-secondary)]"
         } ${isConnecting ? "animate-pulse" : ""}`}
       />
-      <span className="font-medium uppercase tracking-wider">{label}</span>
-      <span className="opacity-60">{formatSocketMessageAge(lastSocketMessageAt)}</span>
+      <span className="hidden font-medium uppercase tracking-wider sm:inline">{label}</span>
+      <span className="hidden opacity-60 sm:inline">{formatSocketMessageAge(lastSocketMessageAt)}</span>
     </div>
   );
 }
@@ -160,14 +160,16 @@ function Shell() {
       >
         <div className="relative mx-auto flex h-full max-w-7xl items-center justify-between px-4 md:px-6">
           {/* Expanded brand link — the full lockup overlays the compact brand
-              and nav while visible, so it never pushes the layout around. */}
+              while visible, so it never pushes the layout around. Hidden on
+              small screens where it would crowd the nav. */}
           <Link
             aria-hidden={!lockupVisible}
             aria-label="ReadFlow home"
-            className={`absolute left-0 top-1/2 h-12 w-auto -translate-y-1/2 md:h-16 ${
+            className={`absolute left-0 top-1/2 hidden h-12 w-auto -translate-y-1/2 md:block md:h-16 ${
               lockupInteractive ? "" : "pointer-events-none"
             }`}
             style={{ opacity: lockupOpacity }}
+            tabIndex={lockupInteractive ? undefined : -1}
             to="/"
           >
             <img
@@ -178,33 +180,28 @@ function Shell() {
             />
           </Link>
 
-          {/* Brand + Nav */}
-          <div className="flex items-center gap-6">
-            {/* Compact brand — always present; cross-fades under the lockup */}
-            <Link
-              aria-hidden={lockupVisible}
-              aria-label="ReadFlow home"
-              className="flex items-center transition hover:opacity-80"
-              style={{ opacity: brandRowOpacity }}
-              to="/"
-            >
-              <img
-                alt=""
-                className="h-7 w-7"
-                draggable={false}
-                src={readflowIcon}
-              />
-              <span className="text-sm font-semibold tracking-wide text-[var(--ink-primary)]">
-                ReadFlow
-              </span>
-            </Link>
+          {/* Compact brand — always present; cross-fades under the lockup */}
+          <Link
+            aria-hidden={lockupVisible}
+            aria-label="ReadFlow home"
+            className="flex items-center transition hover:opacity-80"
+            style={{ opacity: brandRowOpacity }}
+            to="/"
+          >
+            <img
+              alt=""
+              className="h-7 w-7"
+              draggable={false}
+              src={readflowIcon}
+            />
+            <span className="text-sm font-semibold tracking-wide text-[var(--ink-primary)]">
+              ReadFlow
+            </span>
+          </Link>
 
-            {/* Navigation tabs — cross-fade in as the expanded lockup shrinks */}
-            <nav
-              aria-hidden={lockupVisible}
-              className={`flex gap-1 ${lockupVisible ? "pointer-events-none" : ""}`}
-              style={{ opacity: brandRowOpacity }}
-            >
+          {/* Right: nav tabs + connection badge + theme toggle */}
+          <div className="flex items-center gap-3">
+            <nav className="flex gap-1">
               {[
                 ["/", "Jobs"],
                 ["/admin", "Admin"],
@@ -225,10 +222,6 @@ function Shell() {
                 </NavLink>
               ))}
             </nav>
-          </div>
-
-          {/* Right: Connection badge + Theme toggle */}
-          <div className="flex items-center gap-3">
             <ConnectionBadge />
             <ThemeToggle />
           </div>
