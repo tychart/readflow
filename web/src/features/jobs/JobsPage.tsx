@@ -7,6 +7,7 @@ import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useAppStore } from "../../state/store";
 import type { JobSummary } from "../../types/api";
 import { JobCreateForm } from "./JobCreateForm";
+import { BrandHero } from "./BrandHero";
 
 function StatusBadge({ status }: { status: JobSummary["status"] }) {
   const colors: Record<JobSummary["status"], string> = {
@@ -79,6 +80,7 @@ export function JobsPage() {
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+      <BrandHero />
       <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
       <div className="space-y-4">
         {/* Page heading */}

@@ -7,6 +7,7 @@ import { JobsPage } from "../features/jobs/JobsPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useAppStore } from "../state/store";
+import readflowIcon from "../assets/brand/readflow-icon.svg";
 
 /* ── Connection Badge ─────────────────────────────────────── */
 
@@ -118,12 +119,14 @@ function Shell() {
               className="flex items-center gap-2 transition hover:opacity-80"
               to="/"
             >
-              <span
+              {/* Brand icon — decorative mark; the link label carries the accessible name */}
+              <img
+                alt=""
                 aria-hidden="true"
-                className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--amber)] text-[10px] font-bold text-[var(--canvas)]"
-              >
-                RF
-              </span>
+                className="h-7 w-7"
+                draggable={false}
+                src={readflowIcon}
+              />
               <span className="text-sm font-semibold tracking-wide text-[var(--ink-primary)]">
                 ReadFlow
               </span>
