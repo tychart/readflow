@@ -46,6 +46,23 @@ class MockWebSocket extends EventTarget {
   }
 }
 
+/** jsdom does not implement window.scrollY; provide it as a plain value. */
+function setScrollY(value: number) {
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value,
+    writable: true,
+  });
+}
+
+/** The expanded-brand link that contains the lockup image. */
+function lockupBrandLink(): HTMLElement {
+  const lockup = screen.getByAltText(/turn your reading into listening/i);
+  const link = lockup.closest("a");
+  expect(link).not.toBeNull();
+  return link as HTMLElement;
+}
+
 function seedStore() {
   useAppStore.setState({
     jobs: {},
@@ -84,6 +101,7 @@ function seedStore() {
 
 beforeEach(() => {
   seedStore();
+  setScrollY(0);
   MockWebSocket.instances = [];
   MockWebSocket.latest = null;
   vi.stubGlobal("WebSocket", MockWebSocket);
@@ -205,4 +223,49 @@ test("clicking the brand navigates back to the jobs page", async () => {
 
   await waitFor(() => expect(window.location.pathname).toBe("/"));
   expect(await screen.findByText("Live job")).toBeInTheDocument();
+});
+
+test("jobs page navbar is expanded with the full lockup at the top", async () => {
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "96px" });
+  expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "false");
+});
+
+test("navbar shrinks smoothly with scroll and collapses to icon + wordmark", async () => {
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  // Halfway through the shrink range → lerped intermediate height.
+  setScrollY(110);
+  act(() => {
+    window.dispatchEvent(new Event("scroll"));
+  });
+  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "76px" });
+
+  // Fully scrolled → compact height; lockup hidden, compact row announced.
+  setScrollY(300);
+  act(() => {
+    window.dispatchEvent(new Event("scroll"));
+  });
+  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "56px" });
+  expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "true");
+  expect(screen.getByText("ReadFlow")).toBeInTheDocument();
+});
+
+test("non-jobs pages keep the compact navbar", async () => {
+  window.history.pushState({}, "", "/admin");
+
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "56px" });
+  expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "true");
 });
