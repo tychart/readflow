@@ -612,8 +612,12 @@ export function ReaderPage() {
     };
   }, [audioRef, isJobTerminal, isWaitingForData, job, playIntent, renderedDurationSeconds, syncPlaybackState]);
 
-  // Time display values in original (non-normalized) coordinates
-  const displayTimeSeconds = currentTimeSeconds + anchorOffset;
+  // Time display values in original (non-normalized) coordinates.
+  // While a seek is pending the stream is rebuilding/priming, so
+  // currentTimeSeconds is stale (reset to 0 at the new anchor). Showing the
+  // seek target instead keeps the playhead at the released position rather
+  // than briefly snapping back to the start of the anchored chunk.
+  const displayTimeSeconds = seekOverride ?? currentTimeSeconds + anchorOffset;
   const displayDurationSeconds = useMemo(
     () => knownChunks.reduce((acc, c) => acc + c.duration_seconds, 0),
     [knownChunks],

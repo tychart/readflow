@@ -857,18 +857,21 @@ describe("chunk versioning & reprocessing", () => {
     // The player stays paused.
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
 
-    // The stream rebuilds from the new anchor (chunk 2), so the playhead sits
-    // at the anchor start: 8s in job-timeline coordinates → chunks 0-1 are
-    // fully filled and chunk 2 is not filled yet (this would be at the very
-    // beginning of the timeline if the stream-normalized position leaked in).
+    // The playhead must stay at the released position (9s, 1s into chunk 2)
+    // while the seek is pending and the stream rebuilds from the new anchor —
+    // not snap back to the anchor start (8s). Chunks 0-1 are fully filled and
+    // chunk 2 is filled 25% ((9-8)/4). This guards against the stream-reset
+    // race that used to leave the fill at the beginning of the section.
     await waitFor(() => {
       const bars = container.querySelectorAll<HTMLElement>("[data-wave-bar]");
       expect(bars.length).toBe(3);
-      const fills = Array.from(bars).map((bar) => bar.querySelector("[data-wave-fill]"));
-      expect(fills[0]).not.toBeNull();
-      expect(fills[1]).not.toBeNull();
-      expect(fills[2]).toBeNull();
+      const fills = Array.from(bars).map((bar) => bar.querySelector<HTMLElement>("[data-wave-fill]"));
+      expect(fills[0]?.style.width).toBe("100%");
+      expect(fills[1]?.style.width).toBe("100%");
+      expect(fills[2]?.style.width).toBe("25%");
     });
+    // The clock shows the seeked position, not the anchor start (0:08).
+    expect(screen.getByText("0:09")).toBeInTheDocument();
   });
 
   test("seeking while playing keeps playing and re-activates the job", async () => {

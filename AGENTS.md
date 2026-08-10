@@ -316,6 +316,14 @@ pending-seek effect is defined after the stream-setup effect so it always runs
 after the reset within a commit. Do not move seek application back into
 `ReaderPage`; cross-component effect ordering cannot guarantee this.
 
+While a seek is pending the stream is rebuilding and `currentTimeSeconds` is
+stale (reset to 0 at the new anchor), so `ReaderPage` shows the seek target
+itself as the display playhead (`displayTimeSeconds = seekOverride ??
+currentTimeSeconds + anchorOffset`). Do not "simplify" that back to always
+`currentTimeSeconds + anchorOffset` — it makes the fill snap to the start of
+the anchored chunk on release and then jump to the seeked position once the
+seek applies.
+
 ### Two historical bugs worth protecting against
 
 1. **Never define a component inside `ReaderPage`.** `ReaderContent` was once
