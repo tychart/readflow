@@ -1,243 +1,42 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
-import { api } from "../../lib/api";
-import { liveClient } from "../../lib/live-client";
 import { Playbar } from "../../components/Playbar";
-import type { TimelineSlotData, TimelineSlotState } from "../../components/WaveformTimeline";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
+import { api } from "../../lib/api";
+import { liveClient } from "../../lib/live-client";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
-import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
-import type { StreamJob } from "../../types/events";
+import type { Chunk, JobDetail, JobManifest } from "../../types/api";
+import type { TimelineSlotData } from "../../types/timeline";
+import { getChunkText, isTerminalStatus } from "./chunk-utils";
+import {
+  buildManifestFromPatch,
+  buildStreamManifest,
+  deriveActiveChunkProgress,
+  deriveActiveChunks,
+  deriveActiveVersionMap,
+  derivePlaybackModel,
+  deriveTimelineSlots,
+  mergeJobPatch,
+  mergeKnownChunks,
+  type StreamEventMeta,
+  type StreamEventPayload,
+} from "./reader-model";
+import { buildReaderTextSegments } from "./reader-text";
+import {
+  ReaderContent,
+  ReaderTextBody,
+} from "./ReaderText";
 import { ReaderSidebar } from "./ReaderSidebar";
 
 /* ── Constants ────────────────────────────────────────────── */
 
-const TERMINAL_JOB_STATUSES: JobStatus[] = ["completed", "failed"];
 const READER_POLL_INTERVAL_MS = 2_000;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
-
-/* ── Types ────────────────────────────────────────────────── */
-
-interface StreamEventPayload {
-  job?: StreamJob;
-  /** Present on per-chunk events, which carry a delta instead of full detail. */
-  chunk?: Chunk;
-  mime_type?: string;
-  init_segment_url?: string | null;
-}
-
-interface EventMeta {
-  mime_type?: string;
-  init_segment_url?: string | null;
-}
-
-interface ActiveChunkProgress {
-  activeChunkIndex: number | null;
-  fillByIndex: Map<number, number>;
-  playedIndexes: Set<number>;
-}
-
-/* ── Helpers ──────────────────────────────────────────────── */
-
-function isTerminalStatus(status: JobStatus | undefined): boolean {
-  return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
-}
-
-function sortChunks(chunks: Chunk[]): Chunk[] {
-  return [...chunks].sort((left, right) => left.index - right.index);
-}
-
-/** Insert or replace a chunk by (index, version). */
-function upsertChunk(chunks: Chunk[], incoming: Chunk): Chunk[] {
-  const next = chunks.filter(
-    (chunk) => !(chunk.index === incoming.index && chunk.version === incoming.version),
-  );
-  next.push(incoming);
-  return sortChunks(next);
-}
-
-/**
- * Merge a job payload into the loaded detail. Payloads are patches: per-chunk
- * events and play/pause/resume responses carry the summary plus at most one
- * chunk, while `job_updated` still carries full detail. `current` keeps the
- * fields a patch omits (most importantly `source_text`).
- */
-function mergeJobPatch(current: JobDetail, patch: StreamJob, chunk?: Chunk): JobDetail {
-  const merged: JobDetail = {
-    ...current,
-    ...patch,
-    chunks: patch.chunks ?? current.chunks,
-  };
-  return chunk ? { ...merged, chunks: upsertChunk(merged.chunks, chunk) } : merged;
-}
-
-function buildManifestFromPatch(
-  previousManifest: JobManifest | null,
-  patch: StreamJob,
-  chunk?: Chunk,
-  meta: EventMeta = {},
-): JobManifest | null {
-  const nextMimeType = meta.mime_type ?? previousManifest?.mime_type ?? null;
-  if (!nextMimeType) return null;
-  const nextInitSegmentUrl =
-    "init_segment_url" in meta
-      ? meta.init_segment_url ?? null
-      : previousManifest?.init_segment_url ?? null;
-  const nextChunks = patch.chunks
-    ? sortChunks(patch.chunks)
-    : chunk
-      ? upsertChunk(previousManifest?.chunks ?? [], chunk)
-      : previousManifest?.chunks ?? [];
-  return {
-    mime_type: nextMimeType,
-    init_segment_url: nextInitSegmentUrl,
-    chunks: nextChunks,
-  } satisfies JobManifest;
-}
-
-function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null): Chunk[] {
-  if (manifest) return sortChunks(manifest.chunks);
-  if (job) return sortChunks(job.chunks);
-  return [];
-}
-
-/**
- * Chunk text as the reader displays it. `source_text` is already canonical
- * (the backend normalizes once at job creation) and offsets index into it, so
- * this is a plain slice — normalizing here used to re-filter the whole
- * document for every chunk on every render.
- */
-function getChunkText(chunk: Chunk, sourceText: string): string {
-  return sourceText.slice(chunk.char_start, chunk.char_end).trim();
-}
-
-/* ── Reader text layout ───────────────────────────────────── */
-
-/** Above this many unplanned characters the reader shows a bounded preview
- *  instead of the whole tail, so book-sized sources stay responsive. */
-const FULL_TAIL_RENDER_CHARS = 200_000;
-const UPCOMING_PREVIEW_CHARS = 12_000;
-
-interface ReaderTextSegment {
-  key: string;
-  kind: "chunk" | "upcoming";
-  chunkIndex: number | null;
-  text: string;
-  /** Unplanned characters this block does not render (0 when nothing is hidden). */
-  hiddenChars: number;
-}
-
-/**
- * Lay the canonical source text out as one block per planned chunk plus a
- * trailing block for text the planner has not reached yet.
- *
- * Chunk planning is buffer-aware and deliberately lazy, so a long paste used to
- * look truncated: only the handful of already-planned chunks were rendered and
- * the rest of the document simply was not there. Showing the upcoming tail (for
- * as long as it is cheap to render) makes the whole paste visible from the
- * start while keeping the chunk blocks that drive highlighting and seeking.
- */
-function buildReaderTextSegments(chunks: Chunk[], sourceText: string): ReaderTextSegment[] {
-  const segments: ReaderTextSegment[] = [];
-  let cursor = 0;
-  for (const chunk of sortChunks(chunks)) {
-    const start = Math.max(cursor, chunk.char_start);
-    const end = Math.max(start, chunk.char_end);
-    if (start > cursor) {
-      segments.push({
-        key: `gap-${cursor}`,
-        kind: "upcoming",
-        chunkIndex: null,
-        text: sourceText.slice(cursor, start),
-        hiddenChars: 0,
-      });
-    }
-    segments.push({
-      key: `chunk-${chunk.index}`,
-      kind: "chunk",
-      chunkIndex: chunk.index,
-      text: sourceText.slice(start, end),
-      hiddenChars: 0,
-    });
-    cursor = end;
-  }
-
-  const remaining = sourceText.length - cursor;
-  if (remaining > 0) {
-    const rendered =
-      remaining <= FULL_TAIL_RENDER_CHARS ? remaining : UPCOMING_PREVIEW_CHARS;
-    segments.push({
-      key: "upcoming",
-      kind: "upcoming",
-      chunkIndex: null,
-      text: sourceText.slice(cursor, cursor + rendered),
-      hiddenChars: remaining - rendered,
-    });
-  }
-  return segments;
-}
-
-function deriveActiveVersions(chunks: Chunk[]): Map<number, number> {
-  const versions = new Map<number, number>();
-  for (const chunk of chunks) {
-    const existing = versions.get(chunk.index);
-    if (existing === undefined || chunk.version > existing) {
-      versions.set(chunk.index, chunk.version);
-    }
-  }
-  return versions;
-}
-
-function isReprocessing(status: ChunkStatus): boolean {
-  return status === "planned" || status === "queued" || status === "rendering" || status === "reprocessing";
-}
-
-function buildStreamManifest(
-  fullManifest: JobManifest | null,
-  contiguousReadyChunks: Chunk[],
-): JobManifest | null {
-  if (!fullManifest) return null;
-  let runningStart = 0;
-  const normalizedChunks = contiguousReadyChunks.map((chunk) => {
-    const normalized = { ...chunk, start_seconds: runningStart };
-    runningStart += chunk.duration_seconds;
-    return normalized;
-  });
-  return { mime_type: fullManifest.mime_type, init_segment_url: fullManifest.init_segment_url, chunks: normalizedChunks };
-}
-
-function deriveActiveChunkProgress(
-  contiguousReadyChunks: Chunk[],
-  currentTimeSeconds: number,
-): ActiveChunkProgress {
-  const fillByIndex = new Map<number, number>();
-  const playedIndexes = new Set<number>();
-  let remaining = Math.max(0, currentTimeSeconds);
-  let activeChunkIndex: number | null = null;
-  for (const chunk of contiguousReadyChunks) {
-    if (remaining >= chunk.duration_seconds) {
-      fillByIndex.set(chunk.index, 100);
-      playedIndexes.add(chunk.index);
-      remaining -= chunk.duration_seconds;
-      continue;
-    }
-    fillByIndex.set(chunk.index, chunk.duration_seconds > 0 ? (remaining / chunk.duration_seconds) * 100 : 0);
-    activeChunkIndex = chunk.index;
-    break;
-  }
-  return { activeChunkIndex, fillByIndex, playedIndexes };
-}
 
 /* ── Store state type ─────────────────────────────────────── */
 
@@ -247,105 +46,11 @@ interface ReaderPageStoreState {
   isSocketStale: ReturnType<typeof useAppStore.getState>["isSocketStale"];
 }
 
-/* ── ReaderContent — stable top-level component ────────────
- * Must stay at module scope: defining it inside ReaderPage would give it a
- * new identity on every render, which makes React unmount/remount the whole
- * content subtree (including the sidebar toggle button) on each playback
- * tick, swallowing clicks during playback. */
-
-function ReaderContent({
-  contentRef,
-  title,
-  status,
-  lines,
-  isLargeScreen,
-  sidebarOpen,
-  onToggleSidebar,
-}: {
-  contentRef: React.RefObject<HTMLDivElement | null>;
-  title: string;
-  status: string | undefined;
-  lines: React.ReactNode;
-  isLargeScreen: boolean;
-  sidebarOpen: boolean;
-  onToggleSidebar: () => void;
-}) {
-  return (
-    <>
-      {/* Header row with title + toggle */}
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
-            Reader
-          </p>
-          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">{title}</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
-            {status}
-          </span>
-          {/* Sidebar toggle — only on large screens when sidebar is inline */}
-          {isLargeScreen && (
-            <button
-              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] transition-colors"
-              onClick={onToggleSidebar}
-              type="button"
-            >
-              {sidebarOpen ? (
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                >
-                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
-                  <line x1="15" x2="15" y1="3" y2="21" />
-                </svg>
-              ) : (
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                >
-                  <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
-                  <line x1="9" x2="9" y1="3" y2="21" />
-                </svg>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Source text — no inner scroll, flows with page */}
-      <div
-        className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
-        ref={contentRef}
-      >
-        <div className="space-y-2">{lines}</div>
-      </div>
-    </>
-  );
-}
-
 /* ── Component ────────────────────────────────────────────── */
 
 export function ReaderPage() {
   const { jobId = "" } = useParams();
-  const {
-    lastEvent,
-    websocketStatus,
-    isSocketStale,
-  } = useAppStore(
+  const { lastEvent, websocketStatus, isSocketStale } = useAppStore(
     useShallow(
       (state): ReaderPageStoreState => ({
         lastEvent: state.lastEvent,
@@ -364,7 +69,6 @@ export function ReaderPage() {
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
-
 
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -407,22 +111,10 @@ export function ReaderPage() {
 
   // ── Derived data ────────────────────────────────────────
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
-  const activeVersions = useMemo(() => {
-    const versions = new Map<number, number>();
-    const av = job?.active_chunk_version;
-    if (av && Object.keys(av).length > 0) {
-      for (const [idxStr, ver] of Object.entries(av)) {
-        versions.set(Number(idxStr), ver);
-      }
-    }
-    for (const chunk of knownChunks) {
-      if (!versions.has(chunk.index)) {
-        const derived = deriveActiveVersions([chunk]);
-        for (const [idx, ver] of derived) versions.set(idx, ver);
-      }
-    }
-    return versions;
-  }, [job?.active_chunk_version, knownChunks]);
+  const activeVersions = useMemo(
+    () => deriveActiveVersionMap(knownChunks, job?.active_chunk_version),
+    [job?.active_chunk_version, knownChunks],
+  );
 
   useEffect(() => {
     if (knownChunks.length === 0) {
@@ -434,89 +126,35 @@ export function ReaderPage() {
     }
   }, [knownChunks, playbackAnchorIndex]);
 
-  const anchoredChunks = useMemo(
-    () => knownChunks.filter((c) => c.index >= playbackAnchorIndex),
-    [knownChunks, playbackAnchorIndex],
+  const activeChunks = useMemo(
+    () => deriveActiveChunks(knownChunks, activeVersions),
+    [knownChunks, activeVersions],
   );
 
-  const contiguousReadyChunks = useMemo(() => {
-    const contiguous: Chunk[] = [];
-    for (const chunk of anchoredChunks) {
-      if (chunk.status !== "written") break;
-      contiguous.push(chunk);
-    }
-    return contiguous;
-  }, [anchoredChunks]);
-
-  const activeChunks = useMemo(() => {
-    const result: Chunk[] = [];
-    for (const chunk of knownChunks) {
-      const activeVer = activeVersions.get(chunk.index);
-      if (activeVer !== undefined && chunk.version === activeVer && !result.some((c) => c.index === chunk.index)) {
-        result.push(chunk);
-      }
-    }
-    return result;
-  }, [knownChunks, activeVersions]);
-
-  const activeContiguousReadyIndexes = useMemo(() => {
-    const set = new Set<number>();
-    for (const chunk of contiguousReadyChunks) {
-      const activeVer = activeVersions.get(chunk.index);
-      if (activeVer !== undefined && chunk.version === activeVer) set.add(chunk.index);
-    }
-    return set;
-  }, [contiguousReadyChunks, activeVersions]);
-
-  const activeFirstGapChunk = useMemo(
-    () => activeChunks.find((c) => c.status !== "written") ?? null,
-    [activeChunks],
+  const playbackModel = useMemo(
+    () => derivePlaybackModel(knownChunks, activeChunks, activeVersions, playbackAnchorIndex),
+    [knownChunks, activeChunks, activeVersions, playbackAnchorIndex],
   );
-  const expectedNextChunkIndex = activeFirstGapChunk?.index ?? null;
-  const writtenAfterGapIndexes = useMemo(
-    () => new Set(
-      activeChunks.filter(
-        (c) => c.index >= (expectedNextChunkIndex ?? Number.POSITIVE_INFINITY) && c.status === "written",
-      ).map((c) => c.index),
-    ),
-    [activeChunks, expectedNextChunkIndex],
-  );
-  const missingExpectedIndexes = useMemo(
-    () => new Set(
-      activeChunks.filter((c) => c.status !== "written" && c.status !== "failed").map((c) => c.index),
-    ),
-    [activeChunks],
-  );
+
+  const {
+    contiguousReadyChunks,
+    expectedNextChunkIndex,
+    downloadableChunks,
+    knownDurationSeconds,
+    anchorOffsetSeconds: anchorOffset,
+  } = playbackModel;
 
   const streamManifest = useMemo(
     () => buildStreamManifest(manifest, contiguousReadyChunks),
     [contiguousReadyChunks, manifest],
   );
 
-  const downloadableChunks = useMemo(() => {
-    const contiguous: Chunk[] = [];
-    for (const chunk of knownChunks) {
-      if (chunk.index !== contiguous.length || chunk.status !== "written" || !chunk.segment_url) break;
-      contiguous.push(chunk);
-    }
-    return contiguous;
-  }, [knownChunks]);
-
   const canDownloadRenderedAudio = downloadableChunks.length > 0;
-  const isDownloadComplete = !!job && isJobTerminal && downloadableChunks.length > 0 && downloadableChunks.length === knownChunks.length;
-
-  // Original timeline position of the playback anchor (for display coordinate
-  // conversion). When the anchor is non-zero (user sought to a later chunk),
-  // the stream sent to useMediaSourcePlayer normalizes chunk start_seconds to
-  // 0, so original-timeline positions (seekOverride, currentTimeSeconds) must
-  // be shifted by this offset to become stream positions.
-  const anchorOffset = useMemo(
-    () =>
-      knownChunks
-        .filter((c) => c.index < playbackAnchorIndex)
-        .reduce((acc, c) => acc + c.duration_seconds, 0),
-    [knownChunks, playbackAnchorIndex],
-  );
+  const isDownloadComplete =
+    !!job &&
+    isJobTerminal &&
+    downloadableChunks.length > 0 &&
+    downloadableChunks.length === knownChunks.length;
 
   // Called by the player once a pending seek has been applied; clears the
   // reader's pending-seek state so auto-play can resume.
@@ -543,8 +181,7 @@ export function ReaderPage() {
     playbackAnchorIndex,
     playIntent,
     isTerminal: isJobTerminal,
-    pendingSeekSeconds:
-      seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
+    pendingSeekSeconds: seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
     onSeekApplied: handleSeekApplied,
   });
 
@@ -557,40 +194,11 @@ export function ReaderPage() {
   // Updates automatically as chunks arrive or are reprocessed.
   const waveforms = useChunkWaveforms(activeChunks);
 
-
   // ── Timeline slots (for WaveformTimeline) ───────────────
-  const timelineSlots = useMemo<TimelineSlotData[]>(() => {
-    return activeChunks.map((chunk) => {
-      let state: TimelineSlotState;
-      if (chunk.status === "failed" || chunk.status === "max_retries_exceeded") {
-        state = "failed";
-      } else if (activeProgress.activeChunkIndex === chunk.index) {
-        state = "playing";
-      } else if (activeProgress.playedIndexes.has(chunk.index)) {
-        state = "played";
-      } else if (chunk.index < playbackAnchorIndex && chunk.status === "written") {
-        state = "ready";
-      } else if (activeContiguousReadyIndexes.has(chunk.index)) {
-        state = "ready";
-      } else if (writtenAfterGapIndexes.has(chunk.index)) {
-        state = "ready_after_gap";
-      } else if (missingExpectedIndexes.has(chunk.index)) {
-        state = "missing_expected";
-      } else if (chunk.status === "written") {
-        state = "ready";
-      } else if (isReprocessing(chunk.status)) {
-        state = "missing_expected";
-      } else {
-        state = "missing_expected";
-      }
-
-      return {
-        chunkIndex: chunk.index,
-        state,
-        durationSeconds: chunk.duration_seconds > 0 ? chunk.duration_seconds : 4,
-      };
-    });
-  }, [activeChunks, activeProgress, activeContiguousReadyIndexes, playbackAnchorIndex, writtenAfterGapIndexes, missingExpectedIndexes]);
+  const timelineSlots = useMemo<TimelineSlotData[]>(
+    () => deriveTimelineSlots(activeChunks, playbackModel, activeProgress, playbackAnchorIndex),
+    [activeChunks, playbackModel, activeProgress, playbackAnchorIndex],
+  );
 
   const detailSlot = useMemo(() => {
     const targetIndex = activeProgress.activeChunkIndex;
@@ -598,10 +206,13 @@ export function ReaderPage() {
     return activeChunks.find((c) => c.index === targetIndex) ?? null;
   }, [activeProgress.activeChunkIndex, activeChunks]);
 
-  const shouldUsePollingFallback = !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
+  const shouldUsePollingFallback =
+    !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
 
   // ── Effects ─────────────────────────────────────────────
-  useEffect(() => { manifestRef.current = manifest; }, [manifest]);
+  useEffect(() => {
+    manifestRef.current = manifest;
+  }, [manifest]);
 
   const refreshReaderState = useCallback(
     async (reason: string, showLoading = false) => {
@@ -623,7 +234,9 @@ export function ReaderPage() {
           setLastRefreshReason(reason);
         })
         .catch((loadError) => {
-          setError(loadError instanceof Error ? loadError.message : "Unable to refresh reader state");
+          setError(
+            loadError instanceof Error ? loadError.message : "Unable to refresh reader state",
+          );
         })
         .finally(async () => {
           refreshInFlightRef.current = null;
@@ -644,16 +257,22 @@ export function ReaderPage() {
       const now = Date.now();
       if (!force && now - lastPlaybackSyncAtRef.current < PLAYBACK_SYNC_INTERVAL_MS) return;
       lastPlaybackSyncAtRef.current = now;
-      const isPlaying = isPlayingOverride ?? (playIntent && (!audioRef.current.paused || isWaitingForData));
+      const isPlaying =
+        isPlayingOverride ?? (playIntent && (!audioRef.current.paused || isWaitingForData));
       const currentTime = audioRef.current.currentTime ?? 0;
       const sent = liveClient.sendPlaybackSync(job.id, currentTime, isPlaying);
       if (sent) {
         setLastPlaybackSyncError(null);
       } else {
-        void api.updatePlayback(job.id, currentTime, isPlaying)
+        void api
+          .updatePlayback(job.id, currentTime, isPlaying)
           .then(() => setLastPlaybackSyncError(null))
           .catch((syncError) => {
-            setLastPlaybackSyncError(syncError instanceof Error ? `Playback sync failed: ${syncError.message}` : "Playback sync failed");
+            setLastPlaybackSyncError(
+              syncError instanceof Error
+                ? `Playback sync failed: ${syncError.message}`
+                : "Playback sync failed",
+            );
           });
       }
     },
@@ -661,52 +280,83 @@ export function ReaderPage() {
   );
 
   /**
-   * Apply a job patch from a WebSocket event or a mutation response, keeping
-   * the loaded detail intact. Per-chunk events carry one chunk
-   * (`payload.chunk`); `job_updated` and the voice/reprocess endpoints still
-   * carry full detail.
+   * Apply a job patch from a WebSocket event or a mutation response, keeping the
+   * loaded detail intact. Per-chunk events carry one chunk (`payload.chunk`);
+   * `job_updated` and the voice/reprocess endpoints still carry full detail.
    */
   const applyJobPatch = useCallback(
-    (patch: StreamJob, chunk?: Chunk, meta: EventMeta = {}) => {
+    (patch: StreamEventPayload["job"], chunk?: Chunk, meta: StreamEventMeta = {}) => {
+      if (!patch) return;
       setJob((prev) => (prev ? mergeJobPatch(prev, patch, chunk) : prev));
       setManifest((prev) => buildManifestFromPatch(prev, patch, chunk, meta));
     },
     [],
   );
 
-  useEffect(() => { void refreshReaderState("initial", true); }, [refreshReaderState]);
+  useEffect(() => {
+    void refreshReaderState("initial", true);
+  }, [refreshReaderState]);
 
   useEffect(() => {
     const payload = lastEvent?.payload as StreamEventPayload | undefined;
     const eventJob = payload?.job;
     if (!lastEvent || !eventJob || eventJob.id !== jobId) return;
-    if (lastEvent.type !== "job_updated" && lastEvent.type !== "job_completed" && lastEvent.type !== "chunk_ready") return;
+    if (
+      lastEvent.type !== "job_updated" &&
+      lastEvent.type !== "job_completed" &&
+      lastEvent.type !== "chunk_ready"
+    ) {
+      return;
+    }
     applyJobPatch(eventJob, payload?.chunk, payload);
     setError(null);
     setLastRefreshAt(Date.now());
     setLastRefreshReason(`ws:${lastEvent.type}`);
-    if (lastEvent.type === "chunk_ready" && !payload?.mime_type && !payload?.init_segment_url && !manifestRef.current) {
+    if (
+      lastEvent.type === "chunk_ready" &&
+      !payload?.mime_type &&
+      !payload?.init_segment_url &&
+      !manifestRef.current
+    ) {
       void refreshReaderState(`ws:${lastEvent.type}:reconcile`);
     }
   }, [applyJobPatch, jobId, lastEvent, refreshReaderState]);
 
   useEffect(() => {
     if (!shouldUsePollingFallback) return;
-    const timer = window.setInterval(() => { void refreshReaderState("poll"); }, READER_POLL_INTERVAL_MS);
+    const timer = window.setInterval(() => {
+      void refreshReaderState("poll");
+    }, READER_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [refreshReaderState, shouldUsePollingFallback]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !job) return;
-    const handlePlay = () => { if (isJobTerminal) setPlayIntent(true); syncPlaybackState(true, true); };
-    const handlePause = () => { if (isJobTerminal) { setPlayIntent(false); syncPlaybackState(true, false); return; } if (!playIntent) syncPlaybackState(true, false); };
+    const handlePlay = () => {
+      if (isJobTerminal) setPlayIntent(true);
+      syncPlaybackState(true, true);
+    };
+    const handlePause = () => {
+      if (isJobTerminal) {
+        setPlayIntent(false);
+        syncPlaybackState(true, false);
+        return;
+      }
+      if (!playIntent) syncPlaybackState(true, false);
+    };
     const handleWaiting = () => syncPlaybackState(true, playIntent);
     const handleEnded = () => {
-      if (!isJobTerminal && renderedDurationSeconds > 0 && audio.currentTime >= Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)) {
-        syncPlaybackState(true, true); return;
+      if (
+        !isJobTerminal &&
+        renderedDurationSeconds > 0 &&
+        audio.currentTime >= Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
+      ) {
+        syncPlaybackState(true, true);
+        return;
       }
-      setPlayIntent(false); syncPlaybackState(true, false);
+      setPlayIntent(false);
+      syncPlaybackState(true, false);
     };
     const handleError = () => syncPlaybackState(true, false);
     audio.addEventListener("play", handlePlay);
@@ -714,7 +364,9 @@ export function ReaderPage() {
     audio.addEventListener("waiting", handleWaiting);
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("error", handleError);
-    const interval = window.setInterval(() => { if (playIntent || isWaitingForData) syncPlaybackState(); }, PLAYBACK_SYNC_INTERVAL_MS);
+    const interval = window.setInterval(() => {
+      if (playIntent || isWaitingForData) syncPlaybackState();
+    }, PLAYBACK_SYNC_INTERVAL_MS);
     return () => {
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
@@ -723,39 +375,61 @@ export function ReaderPage() {
       audio.removeEventListener("error", handleError);
       window.clearInterval(interval);
     };
-  }, [audioRef, isJobTerminal, isWaitingForData, job, playIntent, renderedDurationSeconds, syncPlaybackState]);
+  }, [
+    audioRef,
+    isJobTerminal,
+    isWaitingForData,
+    job,
+    playIntent,
+    renderedDurationSeconds,
+    syncPlaybackState,
+  ]);
 
   // Time display values in original (non-normalized) coordinates.
   // While a seek is pending the stream is rebuilding/priming, so
-  // currentTimeSeconds is stale (reset to 0 at the new anchor). Showing the
-  // seek target instead keeps the playhead at the released position rather
-  // than briefly snapping back to the start of the anchored chunk.
+  // currentTimeSeconds is stale (reset to 0 at the new anchor). Showing the seek
+  // target instead keeps the playhead at the released position rather than
+  // briefly snapping back to the start of the anchored chunk.
   const displayTimeSeconds = seekOverride ?? currentTimeSeconds + anchorOffset;
-  const displayDurationSeconds = useMemo(
-    () => knownChunks.reduce((acc, c) => acc + c.duration_seconds, 0),
-    [knownChunks],
-  );
+  const displayDurationSeconds = knownDurationSeconds;
   // End of the playable range in original timeline coordinates. The player's
   // renderedDurationSeconds is stream-normalized (resets at the playback
   // anchor), so it must be shifted back by the anchor offset before the
   // timeline — which renders in original coordinates — can use it as the
   // playhead maximum.
-  const displayRenderedDurationSeconds = useMemo(
-    () => anchorOffset + renderedDurationSeconds,
-    [anchorOffset, renderedDurationSeconds],
-  );
+  const displayRenderedDurationSeconds = anchorOffset + renderedDurationSeconds;
 
   useEffect(() => {
-    if (!isJobTerminal || !playIntent || isActuallyPlaying || renderedDurationSeconds <= 0 || currentTimeSeconds < Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)) return;
+    if (
+      !isJobTerminal ||
+      !playIntent ||
+      isActuallyPlaying ||
+      renderedDurationSeconds <= 0 ||
+      currentTimeSeconds < Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
+    ) {
+      return;
+    }
     setPlayIntent(false);
-  }, [currentTimeSeconds, isActuallyPlaying, isJobTerminal, playIntent, renderedDurationSeconds]);
+  }, [
+    currentTimeSeconds,
+    isActuallyPlaying,
+    isJobTerminal,
+    playIntent,
+    renderedDurationSeconds,
+  ]);
 
   // ── Handlers ─────────────────────────────────────────────
 
   const handlePlay = async () => {
     if (!job) return;
-    if (isJobTerminal) { setPlayIntent(true); setError(null); await requestUserGesturePlay(); return; }
-    setPlayIntent(true); setError(null);
+    if (isJobTerminal) {
+      setPlayIntent(true);
+      setError(null);
+      await requestUserGesturePlay();
+      return;
+    }
+    setPlayIntent(true);
+    setError(null);
     try {
       const nextJob = await api.activateJob(job.id);
       applyJobPatch(nextJob);
@@ -782,17 +456,20 @@ export function ReaderPage() {
 
   // Keyboard/direct seeks use normalized stream coords and seek immediately
   // (no need to wait for buffer — the stream is already set up)
-  const handleSeek = useCallback((seconds: number) => {
-    seekToSeconds(seconds);
-  }, [seekToSeconds]);
+  const handleSeek = useCallback(
+    (seconds: number) => {
+      seekToSeconds(seconds);
+    },
+    [seekToSeconds],
+  );
 
   const handleSeekToChunk = useCallback(
     async (chunkIndex: number, seekSeconds: number) => {
       if (!job) return;
-      // Seeking preserves the current play state: a playing player stays
-      // playing (resuming once the new stream is ready), a paused player
-      // stays paused at the new position. Only an actively-playing player
-      // needs the job re-activated for backend scheduling.
+      // Seeking preserves the current play state: a playing player stays playing
+      // (resuming once the new stream is ready), a paused player stays paused at
+      // the new position. Only an actively-playing player needs the job
+      // re-activated for backend scheduling.
       const resumeAfterSeek = playIntent;
       setPlaybackAnchorIndex(chunkIndex);
       setSeekOverride(seekSeconds);
@@ -809,14 +486,20 @@ export function ReaderPage() {
       } catch (activationError) {
         setPlayIntent(false);
         setSeekOverride(null);
-        setError(activationError instanceof Error ? activationError.message : "Unable to activate playback");
+        setError(
+          activationError instanceof Error
+            ? activationError.message
+            : "Unable to activate playback",
+        );
       }
     },
     [applyJobPatch, isJobTerminal, job, playIntent, requestUserGesturePlay],
   );
 
-  // Set userScrolledChunkRef so the scroll-into-view effect can distinguish
-  // user-initiated seeks from automatic playback progression
+  // Track the last user-initiated chunk change so the scroll-into-view effect
+  // can distinguish explicit seeks from automatic playback progression.
+  const userScrolledChunkRef = useRef<number | null>(null);
+
   const handleSeekToChunkWithScroll = useCallback(
     async (chunkIndex: number, seekSeconds: number) => {
       userScrolledChunkRef.current = chunkIndex;
@@ -838,7 +521,11 @@ export function ReaderPage() {
       link.click();
       URL.revokeObjectURL(url);
     } catch (downloadFailure) {
-      setDownloadError(downloadFailure instanceof Error ? downloadFailure.message : "Unable to download rendered audio");
+      setDownloadError(
+        downloadFailure instanceof Error
+          ? downloadFailure.message
+          : "Unable to download rendered audio",
+      );
     } finally {
       setIsDownloading(false);
     }
@@ -862,7 +549,10 @@ export function ReaderPage() {
         setReprocessingChunkIndex(chunkIndex);
         setReprocessError(null);
         setEditingChunkIndex(null);
-        const nextJob = await api.reprocessChunk(job.id, chunkIndex, { new_text: newText, new_voice_id: undefined });
+        const nextJob = await api.reprocessChunk(job.id, chunkIndex, {
+          new_text: newText,
+          new_voice_id: undefined,
+        });
         applyJobPatch(nextJob);
         setError(null);
         setTimeout(() => refreshReaderState("reprocess"), 1000);
@@ -890,11 +580,14 @@ export function ReaderPage() {
     [applyJobPatch, job],
   );
 
-  const handleStartEdit = useCallback((chunk: Chunk) => {
-    const text = job ? getChunkText(chunk, job.source_text) : "";
-    setEditText(text);
-    setEditingChunkIndex(chunk.index);
-  }, [job]);
+  const handleStartEdit = useCallback(
+    (chunk: Chunk) => {
+      const text = job ? getChunkText(chunk, job.source_text) : "";
+      setEditText(text);
+      setEditingChunkIndex(chunk.index);
+    },
+    [job],
+  );
 
   const handleSaveEdit = useCallback(() => {
     if (editingChunkIndex !== null) void handleReprocess(editingChunkIndex, editText);
@@ -912,14 +605,20 @@ export function ReaderPage() {
   const contentRef = useRef<HTMLDivElement>(null);
   const chunkRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
-  // Track the last user-initiated chunk change so we can scroll on explicit seeks
-  // but NOT during automatic playback (which causes scroll-anchoring conflicts)
-  const userScrolledChunkRef = useRef<number | null>(null);
+  const handleRegisterChunkRef = useCallback(
+    (chunkIndex: number, element: HTMLDivElement | null) => {
+      if (element) chunkRefs.current.set(chunkIndex, element);
+      else chunkRefs.current.delete(chunkIndex);
+    },
+    [],
+  );
 
   // Reset userScrolledChunkRef after a brief window
   useEffect(() => {
     if (userScrolledChunkRef.current === null) return;
-    const timer = setTimeout(() => { userScrolledChunkRef.current = null; }, 400);
+    const timer = setTimeout(() => {
+      userScrolledChunkRef.current = null;
+    }, 400);
     return () => clearTimeout(timer);
   }, [playbackAnchorIndex]);
 
@@ -948,8 +647,8 @@ export function ReaderPage() {
       setScrollProgress(progress);
     };
     handleScroll();
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
   // ── Reader text layout — must be before early returns ─────
@@ -960,9 +659,24 @@ export function ReaderPage() {
     [activeChunks, job?.source_text],
   );
 
-  // ── Loader / error states ───────────────────────────────
+  // ── Loader / error / main content ──────────────────────
+  // A single wrapper is returned for every state so the <audio> element keeps
+  // its identity across the loading → loaded transition. useMediaSourcePlayer
+  // attaches its media event listeners from an effect guarded on the element
+  // existing, so a remount there would silently drop progress / seeking /
+  // playing events for the rest of the session.
+  const audioElement = (
+    <audio
+      aria-hidden="true"
+      className="hidden"
+      ref={audioRef as React.RefObject<HTMLAudioElement | null>}
+    />
+  );
+
+  let content: React.ReactNode;
+
   if (loading) {
-    return (
+    content = (
       <div className="flex items-center justify-center py-20">
         <div className="flex items-center gap-3 text-sm text-[var(--ink-secondary)]">
           <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--amber)] border-t-transparent" />
@@ -970,89 +684,24 @@ export function ReaderPage() {
         </div>
       </div>
     );
-  }
-
-  if (!job) {
-    return (
+  } else if (!job) {
+    content = (
       <div className="rounded-xl border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-5 py-8 text-center text-sm text-[var(--rose)]">
         {error ?? "Job not found"}
       </div>
     );
-  }
-
-  // ── Render source text ───────────────────────────────────
-  // Planned chunks stay individual blocks (they drive highlighting, seeking and
-  // scroll sync); the unplanned tail renders as one dimmed block so a long paste
-  // is fully visible instead of looking cut off after the first few chunks.
-  const sourceTextLines = textSegments.map((segment) => {
-    if (segment.kind === "upcoming") {
-      return (
-        <div
-          key={segment.key}
-          className="relative rounded-lg border-l-2 border-l-white/5 px-4 py-3 opacity-45 [contain-intrinsic-size:auto_160px] [content-visibility:auto]"
-        >
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-            Upcoming text
-            {segment.hiddenChars > 0
-              ? ` — ${segment.hiddenChars.toLocaleString()} more characters not shown`
-              : " — not queued yet"}
-          </div>
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
-            {segment.text}
-          </p>
-        </div>
-      );
-    }
-
-    const chunkIndex = segment.chunkIndex ?? 0;
-    const isActive = chunkIndex === activeProgress.activeChunkIndex;
-    const isPlayed = activeProgress.playedIndexes.has(chunkIndex);
-
-    return (
-      <div
-        key={segment.key}
-        ref={(el) => {
-          if (el) chunkRefs.current.set(chunkIndex, el);
-          else chunkRefs.current.delete(chunkIndex);
-        }}
-        className={`relative rounded-lg border-l-2 px-4 py-3 transition-all [contain-intrinsic-size:auto_160px] [content-visibility:auto] ${
-          isActive
-            ? "border-l-[var(--amber)] bg-[var(--amber-soft)] shadow-[var(--amber-glow)]"
-            : isPlayed
-              ? "border-l-white/5 opacity-60"
-              : "border-l-white/5"
-        }`}
-      >
-        {/* Chunk number indicator */}
-        <div
-          className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${
-            isActive ? "text-[var(--amber)]" : "text-[var(--ink-secondary)]"
-          }`}
-        >
-          Chunk {chunkIndex + 1}
-        </div>
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
-          {segment.text.trim() || "(empty text)"}
-        </p>
-      </div>
-    );
-  });
-
-  // ── Chunk detail panel (for sidebar) ────────────────────
-  const detailChunk = detailSlot ?? activeChunks.find((c) => c.index === activeProgress.activeChunkIndex) ?? null;
-
-  const readerLines: React.ReactNode =
-    sourceTextLines.length > 0 ? (
-      sourceTextLines
-    ) : (
-      <p className="py-8 text-center text-sm text-[var(--ink-secondary)]">
-        No chunks available yet. Press play to start.
-      </p>
+  } else {
+    const readerLines: React.ReactNode = (
+      <ReaderTextBody
+        activeChunkIndex={activeProgress.activeChunkIndex}
+        onRegisterChunkRef={handleRegisterChunkRef}
+        playedIndexes={activeProgress.playedIndexes}
+        segments={textSegments}
+      />
     );
 
-  // ── Main render ──────────────────────────────────────────
-  return (
-    <div className="flex flex-col">
+    content = (
+      <>
       {/* Sticky playbar wrapper — flush against the app header */}
       <div className="sticky top-[56px] z-30 w-full">
         {/* Background layer — fades in smoothly with scroll progress */}
@@ -1060,12 +709,14 @@ export function ReaderPage() {
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 transition-all duration-300"
           style={{
-            background: 'var(--surface)',
+            background: "var(--surface)",
             opacity: scrollProgress * 0.95,
-            backdropFilter: scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : 'none',
-            WebkitBackdropFilter: scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : 'none',
-            borderBottom: scrollProgress > 0.05 ? '1px solid var(--line)' : '1px solid transparent',
-            boxShadow: scrollProgress > 0.5 ? '0 1px 3px rgba(0,0,0,0.3)' : 'none',
+            backdropFilter:
+              scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : "none",
+            WebkitBackdropFilter:
+              scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : "none",
+            borderBottom: scrollProgress > 0.05 ? "1px solid var(--line)" : "1px solid transparent",
+            boxShadow: scrollProgress > 0.5 ? "0 1px 3px rgba(0,0,0,0.3)" : "none",
           }}
         />
         {/* Content — padding shrinks progressively */}
@@ -1103,18 +754,18 @@ export function ReaderPage() {
         </div>
       </div>
 
-      {/* Hidden audio element for MediaSource playback */}
-      <audio aria-hidden="true" className="hidden" ref={audioRef as React.RefObject<HTMLAudioElement | null>} />
-
       {/* Warnings — in content area, below the header */}
       <div className="mx-auto w-full max-w-6xl px-4 pt-5 md:px-6">
         <div className="h-[44px]">
           <div
             aria-live="polite"
             className={`rounded-lg border px-4 py-3 text-xs transition-all duration-200 ${
-              ((!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) || error || lastPlayerError || downloadError)
-                ? 'visible opacity-100 border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]'
-                : 'invisible opacity-0'
+              (!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) ||
+              error ||
+              lastPlayerError ||
+              downloadError
+                ? "visible border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)] opacity-100"
+                : "invisible opacity-0"
             }`}
           >
             <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -1136,8 +787,8 @@ export function ReaderPage() {
           <div className="mx-auto flex w-full max-w-4xl flex-col">
             <ReaderContent
               contentRef={contentRef}
-              title={job?.title ?? "Untitled job"}
-              status={job?.status}
+              title={job.title ?? "Untitled job"}
+              status={job.status}
               lines={readerLines}
               isLargeScreen={isLargeScreen}
               sidebarOpen={sidebarOpen}
@@ -1150,8 +801,8 @@ export function ReaderPage() {
             <div className="min-w-0 flex-1">
               <ReaderContent
                 contentRef={contentRef}
-                title={job?.title ?? "Untitled job"}
-                status={job?.status}
+                title={job.title ?? "Untitled job"}
+                status={job.status}
                 lines={readerLines}
                 isLargeScreen={isLargeScreen}
                 sidebarOpen={sidebarOpen}
@@ -1160,7 +811,7 @@ export function ReaderPage() {
             </div>
 
             <ReaderSidebar
-              detailChunk={detailChunk}
+              detailChunk={detailSlot}
               activeChunks={activeChunks}
               knownChunks={knownChunks}
               activeVersions={activeVersions}
@@ -1199,6 +850,14 @@ export function ReaderPage() {
           </div>
         )}
       </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {audioElement}
+      {content}
     </div>
   );
 }

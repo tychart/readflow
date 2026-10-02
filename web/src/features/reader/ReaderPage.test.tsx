@@ -619,6 +619,77 @@ test("returns to Play (no spinner) after a completed job finishes playing", asyn
   expect(container.querySelector(".animate-spin")).toBeNull();
 });
 
+test("highlights the chunk under the playhead without remounting the other blocks", async () => {
+  seedStore();
+
+  const chunks: Chunk[] = Array.from({ length: 4 }, (_, index) => ({
+    index,
+    status: "written" as const,
+    duration_seconds: 4,
+    start_seconds: index * 4,
+    plan_version: 1,
+    version: 0,
+    voice_id: "suzy",
+    segment_url: `/api/jobs/job-1/chunks/${index}`,
+    peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
+    deprecated: false,
+    reprocessing: false,
+    char_start: index * 5,
+    char_end: index * 5 + 4,
+  }));
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/activate")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    if (url.endsWith("/playback")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  const { container } = render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+
+  const chunkState = (index: number) =>
+    container.querySelector(`[data-chunk-block="${index}"]`)?.getAttribute("data-chunk-state");
+
+  // Playback starts at 0, so the first chunk is the active one.
+  expect(chunkState(0)).toBe("active");
+  const untouchedBlock = container.querySelector('[data-chunk-block="2"]');
+  expect(untouchedBlock).not.toBeNull();
+
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  act(() => {
+    Object.defineProperty(audio!, "currentTime", { configurable: true, value: 6 });
+    audio!.dispatchEvent(new Event("timeupdate"));
+  });
+
+  // 6s in: chunk 0 is behind us and chunk 1 is under the playhead.
+  expect(chunkState(0)).toBe("played");
+  expect(chunkState(1)).toBe("active");
+  expect(chunkState(2)).toBe("idle");
+  // Blocks whose highlighting did not change keep their DOM node, which is what
+  // makes a 300-chunk document affordable to re-render ~20x/s during playback.
+  expect(container.querySelector('[data-chunk-block="2"]')).toBe(untouchedBlock);
+});
+
 describe("chunk versioning & reprocessing", () => {
   beforeEach(() => {
     seedStore();

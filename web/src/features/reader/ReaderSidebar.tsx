@@ -1,33 +1,15 @@
 import { useShallow } from "zustand/shallow";
 
 import { useAppStore } from "../../state/store";
-import type { Chunk, ChunkStatus, JobDetail } from "../../types/api";
+import type { Chunk, JobDetail } from "../../types/api";
+import { getChunkText, getLatestVersion, getRetryCount } from "./chunk-utils";
 
-/* ── Helpers (duplicated from ReaderPage for independence) ── */
+/* ── Helpers ──────────────────────────────────────────────── */
 
 function formatRelativeTime(timestamp: number | null): string {
   if (!timestamp) return "never";
   const deltaSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
   return deltaSeconds === 0 ? "just now" : `${deltaSeconds}s ago`;
-}
-
-function getLatestVersion(chunks: Chunk[], index: number): number {
-  let max = -1;
-  for (const chunk of chunks) {
-    if (chunk.index === index && chunk.version > max) max = chunk.version;
-  }
-  return max;
-}
-
-function getRetryCount(status: ChunkStatus, version: number): number {
-  if (status === "max_retries_exceeded") return 3;
-  return version;
-}
-
-function getChunkText(chunk: Chunk, sourceText: string): string {
-  // `source_text` is canonical (normalized once by the backend at job
-  // creation), so offsets index straight into it.
-  return sourceText.slice(chunk.char_start, chunk.char_end).trim();
 }
 
 /* ── Props ────────────────────────────────────────────────── */

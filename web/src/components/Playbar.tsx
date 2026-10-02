@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
-import { WaveformTimeline, type TimelineSlotData } from "./WaveformTimeline";
+import type { TimelineSlotData } from "../types/timeline";
+import { WaveformTimeline } from "./WaveformTimeline";
 
 /* ── Types ────────────────────────────────────────────────── */
 
