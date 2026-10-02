@@ -219,7 +219,8 @@ describe("endDrag", () => {
     );
 
     // The finger covered 0.6s; the glide covers several seconds.
-    expect(restSeconds - from).toBeGreaterThan(5);
+    expect(restSeconds).not.toBeNull();
+    expect((restSeconds ?? 0) - from).toBeGreaterThan(5);
   });
 
   test("a tap moves the strip so the tapped point lands under the playhead", () => {
@@ -321,24 +322,24 @@ describe("advanceConveyor", () => {
       speedSecondsPerSecond: 20,
     };
     const speeds: number[] = [];
-    let handover: ConveyorGesture | null = null;
+    let handoverSpeed: number | null = null;
 
-    for (let frame = 0; frame < 600 && handover === null; frame += 1) {
+    for (let frame = 0; frame < 600 && handoverSpeed === null; frame += 1) {
       const step = advanceConveyor(gesture, FRAME_SECONDS, OPEN);
       gesture = step.gesture;
-      if (gesture.phase === "settling") handover = gesture;
-      else speeds.push(Math.abs(gesture.speedSecondsPerSecond));
+      // The coast hands over to the settle spring with its leftover speed.
+      if (gesture.phase === "settling") handoverSpeed = gesture.speedSecondsPerSecond;
+      else if (gesture.phase === "coasting") speeds.push(Math.abs(gesture.speedSecondsPerSecond));
+      else break;
     }
 
-    expect(handover).not.toBeNull();
+    expect(handoverSpeed).not.toBeNull();
     for (let i = 1; i < speeds.length; i += 1) {
       expect(speeds[i]).toBeLessThan(speeds[i - 1]);
     }
     // The handover happens as the coast crosses the rest speed.
     expect(speeds.at(-1)).toBeLessThan(COAST_REST_SECONDS_PER_SECOND * 1.05);
-    expect(handover?.phase === "settling" && handover.speedSecondsPerSecond).toBeLessThan(
-      COAST_REST_SECONDS_PER_SECOND,
-    );
+    expect(handoverSpeed).toBeLessThan(COAST_REST_SECONDS_PER_SECOND);
   });
 
   test("glide distance grows with flick speed", () => {

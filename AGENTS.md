@@ -1134,7 +1134,31 @@ metadata row (later in the DOM) painted over the anchored settings popover, and
 the Download button intercepted clicks on it. The top row is `z-20` for this
 reason; a Playwright test caught it.
 
-### 12. Do not nest ARIA sliders
+### 12. Test files are not typechecked by default
+
+`web/package.json`'s `typecheck` runs `tsconfig.build.json`, which **excludes**
+`src/**/*.test.ts(x)`. Nothing else typechecked them either, so a stale type
+import (e.g. `TimelineSlotData` from a module that had stopped re-exporting it)
+compiled fine and only failed at runtime — and a type-only import does not even
+fail then, esbuild just strips it.
+
+`bun run typecheck:tests` (`tsconfig.app.json`, which includes `src` and
+`setupTests.ts`) closes the gap, but it currently reports **~97 pre-existing
+errors** across 10 test files, so it is deliberately not wired into
+`typecheck`/CI yet. The backlog is overwhelmingly two mechanical causes:
+
+- `Cannot find name 'global'` (~38): the app tsconfig lists
+  `types: ["vitest/globals"]`, so Node's globals are not in scope. Either add
+  `"node"` to that list or switch the tests to `globalThis`.
+- unsafe `as typeof fetch` casts on partial fetch mocks (~25): these need
+  `as unknown as typeof fetch`.
+
+The rest is fixture drift — stale `AdminConfig`/`ReaderSettings`/`AdminMemoryStats`
+literals missing fields the types require. Fixing all of it is a worthwhile,
+self-contained change: do it, wire `typecheck:tests` into `make typecheck` and CI,
+and delete this note.
+
+### 13. Do not nest ARIA sliders
 
 The main timeline exposes each chunk as `role="slider"`. The conveyor handles
 gestures at strip level and passes `interactive={false}` to `WaveformSlot`, which
@@ -1307,7 +1331,7 @@ Newest round — reader navigation (four commits):
 4. **Phone bottom dock** plus the `useMediaQuery` hook, `transport.ts` state
    helpers and this documentation pass.
 
-Test count over that round: 122 → 341 web unit/component tests, 4 → 8 Playwright
+Test count over that round: 122 → 347 web unit/component tests, 4 → 8 Playwright
 tests.
 
 ## Agent Workflow Checklist

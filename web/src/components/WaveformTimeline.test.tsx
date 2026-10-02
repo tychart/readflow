@@ -2,7 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { maxPool } from "../lib/waveform";
-import { WaveformTimeline, type TimelineSlotData } from "./WaveformTimeline";
+import type { TimelineSlotData } from "../types/timeline";
+import { WaveformTimeline } from "./WaveformTimeline";
 
 /* jsdom does not implement PointerEvent; provide a minimal polyfill so the
  * pointer-based scrub interactions can be exercised in tests. */

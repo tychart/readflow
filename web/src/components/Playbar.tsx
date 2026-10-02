@@ -5,6 +5,7 @@ import {
   resolvePlayerStateLabel,
   resolveShowSpinner,
 } from "../features/reader/transport";
+import { formatClock } from "../lib/format";
 import type { TimelineSlotData } from "../types/timeline";
 import { TransportControls } from "./TransportControls";
 import { WaveformTimeline } from "./WaveformTimeline";
@@ -77,15 +78,6 @@ export interface PlaybarProps {
    * them into the bottom dock and keep this bar as the whole-document overview.
    */
   showTransport?: boolean;
-}
-
-/* ── Helpers ──────────────────────────────────────────────── */
-
-function formatClock(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 /* ── Component ────────────────────────────────────────────── */
