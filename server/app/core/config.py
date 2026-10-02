@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     scheduler_autostart: bool = True
     voices_dir: str = "voices"
     temp_dir_name: str = "readflow"
+    # Largest source text (UTF-8 bytes) accepted for a job, whether pasted or
+    # uploaded. Also used as the multipart part limit, because Starlette's
+    # default (1 MiB) silently made the paste path far stricter than uploads.
+    # 64 MiB covers full-length books (War and Peace is ~3 MiB of text) with
+    # plenty of headroom while still bounding in-memory jobs.
+    max_source_bytes: int = 64 * 1024 * 1024
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     @cached_property

@@ -392,6 +392,26 @@ If you see bugs where the hidden audio plays but the button still says `Play`, o
 - `playIntent`
 - explicit timeline seek handlers
 
+### Reader text rendering (canonical text + upcoming tail)
+
+The reader renders blocks derived from the canonical text, never from the raw
+paste:
+
+- one block per planned chunk (these carry the active/played styling, the refs
+  used for scroll sync, and the chunk numbers)
+- one trailing dimmed block for text the planner has not reached yet
+
+That trailing block is load-bearing. Chunk planning is deliberately lazy
+(`_needs_more_planning` keeps only a few chunks ahead), so before it existed a
+long paste looked truncated: the DOM simply stopped after the last planned chunk.
+`buildReaderTextSegments` renders the whole tail when it is under
+`FULL_TAIL_RENDER_CHARS` (200k chars — covers chapters) and a bounded
+`UPCOMING_PREVIEW_CHARS` preview above that (covers books without building a
+multi-megabyte DOM).
+
+Keep the chunk blocks' `content-visibility: auto` — a book accumulates thousands
+of blocks and offscreen layout is what makes them expensive.
+
 ## How the system works
 
 High-level pipeline:
@@ -428,6 +448,38 @@ Current batch grouping dimensions:
 - rough chunk length bucket
 
 That `voice_id` grouping is deliberate. It was added to keep the real Qwen provider aligned with the user's proven benchmark pattern: one voice-clone prompt shape repeated across a batch.
+
+## Long documents and canonical text
+
+This app is expected to swallow whole chapters and whole books, so the text
+pipeline has two invariants that must not be broken casually.
+
+### 1. `Job.source_text` is canonical and normalized exactly once
+
+`app/chunking/normalize.py::normalize_source_text` runs **once**, in
+`JobManager.create_job`. It collapses `\r\n`, space/tab runs and 3+ newlines, and
+strips the ends. Everything downstream assumes that:
+
+- `ChunkPlanner` reads `job.source_text` as-is and never normalizes
+- `ChunkRecord.char_start` / `char_end` are plain indices into that string
+- the frontend slices it directly (no `normalizeText` in the client)
+
+Normalizing per chunk (or per render) makes long documents quadratic: a 3 MiB
+book re-filtered the whole text on every `plan_next` (~500 s of pure regex work)
+and on every reader render. Do not add a second normalization call site.
+`server/tests/unit/test_normalize.py`, the planner coverage test, and
+`web/src/features/reader/versioning.test.ts` pin this split.
+
+### 2. Size limits live in one setting
+
+`READFLOW_MAX_SOURCE_BYTES` (default 64 MiB) bounds one job's source text and is
+also used as the multipart part limit. `POST /api/jobs` parses its own form
+(`read_job_form`) instead of using FastAPI `Form(...)`/`File(...)` parameters,
+because those always parse with Starlette's 1 MiB `max_part_size` — that default
+made a long *paste* fail (`400 Part exceeded maximum size of 1024KB.`) while the
+identical `.txt` upload succeeded. Starlette rewrites its own part-size breach
+into a 400 before the route sees it, so `read_job_form` translates that specific
+message into a 413 that names the configured limit.
 
 ## Exact Qwen Integration Contract
 
@@ -703,6 +755,7 @@ Current useful env vars:
 - `READFLOW_SCHEDULER_AUTOSTART=true|false`
 - `READFLOW_TEMP_DIR_NAME=<name>`
 - `READFLOW_VOICES_DIR=<relative path>`
+- `READFLOW_MAX_SOURCE_BYTES=<bytes>` (default 64 MiB per job)
 
 Runtime defaults live in:
 
@@ -786,7 +839,31 @@ The implemented behavior is:
 
 Do not mutate completed audio retroactively unless the user explicitly wants a new model.
 
-### 6. MSE/player bugs are often state-model bugs, not codec bugs
+### 6. Stream events carry summaries, not the document
+
+`job_created` and per-chunk events (`chunk_ready`, `job_completed`) send
+`JobSummaryResponse` only, and chunk events add a single `chunk` delta.
+`activate`/`pause`/`resume` also return a summary. Full detail (with
+`source_text` and the chunk list) comes from `GET /api/jobs/{job_id}` and from
+`job_updated` events.
+
+The frontend treats every streamed/returned job payload as a patch and merges it
+over the detail it loaded over HTTP (`mergeJobPatch` / `buildManifestFromPatch`
+in `ReaderPage.tsx`, `applyJobPatch` used by both the WS effect and the mutation
+handlers). This exists because the previous shape re-sent the entire source text
+and every chunk record on each event: streaming a book was O(chunks × book size)
+of WebSocket traffic (~0.45 MiB per event measured on a 300 KB job; now ~1 KiB).
+Do not put `source_text` or the full chunk list back into per-chunk events.
+
+### 7. e2e fixtures must include `Chunk.version`
+
+`ReaderPage` only renders chunks whose `version` matches the active version, and
+`deriveActiveVersions` yields `undefined` for a chunk without one. Fixtures in
+`web/e2e/smoke.spec.ts` that omit `version` therefore render an empty timeline
+(that is what the "reader updates live" and gap-slot tests did before
+`buildChunk` was introduced). Use the `buildChunk` helper when adding fixtures.
+
+### 8. MSE/player bugs are often state-model bugs, not codec bugs
 
 Recent playback bugs were often caused by stale or mismatched state, not by the media container itself.
 
@@ -852,6 +929,13 @@ Future agents should know that the following were created or materially changed 
 - static backend-computed waveform playbar (replaces the live Web Audio analyser)
 - server-side `.m4a` export for contiguous rendered audio
 - completed-job local-only playback behavior
+- long-document support: `READFLOW_MAX_SOURCE_BYTES` (64 MiB default) replaces
+  Starlette's 1 MiB pasted-field limit, the source text is normalized once at
+  job creation (`app/chunking/normalize.py`), planning no longer re-normalizes
+  per chunk, the reader renders the unplanned tail as dimmed "Upcoming text",
+  and per-chunk WebSocket events became summary + single-chunk deltas
+- e2e smoke suite repaired (stale selectors and version-less chunk fixtures that
+  had left 3 of 4 tests failing on `main`)
 
 ## Agent Workflow Checklist
 

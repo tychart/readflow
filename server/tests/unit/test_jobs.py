@@ -74,3 +74,16 @@ def test_completed_jobs_ignore_playback_lifecycle_mutations():
     assert finished.status == JobStatus.COMPLETED
     assert finished.playback_state.current_time_seconds == 0.0
     assert finished.playback_state.is_playing is False
+
+
+def test_create_job_stores_canonical_source_text():
+    manager = JobManager()
+
+    job = manager.create_job(
+        source_text="  First  line.\r\n\r\n\r\n\r\nSecond\tline.  ",
+        source_kind="text",
+        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        voice_id="suzy",
+    )
+
+    assert job.source_text == "First line.\n\nSecond line."

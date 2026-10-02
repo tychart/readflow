@@ -369,3 +369,159 @@ async def test_admin_config_change_device_resets_not_enough_vram_state(client, s
     # State should have been reset
     assert services.model_manager.state == "unloaded"
     assert services.model_manager._telemetry.snapshot()["model_state"] == "unloaded"
+
+
+# ── Long documents ─────────────────────────────────────────
+#
+# Starlette's MultiPartParser caps each non-file part at 1 MiB. Because the
+# browser always posts `FormData` (multipart), pasted text used to be rejected
+# well before the configured source limit while an identical .txt upload was
+# accepted. These tests pin the behavior that matters for whole books.
+
+
+def _big_text(min_chars: int) -> str:
+    return (
+        ("Sentence number one. Sentence number two. " * (min_chars // 39 + 2))
+        .strip()[:min_chars]
+        .strip()
+    )
+
+
+async def test_create_job_accepts_paste_larger_than_one_mebibyte(client):
+    pasted = _big_text(1_200_000)
+
+    response = await client.post(
+        "/api/jobs",
+        files={"text": (None, pasted), "voice_id": (None, "suzy")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job"]["source_text"] == pasted
+
+
+async def test_create_job_stores_canonical_pasted_text(client):
+    response = await client.post(
+        "/api/jobs",
+        files={
+            "text": (None, "  Line one.\r\n\r\n\r\nLine   two.\t\tEnd.  "),
+            "voice_id": (None, "suzy"),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job"]["source_text"] == "Line one.\n\nLine two. End."
+
+
+async def test_create_job_rejects_text_over_configured_limit(client, services):
+    services.settings.max_source_bytes = 2_048
+
+    response = await client.post(
+        "/api/jobs",
+        files={"text": (None, "word " * 2_000), "voice_id": (None, "suzy")},
+    )
+
+    assert response.status_code == 413
+    assert "Text is too large" in response.json()["detail"]
+
+
+async def test_create_job_rejects_oversized_txt_upload(client, services):
+    services.settings.max_source_bytes = 2_048
+
+    response = await client.post(
+        "/api/jobs",
+        files={
+            "file": ("book.txt", b"word " * 2_000, "text/plain"),
+            "voice_id": (None, "suzy"),
+        },
+    )
+
+    assert response.status_code == 413
+    assert "Uploaded text is too large" in response.json()["detail"]
+
+
+async def test_create_job_rejects_non_utf8_txt_upload(client):
+    response = await client.post(
+        "/api/jobs",
+        files={
+            "file": ("book.txt", b"\xff\xfe\x00bad bytes", "text/plain"),
+            "voice_id": (None, "suzy"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "UTF-8" in response.json()["detail"]
+
+
+async def test_job_created_event_carries_summary_only(client, services):
+    websocket = _FakeWebSocket()
+    await services.hub.connect(websocket)
+
+    try:
+        await client.post(
+            "/api/jobs",
+            data={"text": "A websocket visible job.", "voice_id": "suzy"},
+        )
+    finally:
+        await services.hub.disconnect(websocket)
+
+    update = next(message for message in websocket.messages if message["type"] == "job_created")
+    job = cast(dict[str, Any], cast(dict[str, Any], update["payload"])["job"])
+    assert job["title"] == "A websocket visible job."
+    assert "source_text" not in job
+    assert "chunks" not in job
+
+
+async def test_chunk_events_carry_summary_and_the_single_chunk(client, services):
+    create_response = await client.post(
+        "/api/jobs",
+        data={"text": "Hello world. This should become speech.", "voice_id": "suzy"},
+    )
+    job_id = create_response.json()["job"]["id"]
+
+    websocket = _FakeWebSocket()
+    await services.hub.connect(websocket)
+
+    try:
+        await services.scheduler.run_once()
+    finally:
+        await services.hub.disconnect(websocket)
+
+    event = next(
+        message
+        for message in websocket.messages
+        if cast(str, message["type"]) in {"chunk_ready", "job_completed"}
+    )
+    payload = cast(dict[str, Any], event["payload"])
+    job = cast(dict[str, Any], payload["job"])
+    chunk = cast(dict[str, Any], payload["chunk"])
+
+    # Job detail (with the whole source text and every chunk) must not be
+    # re-broadcast per chunk: that made streaming a book quadratic.
+    assert "source_text" not in job
+    assert "chunks" not in job
+    assert job["id"] == job_id
+    assert chunk["index"] == payload["chunk_index"]
+    assert chunk["status"] == "written"
+    assert chunk["segment_url"] == f"/api/jobs/{job_id}/chunks/{chunk['index']}"
+
+
+async def test_activation_endpoints_return_summaries(client):
+    create_response = await client.post(
+        "/api/jobs",
+        data={"text": "Activation summary job.", "voice_id": "suzy"},
+    )
+    job_id = create_response.json()["job"]["id"]
+
+    activated = await client.post(f"/api/jobs/{job_id}/activate")
+    assert activated.status_code == 200
+    assert activated.json()["status"] == "playing"
+    assert "source_text" not in activated.json()
+    assert "chunks" not in activated.json()
+
+    paused = await client.post(f"/api/jobs/{job_id}/pause")
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+
+    resumed = await client.post(f"/api/jobs/{job_id}/resume")
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "queued"

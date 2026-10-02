@@ -1,12 +1,7 @@
 import { create } from "zustand";
 
-import type { Voice } from "../types/api";
-import type {
-  AdminState,
-  JobDetail,
-  JobSummary,
-  WsEnvelope,
-} from "../types/events";
+import type { JobSummary, Voice } from "../types/api";
+import type { AdminState, WsEnvelope } from "../types/events";
 
 interface AppStore {
   jobs: Record<string, JobSummary>;
@@ -68,7 +63,9 @@ function adminStateEqual(
   );
 }
 
-function toSummary(job: JobDetail): JobSummary {
+/** Narrow any job payload (summary, streamed patch, or full detail) down to
+ *  the list summary the jobs page needs. */
+function toSummary(job: JobSummary): JobSummary {
   return {
     id: job.id,
     title: job.title,

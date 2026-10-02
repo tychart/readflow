@@ -17,6 +17,7 @@ import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { useAppStore } from "../../state/store";
 import type { Chunk, ChunkStatus, JobDetail, JobManifest, JobStatus } from "../../types/api";
+import type { StreamJob } from "../../types/events";
 import { ReaderSidebar } from "./ReaderSidebar";
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -29,7 +30,14 @@ const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
 /* ── Types ────────────────────────────────────────────────── */
 
 interface StreamEventPayload {
-  job?: JobDetail;
+  job?: StreamJob;
+  /** Present on per-chunk events, which carry a delta instead of full detail. */
+  chunk?: Chunk;
+  mime_type?: string;
+  init_segment_url?: string | null;
+}
+
+interface EventMeta {
   mime_type?: string;
   init_segment_url?: string | null;
 }
@@ -50,21 +58,51 @@ function sortChunks(chunks: Chunk[]): Chunk[] {
   return [...chunks].sort((left, right) => left.index - right.index);
 }
 
-function buildManifestFromEvent(
-  job: JobDetail,
+/** Insert or replace a chunk by (index, version). */
+function upsertChunk(chunks: Chunk[], incoming: Chunk): Chunk[] {
+  const next = chunks.filter(
+    (chunk) => !(chunk.index === incoming.index && chunk.version === incoming.version),
+  );
+  next.push(incoming);
+  return sortChunks(next);
+}
+
+/**
+ * Merge a job payload into the loaded detail. Payloads are patches: per-chunk
+ * events and play/pause/resume responses carry the summary plus at most one
+ * chunk, while `job_updated` still carries full detail. `current` keeps the
+ * fields a patch omits (most importantly `source_text`).
+ */
+function mergeJobPatch(current: JobDetail, patch: StreamJob, chunk?: Chunk): JobDetail {
+  const merged: JobDetail = {
+    ...current,
+    ...patch,
+    chunks: patch.chunks ?? current.chunks,
+  };
+  return chunk ? { ...merged, chunks: upsertChunk(merged.chunks, chunk) } : merged;
+}
+
+function buildManifestFromPatch(
   previousManifest: JobManifest | null,
-  payload?: StreamEventPayload,
+  patch: StreamJob,
+  chunk?: Chunk,
+  meta: EventMeta = {},
 ): JobManifest | null {
-  const nextMimeType = payload?.mime_type ?? previousManifest?.mime_type ?? null;
-  const nextInitSegmentUrl =
-    payload && "init_segment_url" in payload
-      ? payload.init_segment_url ?? null
-      : previousManifest?.init_segment_url ?? null;
+  const nextMimeType = meta.mime_type ?? previousManifest?.mime_type ?? null;
   if (!nextMimeType) return null;
+  const nextInitSegmentUrl =
+    "init_segment_url" in meta
+      ? meta.init_segment_url ?? null
+      : previousManifest?.init_segment_url ?? null;
+  const nextChunks = patch.chunks
+    ? sortChunks(patch.chunks)
+    : chunk
+      ? upsertChunk(previousManifest?.chunks ?? [], chunk)
+      : previousManifest?.chunks ?? [];
   return {
     mime_type: nextMimeType,
     init_segment_url: nextInitSegmentUrl,
-    chunks: sortChunks(job.chunks),
+    chunks: nextChunks,
   } satisfies JobManifest;
 }
 
@@ -74,18 +112,80 @@ function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null): 
   return [];
 }
 
-
-function normalizeText(text: string): string {
-  return text
-    .replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+/**
+ * Chunk text as the reader displays it. `source_text` is already canonical
+ * (the backend normalizes once at job creation) and offsets index into it, so
+ * this is a plain slice — normalizing here used to re-filter the whole
+ * document for every chunk on every render.
+ */
+function getChunkText(chunk: Chunk, sourceText: string): string {
+  return sourceText.slice(chunk.char_start, chunk.char_end).trim();
 }
 
-function getChunkText(chunk: Chunk, sourceText: string): string {
-  const normalized = normalizeText(sourceText);
-  return normalized.slice(chunk.char_start, chunk.char_end).trim();
+/* ── Reader text layout ───────────────────────────────────── */
+
+/** Above this many unplanned characters the reader shows a bounded preview
+ *  instead of the whole tail, so book-sized sources stay responsive. */
+const FULL_TAIL_RENDER_CHARS = 200_000;
+const UPCOMING_PREVIEW_CHARS = 12_000;
+
+interface ReaderTextSegment {
+  key: string;
+  kind: "chunk" | "upcoming";
+  chunkIndex: number | null;
+  text: string;
+  /** Unplanned characters this block does not render (0 when nothing is hidden). */
+  hiddenChars: number;
+}
+
+/**
+ * Lay the canonical source text out as one block per planned chunk plus a
+ * trailing block for text the planner has not reached yet.
+ *
+ * Chunk planning is buffer-aware and deliberately lazy, so a long paste used to
+ * look truncated: only the handful of already-planned chunks were rendered and
+ * the rest of the document simply was not there. Showing the upcoming tail (for
+ * as long as it is cheap to render) makes the whole paste visible from the
+ * start while keeping the chunk blocks that drive highlighting and seeking.
+ */
+function buildReaderTextSegments(chunks: Chunk[], sourceText: string): ReaderTextSegment[] {
+  const segments: ReaderTextSegment[] = [];
+  let cursor = 0;
+  for (const chunk of sortChunks(chunks)) {
+    const start = Math.max(cursor, chunk.char_start);
+    const end = Math.max(start, chunk.char_end);
+    if (start > cursor) {
+      segments.push({
+        key: `gap-${cursor}`,
+        kind: "upcoming",
+        chunkIndex: null,
+        text: sourceText.slice(cursor, start),
+        hiddenChars: 0,
+      });
+    }
+    segments.push({
+      key: `chunk-${chunk.index}`,
+      kind: "chunk",
+      chunkIndex: chunk.index,
+      text: sourceText.slice(start, end),
+      hiddenChars: 0,
+    });
+    cursor = end;
+  }
+
+  const remaining = sourceText.length - cursor;
+  if (remaining > 0) {
+    const rendered =
+      remaining <= FULL_TAIL_RENDER_CHARS ? remaining : UPCOMING_PREVIEW_CHARS;
+    segments.push({
+      key: "upcoming",
+      kind: "upcoming",
+      chunkIndex: null,
+      text: sourceText.slice(cursor, cursor + rendered),
+      hiddenChars: remaining - rendered,
+    });
+  }
+  return segments;
 }
 
 function deriveActiveVersions(chunks: Chunk[]): Map<number, number> {
@@ -560,6 +660,20 @@ export function ReaderPage() {
     [audioRef, isJobTerminal, isWaitingForData, job, playIntent],
   );
 
+  /**
+   * Apply a job patch from a WebSocket event or a mutation response, keeping
+   * the loaded detail intact. Per-chunk events carry one chunk
+   * (`payload.chunk`); `job_updated` and the voice/reprocess endpoints still
+   * carry full detail.
+   */
+  const applyJobPatch = useCallback(
+    (patch: StreamJob, chunk?: Chunk, meta: EventMeta = {}) => {
+      setJob((prev) => (prev ? mergeJobPatch(prev, patch, chunk) : prev));
+      setManifest((prev) => buildManifestFromPatch(prev, patch, chunk, meta));
+    },
+    [],
+  );
+
   useEffect(() => { void refreshReaderState("initial", true); }, [refreshReaderState]);
 
   useEffect(() => {
@@ -567,15 +681,14 @@ export function ReaderPage() {
     const eventJob = payload?.job;
     if (!lastEvent || !eventJob || eventJob.id !== jobId) return;
     if (lastEvent.type !== "job_updated" && lastEvent.type !== "job_completed" && lastEvent.type !== "chunk_ready") return;
-    setJob(eventJob);
-    setManifest((prev) => buildManifestFromEvent(eventJob, prev, payload));
+    applyJobPatch(eventJob, payload?.chunk, payload);
     setError(null);
     setLastRefreshAt(Date.now());
     setLastRefreshReason(`ws:${lastEvent.type}`);
     if (lastEvent.type === "chunk_ready" && !payload?.mime_type && !payload?.init_segment_url && !manifestRef.current) {
       void refreshReaderState(`ws:${lastEvent.type}:reconcile`);
     }
-  }, [jobId, lastEvent, refreshReaderState]);
+  }, [applyJobPatch, jobId, lastEvent, refreshReaderState]);
 
   useEffect(() => {
     if (!shouldUsePollingFallback) return;
@@ -645,8 +758,7 @@ export function ReaderPage() {
     setPlayIntent(true); setError(null);
     try {
       const nextJob = await api.activateJob(job.id);
-      setJob(nextJob);
-      setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+      applyJobPatch(nextJob);
       await requestUserGesturePlay();
     } catch (playError) {
       setPlayIntent(false);
@@ -661,8 +773,7 @@ export function ReaderPage() {
     if (isJobTerminal) return;
     try {
       const nextJob = await api.pauseJob(job.id);
-      setJob(nextJob);
-      setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+      applyJobPatch(nextJob);
       syncPlaybackState(true, false);
     } catch (pauseError) {
       setError(pauseError instanceof Error ? pauseError.message : "Unable to pause playback");
@@ -693,8 +804,7 @@ export function ReaderPage() {
       if (!resumeAfterSeek) return;
       try {
         const nextJob = await api.activateJob(job.id);
-        setJob(nextJob);
-        setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+        applyJobPatch(nextJob);
         await requestUserGesturePlay();
       } catch (activationError) {
         setPlayIntent(false);
@@ -702,7 +812,7 @@ export function ReaderPage() {
         setError(activationError instanceof Error ? activationError.message : "Unable to activate playback");
       }
     },
-    [isJobTerminal, job, playIntent, requestUserGesturePlay],
+    [applyJobPatch, isJobTerminal, job, playIntent, requestUserGesturePlay],
   );
 
   // Set userScrolledChunkRef so the scroll-into-view effect can distinguish
@@ -738,8 +848,7 @@ export function ReaderPage() {
     if (!job) return;
     try {
       const nextJob = await api.updateJobVoice(job.id, voiceId);
-      setJob(nextJob);
-      setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+      applyJobPatch(nextJob);
       setError(null);
     } catch (voiceError) {
       setError(voiceError instanceof Error ? voiceError.message : "Unable to change voice");
@@ -754,8 +863,7 @@ export function ReaderPage() {
         setReprocessError(null);
         setEditingChunkIndex(null);
         const nextJob = await api.reprocessChunk(job.id, chunkIndex, { new_text: newText, new_voice_id: undefined });
-        setJob(nextJob);
-        setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+        applyJobPatch(nextJob);
         setError(null);
         setTimeout(() => refreshReaderState("reprocess"), 1000);
       } catch (err) {
@@ -764,7 +872,7 @@ export function ReaderPage() {
         setReprocessingChunkIndex(null);
       }
     },
-    [job, refreshReaderState],
+    [applyJobPatch, job, refreshReaderState],
   );
 
   const handleVersionChange = useCallback(
@@ -772,15 +880,14 @@ export function ReaderPage() {
       if (!job) return;
       try {
         const nextJob = await api.setActiveVersion(job.id, chunkIndex, version);
-        setJob(nextJob);
-        setManifest((prev) => buildManifestFromEvent(nextJob, prev));
+        applyJobPatch(nextJob);
         setError(null);
         setReprocessError(null);
       } catch (err) {
         setReprocessError(err instanceof Error ? err.message : "Version switch failed");
       }
     },
-    [job],
+    [applyJobPatch, job],
   );
 
   const handleStartEdit = useCallback((chunk: Chunk) => {
@@ -845,6 +952,14 @@ export function ReaderPage() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // ── Reader text layout — must be before early returns ─────
+  // Slicing the document is memoized so playback ticks (which re-render the
+  // reader ~20x/s) never re-slice a book-sized source text.
+  const textSegments = useMemo(
+    () => buildReaderTextSegments(activeChunks, job?.source_text ?? ""),
+    [activeChunks, job?.source_text],
+  );
+
   // ── Loader / error states ───────────────────────────────
   if (loading) {
     return (
@@ -865,20 +980,42 @@ export function ReaderPage() {
     );
   }
 
-  // ── Render source text chunk-by-chunk ────────────────────
-  const sourceTextLines = activeChunks.map((chunk) => {
-    const chunkText = getChunkText(chunk, job.source_text);
-    const isActive = chunk.index === activeProgress.activeChunkIndex;
-    const isPlayed = activeProgress.playedIndexes.has(chunk.index);
+  // ── Render source text ───────────────────────────────────
+  // Planned chunks stay individual blocks (they drive highlighting, seeking and
+  // scroll sync); the unplanned tail renders as one dimmed block so a long paste
+  // is fully visible instead of looking cut off after the first few chunks.
+  const sourceTextLines = textSegments.map((segment) => {
+    if (segment.kind === "upcoming") {
+      return (
+        <div
+          key={segment.key}
+          className="relative rounded-lg border-l-2 border-l-white/5 px-4 py-3 opacity-45 [contain-intrinsic-size:auto_160px] [content-visibility:auto]"
+        >
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+            Upcoming text
+            {segment.hiddenChars > 0
+              ? ` — ${segment.hiddenChars.toLocaleString()} more characters not shown`
+              : " — not queued yet"}
+          </div>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
+            {segment.text}
+          </p>
+        </div>
+      );
+    }
+
+    const chunkIndex = segment.chunkIndex ?? 0;
+    const isActive = chunkIndex === activeProgress.activeChunkIndex;
+    const isPlayed = activeProgress.playedIndexes.has(chunkIndex);
 
     return (
       <div
-        key={chunk.index}
+        key={segment.key}
         ref={(el) => {
-          if (el) chunkRefs.current.set(chunk.index, el);
-          else chunkRefs.current.delete(chunk.index);
+          if (el) chunkRefs.current.set(chunkIndex, el);
+          else chunkRefs.current.delete(chunkIndex);
         }}
-        className={`relative rounded-lg border-l-2 px-4 py-3 transition-all ${
+        className={`relative rounded-lg border-l-2 px-4 py-3 transition-all [contain-intrinsic-size:auto_160px] [content-visibility:auto] ${
           isActive
             ? "border-l-[var(--amber)] bg-[var(--amber-soft)] shadow-[var(--amber-glow)]"
             : isPlayed
@@ -892,10 +1029,10 @@ export function ReaderPage() {
             isActive ? "text-[var(--amber)]" : "text-[var(--ink-secondary)]"
           }`}
         >
-          Chunk {chunk.index + 1}
+          Chunk {chunkIndex + 1}
         </div>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
-          {chunkText || "(empty text)"}
+          {segment.text.trim() || "(empty text)"}
         </p>
       </div>
     );

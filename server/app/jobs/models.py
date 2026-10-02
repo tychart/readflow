@@ -80,6 +80,10 @@ class Job:
     id: str
     title: str | None
     source_kind: str
+    # Canonical text: `JobManager.create_job` stores it already normalized via
+    # `app.chunking.normalize.normalize_source_text`. Every `char_start` /
+    # `char_end` offset in `chunks` indexes into this string, and the reader
+    # slices the same string, so it must never be normalized a second time.
     source_text: str
     model_id: str
     voice_id: str

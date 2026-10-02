@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from time import time
 from uuid import uuid4
 
+from app.chunking.normalize import normalize_source_text
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 
 
@@ -22,11 +23,12 @@ class JobManager:
         title: str | None = None,
     ) -> Job:
         now = time()
+        normalized_text = normalize_source_text(source_text)
         job = Job(
             id=str(uuid4()),
-            title=title or self._derive_title(source_text),
+            title=title or self._derive_title(normalized_text),
             source_kind=source_kind,
-            source_text=source_text,
+            source_text=normalized_text,
             model_id=model_id,
             voice_id=voice_id,
             language=language,

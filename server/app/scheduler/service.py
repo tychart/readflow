@@ -8,7 +8,7 @@ from app.core.config import RuntimeConfig
 from app.core.hub import WebSocketHub
 from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
-from app.schemas.api import WsEnvelope, job_to_detail
+from app.schemas.api import WsEnvelope, chunk_to_response, job_to_summary
 from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import ModelVRAMError, SynthesisOOMError
 from app.synthesis.worker import SynthesisWorker
@@ -191,11 +191,16 @@ class SchedulerService:
                 wav_path=result.wav_path,
             )
             message_type = "job_completed" if job.status == JobStatus.COMPLETED else "chunk_ready"
+            # Per-chunk events carry the job *summary* plus the single chunk that
+            # changed. Sending `job_to_detail` here meant re-serializing the whole
+            # source text and every chunk record on each event: for a book that is
+            # O(chunks x book size) of WebSocket traffic.
             await self._hub.broadcast(
                 WsEnvelope(
                     type=message_type,
                     payload={
-                        "job": job_to_detail(job).model_dump(),
+                        "job": job_to_summary(job).model_dump(),
+                        "chunk": chunk_to_response(job, chunk).model_dump(),
                         "chunk_index": chunk.index,
                         "mime_type": self._chunk_mime_type,
                         "init_segment_url": f"/api/jobs/{job.id}/chunks/init",

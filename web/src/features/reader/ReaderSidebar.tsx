@@ -24,17 +24,10 @@ function getRetryCount(status: ChunkStatus, version: number): number {
   return version;
 }
 
-function normalizeText(text: string): string {
-  return text
-    .replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
 function getChunkText(chunk: Chunk, sourceText: string): string {
-  const normalized = normalizeText(sourceText);
-  return normalized.slice(chunk.char_start, chunk.char_end).trim();
+  // `source_text` is canonical (normalized once by the backend at job
+  // creation), so offsets index straight into it.
+  return sourceText.slice(chunk.char_start, chunk.char_end).trim();
 }
 
 /* ── Props ────────────────────────────────────────────────── */

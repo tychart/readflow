@@ -1,5 +1,30 @@
 import { expect, test } from "@playwright/test";
 
+/** A written chunk as the API returns it. `version` matters: the reader only
+ *  renders the active version of a chunk, so fixtures without it are dropped. */
+function buildChunk(
+  index: number,
+  status: "written" | "queued" | "rendering" = "written",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    index,
+    status,
+    duration_seconds: status === "written" ? 4 : 0,
+    start_seconds: index * 4,
+    plan_version: 1,
+    version: 0,
+    voice_id: "suzy",
+    segment_url: status === "written" ? `/api/jobs/job-1/chunks/${index}` : null,
+    peaks_url: null,
+    deprecated: false,
+    reprocessing: false,
+    char_start: index * 21,
+    char_end: index * 21 + 20,
+    ...overrides,
+  };
+}
+
 function buildJob(chunkCount: number, status: "queued" | "rendering" | "playing" = "queued") {
   return {
     id: "job-1",
@@ -15,15 +40,7 @@ function buildJob(chunkCount: number, status: "queued" | "rendering" | "playing"
     source_kind: "text",
     source_text: "Playwright text",
     plan_version: 1,
-    chunks: Array.from({ length: chunkCount }, (_, index) => ({
-      index,
-      status: "written",
-      duration_seconds: 4,
-      start_seconds: index * 4,
-      plan_version: 1,
-      voice_id: "suzy",
-      segment_url: `/api/jobs/job-1/chunks/${index}`,
-    })),
+    chunks: Array.from({ length: chunkCount }, (_, index) => buildChunk(index)),
     failed_reason: null,
   };
 }
@@ -32,15 +49,7 @@ function buildManifest(chunkCount: number) {
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
-    chunks: Array.from({ length: chunkCount }, (_, index) => ({
-      index,
-      status: "written",
-      duration_seconds: 4,
-      start_seconds: index * 4,
-      plan_version: 1,
-      voice_id: "suzy",
-      segment_url: `/api/jobs/job-1/chunks/${index}`,
-    })),
+    chunks: Array.from({ length: chunkCount }, (_, index) => buildChunk(index)),
   };
 }
 
@@ -53,60 +62,12 @@ function buildGapJob(status: "queued" | "rendering" | "playing" = "queued") {
     total_chunks_completed: 4,
     buffered_seconds: 16,
     chunks: [
-      {
-        index: 0,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/0",
-      },
-      {
-        index: 1,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 4,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/1",
-      },
-      {
-        index: 2,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 8,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/2",
-      },
-      {
-        index: 3,
-        status: "queued",
-        duration_seconds: 0,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: null,
-      },
-      {
-        index: 4,
-        status: "rendering",
-        duration_seconds: 0,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: null,
-      },
-      {
-        index: 5,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 20,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/5",
-      },
+      buildChunk(0),
+      buildChunk(1),
+      buildChunk(2),
+      buildChunk(3, "queued"),
+      buildChunk(4, "rendering"),
+      buildChunk(5, "written", { start_seconds: 20 }),
     ],
   };
 }
@@ -325,8 +286,8 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByRole("heading", { name: "Chunk status" })).toBeVisible();
-  await expect(page.getByText(/1\/1 chunks rendered/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Playwright job" })).toBeVisible();
+  await expect(page.getByText(/1\/1 chunks/i)).toBeVisible();
 
   chunkCount = 2;
   await page.evaluate(() => {
@@ -338,6 +299,8 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
     const payload = {
       type: "chunk_ready",
       payload: {
+        // Per-chunk events carry the job summary plus the single chunk that
+        // changed; the client merges them into the detail it fetched over HTTP.
         job: {
           id: "job-1",
           title: "Playwright job",
@@ -349,30 +312,21 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
           total_chunks_completed: 2,
           buffered_seconds: 8,
           completed_seconds: 0,
-          source_kind: "text",
-          source_text: "Playwright text",
+        },
+        chunk: {
+          index: 1,
+          status: "written",
+          duration_seconds: 4,
+          start_seconds: 4,
           plan_version: 1,
-          chunks: [
-            {
-              index: 0,
-              status: "written",
-              duration_seconds: 4,
-              start_seconds: 0,
-              plan_version: 1,
-              voice_id: "suzy",
-              segment_url: "/api/jobs/job-1/chunks/0",
-            },
-            {
-              index: 1,
-              status: "written",
-              duration_seconds: 4,
-              start_seconds: 4,
-              plan_version: 1,
-              voice_id: "suzy",
-              segment_url: "/api/jobs/job-1/chunks/1",
-            },
-          ],
-          failed_reason: null,
+          version: 0,
+          voice_id: "suzy",
+          segment_url: "/api/jobs/job-1/chunks/1",
+          peaks_url: null,
+          deprecated: false,
+          reprocessing: false,
+          char_start: 0,
+          char_end: 0,
         },
         chunk_index: 1,
         mime_type: 'audio/mp4; codecs="mp4a.40.2"',
@@ -384,7 +338,7 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
     }
   });
 
-  await expect(page.getByText(/2\/2 chunks rendered/i)).toBeVisible();
+  await expect(page.getByText(/2\/2 chunks/i)).toBeVisible();
   await expect(page.getByText(/Chunk 2/).first()).toBeVisible();
 });
 
@@ -403,7 +357,7 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByRole("heading", { name: "Chunk status" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Playwright job" })).toBeVisible();
 
   await page.evaluate(() => {
     const mockWindow = globalThis as typeof globalThis & {
@@ -419,7 +373,7 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
   });
 
   await expect(page.getByText(/Live updates degraded, using fallback sync/i)).toBeVisible();
-  await expect(page.getByText(/Live reconnecting/i)).toBeVisible();
+  await expect(page.getByLabel(/Connection: reconnecting/)).toBeVisible();
 });
 
 test("reader renders missing gap slots and allows a manual jump to a later ready chunk", async ({
@@ -442,19 +396,22 @@ test("reader renders missing gap slots and allows a manual jump to a later ready
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByText(/4\/6 chunks rendered/i)).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Chunk 4 expected but not received" }),
-  ).toHaveAttribute("data-slot-state", "missing_expected");
-  await expect(
-    page.getByRole("button", { name: "Chunk 5 expected but not received" }),
-  ).toHaveAttribute("data-slot-state", "missing_expected");
-  await expect(page.getByRole("button", { name: "Chunk 6 ready after gap" })).toHaveAttribute(
+  await expect(page.getByText(/4\/6 chunks/i)).toBeVisible();
+  await expect(page.getByRole("slider", { name: "Chunk 4: missing_expected" })).toHaveAttribute(
+    "data-slot-state",
+    "missing_expected",
+  );
+  await expect(page.getByRole("slider", { name: "Chunk 5: missing_expected" })).toHaveAttribute(
+    "data-slot-state",
+    "missing_expected",
+  );
+  await expect(page.getByRole("slider", { name: "Chunk 6: ready_after_gap" })).toHaveAttribute(
     "data-slot-state",
     "ready_after_gap",
   );
 
-  await page.getByRole("button", { name: "Chunk 6 ready after gap" }).click();
+  await page.getByRole("slider", { name: "Chunk 6: ready_after_gap" }).click();
 
-  await expect(page.getByText(/Playback anchor: Chunk 6/i)).toBeVisible();
+  // Seeking to the later ready chunk anchors playback on it.
+  await expect(page.getByRole("slider", { name: "Chunk 6: playing" })).toBeVisible();
 });

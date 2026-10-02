@@ -243,7 +243,23 @@ test("shows waiting copy when play is armed before the first chunk exists", asyn
       };
     }
     if (url.endsWith("/activate")) {
-      return { ok: true, json: async () => ({ ...job, status: "playing", is_active_listening: true }) };
+      // Playback transitions answer with a summary: the reader must merge it
+      // into the detail it already loaded instead of expecting a full document.
+      return {
+        ok: true,
+        json: async () => ({
+          id: job.id,
+          title: job.title,
+          status: "playing",
+          voice_id: job.voice_id,
+          model_id: job.model_id,
+          is_active_listening: true,
+          total_chunks_emitted: job.total_chunks_emitted,
+          total_chunks_completed: job.total_chunks_completed,
+          buffered_seconds: job.buffered_seconds,
+          completed_seconds: job.completed_seconds,
+        }),
+      };
     }
     if (url.endsWith("/playback")) {
       return { ok: true, json: async () => ({ ...job, status: "playing", is_active_listening: true }) };
@@ -954,4 +970,114 @@ describe("chunk versioning & reprocessing", () => {
     // Playback intent is preserved across the seek.
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
   });
+});
+
+/* ── Long-document reader behavior ───────────────────────── */
+
+const LONG_SOURCE = "First chunk sentence. Second chunk sentence the planner has not reached yet.";
+
+function buildLongReaderJob(chunks: Chunk[]) {
+  return {
+    ...buildReaderJobWithChunks(chunks),
+    source_text: LONG_SOURCE,
+  };
+}
+
+function mockLongJobFetch(chunks: Chunk[]) {
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildLongReaderJob(chunks) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/peaks")) {
+      return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+}
+
+function renderReader() {
+  return render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+test("shows the whole pasted document before any chunk is planned", async () => {
+  seedStore();
+  mockLongJobFetch([]);
+
+  renderReader();
+
+  await screen.findByText("Reader job");
+
+  // Chunk planning is lazy and buffer-aware. Before that fix the reader only
+  // rendered planned chunks, so a long paste looked truncated: the text after
+  // the last planned chunk simply was not in the DOM.
+  expect(screen.getByText(LONG_SOURCE)).toBeInTheDocument();
+  expect(screen.getByText(/Upcoming text/)).toBeInTheDocument();
+});
+
+test("merges a streamed chunk delta without losing the document text", async () => {
+  seedStore();
+  mockLongJobFetch([]);
+
+  renderReader();
+
+  await screen.findByText("Reader job");
+
+  // Per-chunk events carry the job summary plus the single chunk that changed;
+  // they no longer repeat the source text or every chunk record.
+  act(() => {
+    useAppStore.getState().applyEvent({
+      type: "chunk_ready",
+      payload: {
+        job: {
+          id: "job-1",
+          title: "Reader job",
+          status: "rendering",
+          voice_id: "suzy",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+          is_active_listening: false,
+          total_chunks_emitted: 1,
+          total_chunks_completed: 1,
+          buffered_seconds: 4,
+          completed_seconds: 0,
+        },
+        chunk: {
+          index: 0,
+          status: "written",
+          duration_seconds: 4,
+          start_seconds: 0,
+          plan_version: 1,
+          version: 0,
+          voice_id: "suzy",
+          segment_url: "/api/jobs/job-1/chunks/0",
+          peaks_url: "/api/jobs/job-1/chunks/0/peaks",
+          deprecated: false,
+          reprocessing: false,
+          char_start: 0,
+          char_end: 22,
+        },
+        chunk_index: 0,
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
+      },
+    });
+  });
+
+  // The chunk reached the timeline (manifest merge) and split the document: the
+  // first sentence is now a chunk block and the tail is the remaining text, so
+  // the merged summary must not have dropped source_text.
+  expect(await screen.findByRole("slider", { name: /^Chunk 1:/ })).toBeInTheDocument();
+  expect(screen.queryByText(LONG_SOURCE)).not.toBeInTheDocument();
+  expect(
+    screen.getByText("Second chunk sentence the planner has not reached yet."),
+  ).toBeInTheDocument();
 });

@@ -449,6 +449,23 @@ These changes are in memory only. They are not persisted across restarts.
 - `READFLOW_SCHEDULER_AUTOSTART=true|false`
 - `READFLOW_TEMP_DIR_NAME=<name>`
 - `READFLOW_VOICES_DIR=<relative path>`
+- `READFLOW_MAX_SOURCE_BYTES=<bytes>` (default `67108864`, i.e. 64 MB per job)
+
+### Long documents
+
+Paste or upload a whole chapter, or a whole book. The source text is
+canonicalized once when the job is created (whitespace/newline cleanup) and that
+single canonical string is what chunk offsets and the reader index into.
+
+- `READFLOW_MAX_SOURCE_BYTES` caps one job's source text. Both the pasted-text
+  field and a `.txt` upload are measured against it; going over returns HTTP 413
+  with the configured limit in the message. Starlette's 1 MiB per-field multipart
+  default does **not** apply here.
+- Chunk planning stays lazy and buffer-aware, so a long document is planned as
+  it renders — the reader shows the not-yet-planned tail as dimmed "Upcoming
+  text" (whole tail for chapter-sized sources, a bounded preview for books).
+- Live events carry a job summary plus, for chunk events, the single chunk that
+  changed. Full detail (including `source_text`) is fetched over HTTP.
 
 For many other runtime defaults, the current source of truth is [server/app/core/config.py](/home/tychart/projects/readflow/server/app/core/config.py).
 
@@ -456,15 +473,15 @@ For many other runtime defaults, the current source of truth is [server/app/core
 
 Key HTTP endpoints:
 
-- `POST /api/jobs`
+- `POST /api/jobs` (multipart: `text` or `.txt` `file`, up to `READFLOW_MAX_SOURCE_BYTES`)
 - `GET /api/jobs`
-- `GET /api/jobs/{job_id}`
+- `GET /api/jobs/{job_id}` (full detail, including `source_text`)
 - `GET /api/jobs/{job_id}/manifest`
 - `GET /api/jobs/{job_id}/chunks/init`
 - `GET /api/jobs/{job_id}/chunks/{chunk_index}`
-- `POST /api/jobs/{job_id}/activate`
-- `POST /api/jobs/{job_id}/pause`
-- `POST /api/jobs/{job_id}/resume`
+- `POST /api/jobs/{job_id}/activate` (returns a job summary)
+- `POST /api/jobs/{job_id}/pause` (returns a job summary)
+- `POST /api/jobs/{job_id}/resume` (returns a job summary)
 - `POST /api/jobs/{job_id}/voice`
 - `POST /api/jobs/{job_id}/playback`
 - `GET /api/voices`
