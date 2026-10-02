@@ -742,7 +742,6 @@ export function ReaderPage() {
     const readerLines: React.ReactNode = (
       <ReaderTextBody
         activeChunkIndex={activeProgress.activeChunkIndex}
-        animateNowPlaying={motion === "animated"}
         onJumpToChunk={handleJumpToChunk}
         onRegisterChunkRef={handleRegisterChunkRef}
         playedIndexes={activeProgress.playedIndexes}
@@ -875,6 +874,7 @@ export function ReaderPage() {
               lines={readerLines}
               isLargeScreen={isLargeScreen}
               isPlaying={isActuallyPlaying}
+              motion={motion}
               sidebarOpen={sidebarOpen}
               onToggleSidebar={toggleSidebar}
             />
@@ -890,6 +890,7 @@ export function ReaderPage() {
                 lines={readerLines}
                 isLargeScreen={isLargeScreen}
                 isPlaying={isActuallyPlaying}
+                motion={motion}
                 sidebarOpen={sidebarOpen}
                 onToggleSidebar={toggleSidebar}
               />

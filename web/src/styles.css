@@ -128,13 +128,14 @@ body {
  * audio app uses for "this is what's playing".
  *
  * The animation squeezes the bars *down from* their full heights rather than up
- * from nothing: a paused animation renders at its first keyframe, and playback
- * pauses this one, so the resting state has to already look like an equalizer.
+ * from nothing: a paused animation renders at its first keyframe, so a paused
+ * marker still has to look like an equalizer.
  *
- * It is only *applied* when the reader's motion setting allows it, and it is
- * *paused* whenever audio is not actually running, so the marker never claims
- * audio is playing while it is not. The global reduced-motion guard above stays
- * as the OS-level backstop.
+ * Timing comes from custom properties so each bar can be staggered from the
+ * component while the animation itself stays owned by CSS. It must NOT be set as
+ * an inline `animation` shorthand: the shorthand resets `animation-play-state`
+ * to `running` at inline priority, so the pause rule below could never win and
+ * the marker kept moving while the player was paused.
  */
 @keyframes readflow-equalizer {
   0%,
@@ -146,6 +147,19 @@ body {
   }
 }
 
+[data-now-playing] [data-now-playing-bar] {
+  animation: readflow-equalizer var(--equalizer-duration, 900ms) ease-in-out
+    var(--equalizer-delay, 0ms) infinite alternate;
+}
+
+/* Reader motion setting (or the OS preference, via the guard above): keep the
+   marker as a static status indicator. */
+[data-motion="reduced"] [data-now-playing-bar] {
+  animation: none;
+}
+
+/* Paused whenever audio is not actually running, so the marker never claims
+   playback is happening while it is not. */
 [data-now-playing="paused"] [data-now-playing-bar] {
   animation-play-state: paused;
 }

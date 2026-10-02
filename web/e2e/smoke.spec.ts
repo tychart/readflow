@@ -552,3 +552,44 @@ test("phone widths get a bottom dock and keep the top bar as an overview", async
   await dock.getByRole("button", { name: "Forward 10 seconds" }).click();
   await expect(dock.getByTestId("conveyor-readout")).toBeVisible();
 });
+
+test("the now-playing marker only moves while audio is actually running", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(4, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(4) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+
+  // Chunk 1 sits under the playhead, so it carries the now-playing marker.
+  const marker = page.getByTestId("chunk-0-now-playing");
+  await expect(marker).toBeVisible();
+
+  /** Sample the marker over time; a moving equalizer produces differing frames. */
+  async function sampleFrames(): Promise<string[]> {
+    const frames: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      frames.push((await marker.screenshot()).toString("base64"));
+      await page.waitForTimeout(220);
+    }
+    return frames;
+  }
+
+  // Idle: audio is not running, so the marker must be perfectly still. This is
+  // what the player pauses every time a reader opens a job without pressing play.
+  const paused = await sampleFrames();
+  expect(new Set(paused).size).toBe(1);
+
+  // ...and it must actually animate once playback is reported as running, so the
+  // test cannot pass by the animation never being applied at all.
+  await marker.evaluate((element) => {
+    element.closest("[data-now-playing]")?.setAttribute("data-now-playing", "running");
+  });
+  const running = await sampleFrames();
+  expect(new Set(running).size).toBeGreaterThan(1);
+});

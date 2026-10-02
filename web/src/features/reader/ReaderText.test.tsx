@@ -28,7 +28,6 @@ interface BodyOverrides {
   activeChunkIndex?: number | null;
   playedIndexes?: Set<number>;
   showJumpButtons?: boolean;
-  animateNowPlaying?: boolean;
   onJumpToChunk?: (chunkIndex: number) => void;
   onRegisterChunkRef?: (chunkIndex: number, element: HTMLDivElement | null) => void;
 }
@@ -37,7 +36,6 @@ function renderBody(segments: ReturnType<typeof buildReaderTextSegments>, overri
   return render(
     <ReaderTextBody
       activeChunkIndex={overrides.activeChunkIndex ?? null}
-      animateNowPlaying={overrides.animateNowPlaying ?? true}
       onJumpToChunk={overrides.onJumpToChunk ?? NOOP_JUMP}
       onRegisterChunkRef={overrides.onRegisterChunkRef ?? NOOP_REF}
       playedIndexes={overrides.playedIndexes ?? new Set()}
@@ -165,29 +163,33 @@ describe("ReaderTextBody jump controls", () => {
     expect(new Set(heights).size).toBeGreaterThan(1);
   });
 
-  test("animates the marker only when motion allows it", () => {
-    const { unmount } = renderBody(segments, {
-      activeChunkIndex: 0,
-      animateNowPlaying: true,
-      showJumpButtons: true,
-    });
-    const animated = screen
-      .getByTestId("chunk-0-now-playing")
-      .querySelector<HTMLElement>("[data-now-playing-bar]");
-    expect(animated?.style.animation).toContain("readflow-equalizer");
-    unmount();
+  test("staggers the equalizer timing per bar without setting the animation itself", () => {
+    renderBody(segments, { activeChunkIndex: 0, showJumpButtons: true });
 
-    renderBody(segments, {
-      activeChunkIndex: 0,
-      animateNowPlaying: false,
-      showJumpButtons: true,
-    });
-    const still = screen
-      .getByTestId("chunk-0-now-playing")
-      .querySelector<HTMLElement>("[data-now-playing-bar]");
-    // Reduced motion keeps the marker as a status indicator, just static.
-    expect(still?.style.animation).toBe("");
-    expect(still?.style.height).not.toBe("");
+    const bars = Array.from(
+      screen.getByTestId("chunk-0-now-playing").querySelectorAll<HTMLElement>("[data-now-playing-bar]"),
+    );
+    expect(bars.map((bar) => bar.style.getPropertyValue("--equalizer-duration"))).toEqual([
+      "800ms",
+      "970ms",
+      "1140ms",
+      "1310ms",
+    ]);
+    expect(bars.map((bar) => bar.style.getPropertyValue("--equalizer-delay"))).toEqual([
+      "0ms",
+      "130ms",
+      "260ms",
+      "390ms",
+    ]);
+
+    // Regression guard: the `animation` shorthand must never be set inline. It
+    // resets `animation-play-state` to `running` at inline priority, which is
+    // exactly how the bars kept moving while the player was paused. The
+    // stylesheet owns the animation, and `[data-now-playing="paused"]` pauses it.
+    for (const bar of bars) {
+      expect(bar.style.animation).toBe("");
+      expect(bar.style.animationPlayState).toBe("");
+    }
   });
 
   test("renders no jump control when the setting is off", () => {
@@ -284,6 +286,7 @@ describe("ReaderContent", () => {
         isLargeScreen
         isPlaying={false}
         lines={<p>body</p>}
+        motion="animated"
         onToggleSidebar={onToggleSidebar}
         sidebarOpen={false}
         status="playing"
@@ -298,21 +301,25 @@ describe("ReaderContent", () => {
     expect(onToggleSidebar).toHaveBeenCalledTimes(1);
   });
 
-  test("reports the live play state for the now-playing marker", () => {
+  test("carries the play state and motion setting the equalizer is driven by", () => {
     const { unmount } = render(
       <ReaderContent
         contentRef={{ current: null }}
         isLargeScreen
         isPlaying={false}
         lines={<p>body</p>}
+        motion="animated"
         onToggleSidebar={vi.fn()}
         sidebarOpen
         status="paused"
         title="Chapter one"
       />,
     );
+    // The stylesheet pauses the equalizer while this reads "paused", so the
+    // marker can never claim audio is playing while it is not.
     const paused = document.querySelector("[data-now-playing]");
     expect(paused).toHaveAttribute("data-now-playing", "paused");
+    expect(paused).toHaveAttribute("data-motion", "animated");
     unmount();
 
     render(
@@ -321,18 +328,17 @@ describe("ReaderContent", () => {
         isLargeScreen
         isPlaying
         lines={<p>body</p>}
+        motion="reduced"
         onToggleSidebar={vi.fn()}
         sidebarOpen
         status="playing"
         title="Chapter one"
       />,
     );
-    // The CSS rule pauses the equalizer whenever this attribute is "paused", so
-    // the marker can never claim audio is playing while it is not.
-    expect(document.querySelector("[data-now-playing]")).toHaveAttribute(
-      "data-now-playing",
-      "running",
-    );
+    const running = document.querySelector("[data-now-playing]");
+    expect(running).toHaveAttribute("data-now-playing", "running");
+    // Reduced motion keeps the marker as a static status indicator.
+    expect(running).toHaveAttribute("data-motion", "reduced");
   });
 
   test("hides the sidebar toggle on small screens where the sidebar overlays", () => {
@@ -342,6 +348,7 @@ describe("ReaderContent", () => {
         isLargeScreen={false}
         isPlaying
         lines={<p>body</p>}
+        motion="reduced"
         onToggleSidebar={vi.fn()}
         sidebarOpen
         status="paused"

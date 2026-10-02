@@ -1,5 +1,5 @@
 import { memo } from "react";
-import type { RefObject } from "react";
+import type { CSSProperties, RefObject } from "react";
 
 import type { ReaderTextSegment } from "./reader-text";
 
@@ -20,6 +20,8 @@ export interface ReaderContentProps {
    * memoized chunk block.
    */
   isPlaying: boolean;
+  /** Reader motion setting; keeps the now-playing marker static when reduced. */
+  motion: "animated" | "reduced";
 }
 
 /**
@@ -40,6 +42,7 @@ export function ReaderContent({
   sidebarOpen,
   onToggleSidebar,
   isPlaying,
+  motion,
 }: ReaderContentProps) {
   return (
     <>
@@ -98,6 +101,7 @@ export function ReaderContent({
       {/* Source text — no inner scroll, flows with page */}
       <div
         className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
+        data-motion={motion}
         data-now-playing={isPlaying ? "running" : "paused"}
         ref={contentRef}
       >
@@ -125,12 +129,6 @@ export interface ReaderChunkBlockProps {
   onRegisterRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
   /** Renders the jump control (reader setting; hiding it hides no status). */
   showJumpButton: boolean;
-  /**
-   * Whether the now-playing marker may animate. Comes from the reader's motion
-   * setting only (not from the play state), so it changes at most when a setting
-   * changes rather than on every play/pause — playback pauses it through CSS.
-   */
-  animateNowPlaying: boolean;
   /** Jumps playback to this chunk. Must be stable or memoization is defeated. */
   onJump: (chunkIndex: number) => void;
 }
@@ -153,7 +151,6 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
   isPlayed,
   onRegisterRef,
   showJumpButton,
-  animateNowPlaying,
   onJump,
 }: ReaderChunkBlockProps) {
   return (
@@ -200,14 +197,11 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
                     data-now-playing-bar
                     key={barIndex}
                     style={
-                      animateNowPlaying
-                        ? {
-                            animation: `readflow-equalizer ${800 + barIndex * 170}ms ease-in-out ${
-                              barIndex * 130
-                            }ms infinite alternate`,
-                            height: `${heightPercent}%`,
-                          }
-                        : { height: `${heightPercent}%` }
+                      {
+                        "--equalizer-delay": `${barIndex * 130}ms`,
+                        "--equalizer-duration": `${800 + barIndex * 170}ms`,
+                        height: `${heightPercent}%`,
+                      } as CSSProperties
                     }
                   />
                 ))}
@@ -279,8 +273,6 @@ export interface ReaderTextBodyProps {
   onRegisterChunkRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
   /** Reader setting: show the per-chunk jump control. */
   showJumpButtons: boolean;
-  /** Reader motion: whether the now-playing marker may animate. */
-  animateNowPlaying: boolean;
   onJumpToChunk: (chunkIndex: number) => void;
 }
 
@@ -294,7 +286,6 @@ export function ReaderTextBody({
   playedIndexes,
   onRegisterChunkRef,
   showJumpButtons,
-  animateNowPlaying,
   onJumpToChunk,
 }: ReaderTextBodyProps) {
   if (segments.length === 0) {
@@ -312,7 +303,6 @@ export function ReaderTextBody({
           <ReaderUpcomingBlock hiddenChars={segment.hiddenChars} key={segment.key} text={segment.text} />
         ) : (
           <ReaderChunkBlock
-            animateNowPlaying={animateNowPlaying}
             chunkIndex={segment.chunkIndex ?? 0}
             isActive={segment.chunkIndex === activeChunkIndex}
             isPlayed={segment.chunkIndex !== null && playedIndexes.has(segment.chunkIndex)}
