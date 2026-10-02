@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo } from "react";
 
 import type { TimelineSlotData } from "../types/timeline";
+import { PlayButton, SkipButton } from "./PlaybackButtons";
+import {
+  SKIP_STEP_SECONDS,
+} from "../hooks/usePlaybackShortcuts";
 import { WaveformTimeline } from "./WaveformTimeline";
 
 /* ── Types ────────────────────────────────────────────────── */
@@ -14,7 +18,6 @@ export interface PlaybarProps {
    */
   waveforms: Map<number, Float32Array>;
   /** Current playhead position in seconds (stream-normalized for the playhead visual). */
-  currentTimeSeconds: number;
   /** Total rendered duration in the stream, or 0 if none. */
   renderedDurationSeconds: number;
   /** Position to display on the clock (original timeline coords, not normalized). */
@@ -44,8 +47,8 @@ export interface PlaybarProps {
   onPlay: () => void;
   /** Called when the user presses pause. */
   onPause: () => void;
-  /** Seek to an absolute time in seconds. */
-  onSeek: (seconds: number) => void;
+  /** Seek by a relative offset in seconds (the −10s / +10s buttons). */
+  onSkip: (deltaSeconds: number) => void;
   /** Seek targeting a specific chunk at an offset within it. */
   onSeekToChunk: (chunkIndex: number, seekSeconds: number) => void;
   /** Trigger audio download. */
@@ -62,6 +65,11 @@ export interface PlaybarProps {
    * Drives smooth inline-style transitions on padding, sizes, opacity.
    */
   scrollProgress: number;
+  /**
+   * Reader settings control. Rendered outside the fading metadata row so it
+   * stays reachable after the playbar compacts.
+   */
+  settingsSlot?: React.ReactNode;
 }
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -78,13 +86,14 @@ function formatClock(seconds: number): string {
 /**
  * Playbar — Full-width playback control bar for the Reader page.
  *
- * Orchestrates the static waveform timeline, providing play/pause, seek,
- * time display, download, and keyboard shortcuts.
+ * Orchestrates the static waveform timeline, providing transport controls, seek,
+ * time display and download. Keyboard shortcuts are deliberately NOT handled
+ * here: they live in `usePlaybackShortcuts` and are page-wide, so the keys work
+ * without the playbar holding focus.
  */
 export function Playbar({
   slots,
   waveforms,
-  currentTimeSeconds,
   renderedDurationSeconds,
   displayTimeSeconds,
   displayDurationSeconds,
@@ -98,16 +107,15 @@ export function Playbar({
   isDownloadComplete,
   onPlay,
   onPause,
-  onSeek,
+  onSkip,
   onSeekToChunk,
   onDownload,
   isDownloading = false,
   totalChunks,
   writtenChunks,
   scrollProgress,
+  settingsSlot,
 }: PlaybarProps) {
-  const barRef = useRef<HTMLDivElement>(null);
-
   // ── Player state for display ──────────────────────────────
   const playerStateLabel = useMemo(() => {
     if (isAutoplayBlocked) return "Playback blocked by browser";
@@ -122,48 +130,6 @@ export function Playbar({
   }, [isAutoplayBlocked, isJobTerminal, renderedDurationSeconds, displayTimeSeconds, displayDurationSeconds, isPlaying, playIntent, isWaitingForData]);
 
   const showSpinner = (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
-
-  // ── Keyboard shortcuts ────────────────────────────────────
-  useEffect(() => {
-    const bar = barRef.current;
-    if (!bar) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // Only capture when playbar is focused or no input is focused
-      const tag = (event.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      switch (event.key) {
-        case " ":
-          event.preventDefault();
-          if (isPlaying) {
-            onPause();
-          } else {
-            onPlay();
-          }
-          break;
-        case "ArrowRight":
-          event.preventDefault();
-          onSeek(Math.min(currentTimeSeconds + 5, renderedDurationSeconds));
-          break;
-        case "ArrowLeft":
-          event.preventDefault();
-          onSeek(Math.max(currentTimeSeconds - 5, 0));
-          break;
-        case "ArrowUp":
-          event.preventDefault();
-          onSeek(Math.min(currentTimeSeconds + 30, renderedDurationSeconds));
-          break;
-        case "ArrowDown":
-          event.preventDefault();
-          onSeek(Math.max(currentTimeSeconds - 30, 0));
-          break;
-      }
-    };
-
-    bar.addEventListener("keydown", handleKeyDown);
-    return () => bar.removeEventListener("keydown", handleKeyDown);
-  }, [isPlaying, onPlay, onPause, onSeek, currentTimeSeconds, renderedDurationSeconds]);
 
   // ── Seek handler for timeline clicks ──────────────────────
   const handleTimelineSeek = useCallback(
@@ -193,8 +159,11 @@ export function Playbar({
   // ── Smooth interpolated values ────────────────────────────
   // All animate linearly as scrollProgress goes 0 → 1
   const containerPad = Math.round(20 - scrollProgress * 20); // 20px → 0px
-  const btnSize = Math.round(48 - scrollProgress * 12);     // 48px → 36px
-  const iconSize = Math.round(16 - scrollProgress * 4);     // 16px → 12px
+  const btnSize = Math.round(48 - scrollProgress * 12); // 48px → 36px
+  const iconSize = Math.round(16 - scrollProgress * 4); // 16px → 12px
+  const skipSize = Math.round(36 - scrollProgress * 8); // 36px → 28px
+  const skipIconSize = Math.round(14 - scrollProgress * 3); // 14px → 11px
+  const transportGap = Math.max(2, Math.round(8 - scrollProgress * 4)); // 8px → 4px
   const gap = 12 - scrollProgress * 4;                      // 12px → 8px
   const metaOpacity = Math.max(0, 1 - scrollProgress * 1.2); // fades out by ~0.83
   // Fade the card border/background out as compact approaches
@@ -204,7 +173,6 @@ export function Playbar({
     <div
       aria-label="Playback controls"
       className="relative flex w-full flex-col"
-      ref={barRef}
       role="toolbar"
       style={{ gap: `${gap}px` }}
       tabIndex={-1}
@@ -216,38 +184,41 @@ export function Playbar({
         style={{ opacity: cardVisibility }}
       />
 
-      {/* Top row: play/pause + timeline */}
+      {/* Top row: transport + timeline + settings.
+          z-20 keeps this row (and the settings popover anchored inside it) above
+          the metadata row below, which is a sibling stacking context at z-10. */}
       <div
-        className="relative z-10 flex items-center gap-3"
+        className="relative z-20 flex items-center gap-3"
         style={{ padding: `${containerPad}px` }}
       >
-        {/* Play/Pause button */}
-        <button
-          aria-label={playButtonLabel}
-          className="flex shrink-0 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)]"
-          onClick={() => (isPlaying ? onPause() : onPlay())}
-          style={{ width: btnSize, height: btnSize }}
-          type="button"
-        >
-          {showSpinner ? (
-            <span
-              aria-hidden="true"
-              className="inline-block animate-spin rounded-full border-2 border-white border-t-transparent"
-              style={{ width: iconSize, height: iconSize }}
-            />
-          ) : isPlaying || playIntent ? (
-            /* Pause icon */
-            <svg aria-hidden="true" fill="currentColor" style={{ width: iconSize, height: iconSize }} viewBox="0 0 16 16">
-              <rect height="14" rx="1" width="5" x="2.5" y="1" />
-              <rect height="14" rx="1" width="5" x="8.5" y="1" />
-            </svg>
-          ) : (
-            /* Play icon */
-            <svg aria-hidden="true" className="ml-0.5" fill="currentColor" style={{ width: iconSize, height: iconSize }} viewBox="0 0 16 16">
-              <path d="M3 1.5v13l11-6.5L3 1.5z" />
-            </svg>
-          )}
-        </button>
+        {/* Transport: −10s / play-pause / +10s */}
+        <div className="flex shrink-0 items-center" style={{ gap: transportGap }}>
+          <SkipButton
+            direction="back"
+            iconSizePx={skipIconSize}
+            onClick={() => onSkip(-SKIP_STEP_SECONDS)}
+            seconds={SKIP_STEP_SECONDS}
+            shortcut="←"
+            sizePx={skipSize}
+          />
+          <PlayButton
+            iconSizePx={iconSize}
+            label={playButtonLabel}
+            onClick={() => (isPlaying ? onPause() : onPlay())}
+            showPauseIcon={isPlaying || playIntent}
+            showSpinner={showSpinner}
+            sizePx={btnSize}
+            title={`${playButtonLabel} (Space or K)`}
+          />
+          <SkipButton
+            direction="forward"
+            iconSizePx={skipIconSize}
+            onClick={() => onSkip(SKIP_STEP_SECONDS)}
+            seconds={SKIP_STEP_SECONDS}
+            shortcut="→"
+            sizePx={skipSize}
+          />
+        </div>
 
         {/* Waveform Timeline */}
         <div className="min-w-0 flex-1">
@@ -261,6 +232,10 @@ export function Playbar({
             waveforms={waveforms}
           />
         </div>
+
+        {/* Reader settings — outside the fading metadata row below so it stays
+            reachable once the playbar has compacted on scroll. */}
+        {settingsSlot ? <div className="shrink-0">{settingsSlot}</div> : null}
       </div>
 
       {/* Bottom row: metadata + controls — fades out progressively */}

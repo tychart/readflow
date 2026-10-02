@@ -12,6 +12,7 @@ import {
   deriveTimelineSlots,
   mergeJobPatch,
   mergeKnownChunks,
+  skipTargetSeconds,
 } from "./reader-model";
 
 /* ── Fixtures ─────────────────────────────────────────────── */
@@ -246,6 +247,22 @@ describe("deriveActiveChunkProgress", () => {
 });
 
 /* ── Timeline slots ───────────────────────────────────────── */
+
+describe("skipTargetSeconds", () => {
+  test("moves by the requested offset", () => {
+    expect(skipTargetSeconds(30, 10, 100)).toBe(40);
+    expect(skipTargetSeconds(30, -10, 100)).toBe(20);
+  });
+
+  test("never seeks before the start", () => {
+    expect(skipTargetSeconds(4, -10, 100)).toBe(0);
+  });
+
+  test("stops at the end of the rendered range instead of seeking into silence", () => {
+    expect(skipTargetSeconds(55, 10, 60)).toBe(60);
+    expect(skipTargetSeconds(60, 10, 60)).toBe(60);
+  });
+});
 
 describe("deriveTimelineSlots", () => {
   const known = [

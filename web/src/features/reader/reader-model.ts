@@ -234,6 +234,20 @@ export function buildStreamManifest(
   };
 }
 
+/**
+ * Start of a chunk in original timeline coordinates: the sum of every active
+ * chunk before it. Jump-to-chunk seeks use this, and the player converts it to
+ * stream coordinates via the anchor offset.
+ */
+export function chunkStartSeconds(activeChunks: Chunk[], chunkIndex: number): number {
+  let start = 0;
+  for (const chunk of activeChunks) {
+    if (chunk.index >= chunkIndex) break;
+    start += chunk.duration_seconds;
+  }
+  return start;
+}
+
 /* ── Playback progress ────────────────────────────────────── */
 
 export interface ActiveChunkProgress {
@@ -273,6 +287,20 @@ export function deriveActiveChunkProgress(
     break;
   }
   return { activeChunkIndex, fillByIndex, playedIndexes };
+}
+
+/**
+ * Clamp a relative skip into the playable range. Skipping past the end of the
+ * rendered stream lands on the last playable position, which is what puts the
+ * player into its waiting state instead of seeking into audio that does not
+ * exist yet.
+ */
+export function skipTargetSeconds(
+  currentSeconds: number,
+  deltaSeconds: number,
+  renderedDurationSeconds: number,
+): number {
+  return Math.min(Math.max(0, currentSeconds + deltaSeconds), renderedDurationSeconds);
 }
 
 /* ── Timeline slots ───────────────────────────────────────── */

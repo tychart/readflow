@@ -108,6 +108,10 @@ export interface ReaderChunkBlockProps {
   isPlayed: boolean;
   /** Registers the block element so explicit seeks can scroll it into view. */
   onRegisterRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
+  /** Renders the jump control (reader setting; hiding it hides no status). */
+  showJumpButton: boolean;
+  /** Jumps playback to this chunk. Must be stable or memoization is defeated. */
+  onJump: (chunkIndex: number) => void;
 }
 
 /**
@@ -127,10 +131,12 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
   isActive,
   isPlayed,
   onRegisterRef,
+  showJumpButton,
+  onJump,
 }: ReaderChunkBlockProps) {
   return (
     <div
-      className={`relative rounded-lg border-l-2 px-4 py-3 transition-all [contain-intrinsic-size:auto_160px] [content-visibility:auto] ${
+      className={`group relative rounded-lg border-l-2 px-4 py-3 transition-all [contain-intrinsic-size:auto_160px] [content-visibility:auto] ${
         isActive
           ? "border-l-[var(--amber)] bg-[var(--amber-soft)] shadow-[var(--amber-glow)]"
           : isPlayed
@@ -141,14 +147,60 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
       data-chunk-state={isActive ? "active" : isPlayed ? "played" : "idle"}
       ref={(element) => onRegisterRef(chunkIndex, element)}
     >
-      {/* Chunk number indicator */}
-      <div
-        className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${
-          isActive ? "text-[var(--amber)]" : "text-[var(--ink-secondary)]"
-        }`}
-      >
-        Chunk {chunkIndex + 1}
+      {/* Header row: chunk number + jump control */}
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div
+          className={`text-[10px] font-semibold uppercase tracking-wider ${
+            isActive ? "text-[var(--amber)]" : "text-[var(--ink-secondary)]"
+          }`}
+        >
+          Chunk {chunkIndex + 1}
+        </div>
+
+        {showJumpButton ? (
+          isActive ? (
+            /* The control is a no-op on the chunk already playing, so it becomes
+               a status marker instead. */
+            <span
+              aria-label="Currently playing"
+              className="flex h-5 w-5 items-center justify-center text-[var(--amber)]"
+              data-testid={`chunk-${chunkIndex}-now-playing`}
+              role="img"
+              title="Currently playing"
+            >
+              <svg aria-hidden="true" className="h-3 w-3" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M3 1.5v13l11-6.5L3 1.5z" />
+              </svg>
+            </span>
+          ) : (
+            <button
+              aria-label={`Jump playback to chunk ${chunkIndex + 1}`}
+              className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-secondary)] opacity-50 transition-opacity hover:text-[var(--amber)] hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--amber)] group-hover:opacity-100"
+              data-testid={`chunk-${chunkIndex}-jump`}
+              onClick={() => onJump(chunkIndex)}
+              title="Jump playback here"
+              type="button"
+            >
+              {/* Arrow down to a line: "jump to this location" */}
+              <svg
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path d="M12 3v11" />
+                <polyline points="7 9 12 14 17 9" />
+                <line x1="5" x2="19" y1="20" y2="20" />
+              </svg>
+            </button>
+          )
+        ) : null}
       </div>
+
       <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
         {text.trim() || "(empty text)"}
       </p>
@@ -184,6 +236,9 @@ export interface ReaderTextBodyProps {
   activeChunkIndex: number | null;
   playedIndexes: Set<number>;
   onRegisterChunkRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
+  /** Reader setting: show the per-chunk jump control. */
+  showJumpButtons: boolean;
+  onJumpToChunk: (chunkIndex: number) => void;
 }
 
 /**
@@ -195,6 +250,8 @@ export function ReaderTextBody({
   activeChunkIndex,
   playedIndexes,
   onRegisterChunkRef,
+  showJumpButtons,
+  onJumpToChunk,
 }: ReaderTextBodyProps) {
   if (segments.length === 0) {
     return (
@@ -215,7 +272,9 @@ export function ReaderTextBody({
             isActive={segment.chunkIndex === activeChunkIndex}
             isPlayed={segment.chunkIndex !== null && playedIndexes.has(segment.chunkIndex)}
             key={segment.key}
+            onJump={onJumpToChunk}
             onRegisterRef={onRegisterChunkRef}
+            showJumpButton={showJumpButtons}
             text={segment.text}
           />
         ),

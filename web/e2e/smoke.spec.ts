@@ -415,3 +415,56 @@ test("reader renders missing gap slots and allows a manual jump to a later ready
   // Seeking to the later ready chunk anchors playback on it.
   await expect(page.getByRole("slider", { name: "Chunk 6: playing" })).toBeVisible();
 });
+
+test("reader jumps playback to a chunk from the text", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(4, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(4) });
+  });
+  await page.route("**/api/jobs/job-1/activate", async (route) => {
+    await route.fulfill({ json: buildJob(4, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/playback", async (route) => {
+    await route.fulfill({ json: buildJob(4, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByText(/4\/4 chunks/i)).toBeVisible();
+
+  // Chunk 3 starts 8s into the document, so the jump control must move the
+  // playhead there without the user touching the (small) top playbar.
+  await page.getByTestId("chunk-2-jump").click();
+
+  await expect(page.getByText("0:08")).toBeVisible();
+  // The anchored chunk becomes the one playback is sitting on.
+  await expect(page.getByRole("slider", { name: "Chunk 3: playing" })).toBeVisible();
+});
+
+test("reader settings hide the per-chunk jump controls", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(2, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(2) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByTestId("chunk-1-jump")).toBeVisible();
+
+  await page.getByRole("button", { name: "Reader settings" }).click();
+  await expect(page.getByRole("dialog", { name: "Reader settings" })).toBeVisible();
+  await page.getByLabel("Show chunk jump buttons").uncheck();
+
+  await expect(page.getByTestId("chunk-1-jump")).toBeHidden();
+
+  // The shortcut guide lives in the same panel.
+  await expect(page.getByTestId("shortcut-guide")).toBeVisible();
+});

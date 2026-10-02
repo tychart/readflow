@@ -3,11 +3,15 @@ import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
 import { Playbar } from "../../components/Playbar";
+import { ReaderSettingsMenu } from "../../components/ReaderSettingsMenu";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
+import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
+import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
 import { useMediaSourcePlayer } from "../../lib/media-source";
+import { resetReaderSettings, setReaderSettings } from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest } from "../../types/api";
 import type { TimelineSlotData } from "../../types/timeline";
@@ -15,6 +19,7 @@ import { getChunkText, isTerminalStatus } from "./chunk-utils";
 import {
   buildManifestFromPatch,
   buildStreamManifest,
+  chunkStartSeconds,
   deriveActiveChunkProgress,
   deriveActiveChunks,
   deriveActiveVersionMap,
@@ -22,6 +27,7 @@ import {
   deriveTimelineSlots,
   mergeJobPatch,
   mergeKnownChunks,
+  skipTargetSeconds,
   type StreamEventMeta,
   type StreamEventPayload,
 } from "./reader-model";
@@ -108,6 +114,9 @@ export function ReaderPage() {
 
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
+
+  // Device-local reader preferences (jump controls, conveyor, motion).
+  const settings = useReaderSettings();
 
   // ── Derived data ────────────────────────────────────────
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
@@ -456,12 +465,26 @@ export function ReaderPage() {
 
   // Keyboard/direct seeks use normalized stream coords and seek immediately
   // (no need to wait for buffer — the stream is already set up)
-  const handleSeek = useCallback(
-    (seconds: number) => {
-      seekToSeconds(seconds);
-    },
-    [seekToSeconds],
-  );
+  /**
+   * Relative seek for the −10s / +10s buttons and their shortcuts. Bounded by
+   * the rendered stream, so skipping past the end lands on the last playable
+   * position and lets the player enter its waiting state rather than seeking
+   * into audio that does not exist.
+   */
+  const handleSkip = (deltaSeconds: number) => {
+    if (renderedDurationSeconds <= 0) return;
+    seekToSeconds(skipTargetSeconds(currentTimeSeconds, deltaSeconds, renderedDurationSeconds));
+  };
+
+  const handleTogglePlay = () => {
+    if (isActuallyPlaying || playIntent) void handlePause();
+    else void handlePlay();
+  };
+
+  // Page-wide playback keys: the reader should not require clicking the
+  // controls first. Handlers are read from a ref inside the hook, so this does
+  // not resubscribe on every playback tick.
+  usePlaybackShortcuts({ togglePlay: handleTogglePlay, skipBy: handleSkip });
 
   const handleSeekToChunk = useCallback(
     async (chunkIndex: number, seekSeconds: number) => {
@@ -507,6 +530,22 @@ export function ReaderPage() {
     },
     [handleSeekToChunk],
   );
+
+  /**
+   * Jump to a chunk from its block in the reader text. Stable identity matters:
+   * `ReaderChunkBlock` is memoized, so an unstable callback would re-render
+   * every block in a book on every playback tick.
+   */
+  const handleJumpToChunk = useCallback(
+    (chunkIndex: number) => {
+      void handleSeekToChunkWithScroll(chunkIndex, chunkStartSeconds(activeChunks, chunkIndex));
+    },
+    [activeChunks, handleSeekToChunkWithScroll],
+  );
+
+  const handleSettingsChange = useCallback((patch: Partial<typeof settings>) => {
+    setReaderSettings(patch);
+  }, []);
 
   const handleDownload = useCallback(async () => {
     if (!job || downloadableChunks.length === 0) return;
@@ -694,9 +733,11 @@ export function ReaderPage() {
     const readerLines: React.ReactNode = (
       <ReaderTextBody
         activeChunkIndex={activeProgress.activeChunkIndex}
+        onJumpToChunk={handleJumpToChunk}
         onRegisterChunkRef={handleRegisterChunkRef}
         playedIndexes={activeProgress.playedIndexes}
         segments={textSegments}
+        showJumpButtons={settings.showChunkJumpButtons}
       />
     );
 
@@ -729,7 +770,6 @@ export function ReaderPage() {
           <Playbar
             canDownload={canDownloadRenderedAudio}
             scrollProgress={scrollProgress}
-            currentTimeSeconds={currentTimeSeconds}
             displayDurationSeconds={displayDurationSeconds}
             displayRenderedDurationSeconds={displayRenderedDurationSeconds}
             displayTimeSeconds={displayTimeSeconds}
@@ -743,9 +783,18 @@ export function ReaderPage() {
             onDownload={handleDownload}
             onPause={handlePause}
             onPlay={handlePlay}
-            onSeek={handleSeek}
             onSeekToChunk={handleSeekToChunkWithScroll}
+            onSkip={handleSkip}
             renderedDurationSeconds={renderedDurationSeconds}
+            settingsSlot={
+              <ReaderSettingsMenu
+                isOverlay={!isLargeScreen}
+                onChange={handleSettingsChange}
+                onReset={resetReaderSettings}
+                settings={settings}
+                showConveyorControls={false}
+              />
+            }
             slots={timelineSlots}
             totalChunks={totalChunksInJob}
             waveforms={waveforms}

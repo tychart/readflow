@@ -690,6 +690,143 @@ test("highlights the chunk under the playhead without remounting the other block
   expect(container.querySelector('[data-chunk-block="2"]')).toBe(untouchedBlock);
 });
 
+/* ── Reader navigation controls ───────────────────────────── */
+
+/** Fetch mock for a reader job whose chunks are all rendered. */
+function mockReaderFetch(chunks: Chunk[], status: "paused" | "playing" = "paused") {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, status) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/activate")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+    }
+    if (url.endsWith("/pause")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "paused") };
+    }
+    if (url.endsWith("/playback")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, status) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+  global.fetch = fetchMock;
+  return fetchMock;
+}
+
+function buildTextChunks(count: number): Chunk[] {
+  return Array.from({ length: count }, (_, index) => ({
+    index,
+    status: "written" as const,
+    duration_seconds: 4,
+    start_seconds: index * 4,
+    plan_version: 1,
+    version: 0,
+    voice_id: "suzy",
+    segment_url: `/api/jobs/job-1/chunks/${index}`,
+    peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
+    deprecated: false,
+    reprocessing: false,
+    char_start: index * 5,
+    char_end: index * 5 + 4,
+  }));
+}
+
+test("the chunk jump button moves the playhead without starting playback", async () => {
+  const user = userEvent.setup();
+  seedStore();
+  const fetchMock = mockReaderFetch(buildTextChunks(3));
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  // Chunk 2 starts 4s into the document.
+  await user.click(screen.getByRole("button", { name: "Jump playback to chunk 2" }));
+
+  expect(screen.getByText("0:04")).toBeInTheDocument();
+  // A seek on a paused reader must not activate backend scheduling.
+  expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything());
+});
+
+test("reader settings can remove the per-chunk jump controls", async () => {
+  const user = userEvent.setup();
+  seedStore();
+  mockReaderFetch(buildTextChunks(2));
+
+  renderReader();
+  await screen.findByText("Reader job");
+  expect(screen.getByRole("button", { name: "Jump playback to chunk 2" })).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Reader settings" }));
+  await user.click(screen.getByLabelText("Show chunk jump buttons"));
+
+  expect(screen.queryByRole("button", { name: "Jump playback to chunk 2" })).toBeNull();
+});
+
+test("the settings panel shows the conveyor controls once that feature exists", async () => {
+  const user = userEvent.setup();
+  seedStore();
+  mockReaderFetch(buildTextChunks(2));
+
+  renderReader();
+  await screen.findByText("Reader job");
+  await user.click(screen.getByRole("button", { name: "Reader settings" }));
+
+  // Shortcuts are always documented; conveyor wiring arrives in the next step,
+  // so the panel must not advertise a control that does nothing yet.
+  expect(screen.getByTestId("shortcut-guide")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Show chunk conveyor")).toBeNull();
+});
+
+test("space toggles playback without focusing the controls first", async () => {
+  seedStore();
+  const fetchMock = mockReaderFetch(buildTextChunks(2));
+
+  renderReader();
+  await screen.findByText("Reader job");
+  expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+
+  act(() => {
+    fireEvent.keyDown(window, { key: " " });
+  });
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything()),
+  );
+  expect(await screen.findByRole("button", { name: "Pause" })).toBeInTheDocument();
+});
+
+test("the ±10s buttons seek within the rendered stream", async () => {
+  const user = userEvent.setup();
+  seedStore();
+  mockReaderFetch(buildTextChunks(3));
+
+  const { container } = renderReader();
+  await screen.findByText("Reader job");
+
+  // Playing primes the stream and appends the rendered chunks, which is what
+  // makes the short clips seekable at all.
+  await user.click(screen.getByRole("button", { name: "Play" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Audio waveform timeline")).toHaveAttribute(
+      "aria-valuemax",
+      "12",
+    ),
+  );
+
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Forward 10 seconds" }));
+  expect(audio!.currentTime).toBeCloseTo(10, 5);
+
+  await user.click(screen.getByRole("button", { name: "Back 10 seconds" }));
+  expect(audio!.currentTime).toBeCloseTo(0, 5);
+});
+
 describe("chunk versioning & reprocessing", () => {
   beforeEach(() => {
     seedStore();
