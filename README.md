@@ -43,6 +43,10 @@ That starts the API (uvicorn `--reload`, real Qwen3-TTS by default) and the Vite
 with HMR, waits until both are ready, then follows their logs. Ctrl-C stops both. Use
 `scripts/dev.sh --fake` for instant, GPU-free runs.
 
+Vite binds `0.0.0.0`, so a phone or tablet on the same network can open the URL the script
+prints (`--localhost` restricts it to loopback-only). The API stays on loopback and is
+reached through Vite's `/api` proxy, so nothing else needs a LAN bind.
+
 `web/vite.config.ts` proxies `/api` and `/api/ws` to the backend, so the browser session is
 same-origin with no extra setup.
 
@@ -402,6 +406,10 @@ pointing at the API it started.
 Ports are fixed at 8000 (api) and 5173 (web) because `web/vite.config.ts` compiles the
 proxy target against 8000. `scripts/dev.sh` reports (and leaves alone) any process already
 holding either port instead of guessing.
+
+`scripts/dev.sh` serves the frontend on the LAN by default (Vite `--host 0.0.0.0`), which is
+what makes the reader usable from a phone. The API is *not* exposed directly — it keeps
+uvicorn's loopback default and LAN clients reach it only through Vite's `/api` proxy.
 
 ## Testing
 

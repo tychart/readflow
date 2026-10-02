@@ -6,6 +6,8 @@
 #   api   FastAPI/uvicorn on http://localhost:8000  (uv, --reload, real Qwen3-TTS
 #         by default; the model itself loads lazily on the first synthesis)
 #   web   Vite on http://localhost:5173             (bun, HMR, /api proxied to :8000)
+#         and on 0.0.0.0, so a phone or tablet on the same network can use it.
+#         The api itself stays loopback-only and is reached through Vite's proxy.
 #
 # ReadFlow has no database — jobs, chunks and telemetry live in memory — so there
 # is nothing to migrate, and `stop`/`down` are the same thing.
@@ -26,6 +28,8 @@
 #   --fake              boot with READFLOW_TTS_PROVIDER=fake — instant, no GPU,
 #                       no model load, deterministic audio            [DEV_PROVIDER=fake]
 #   --real              force the real Qwen3-TTS provider (default)   [DEV_PROVIDER=qwen]
+#   --localhost         bind the web dev server to loopback only, so nothing
+#                       else on the network can reach it         [DEV_WEB_HOST=localhost]
 #   --no-follow         start in the background, don't tail logs       [DEV_NO_FOLLOW=1]
 #   --no-server         skip the api                                   [DEV_NO_SERVER=1]
 #   --no-web            skip the frontend                              [DEV_NO_WEB=1]
@@ -37,6 +41,9 @@
 # that process alone rather than guessing.
 #
 # Notes:
+#   * The web dev server binds 0.0.0.0 by default (opt out with --localhost); the api
+#     still binds 127.0.0.1, so LAN clients only reach it through Vite's /api proxy.
+#     There is no auth — treat a LAN URL as trusted-network only.
 #   * Logs live in .dev-logs/ (gitignored); run state lives in .dev-logs/dev.state.
 #   * Nothing is ever killed by pattern — only the pids this script recorded, each
 #     in its own session so `uvicorn --reload`'s children go with it.
@@ -57,6 +64,9 @@ STATE_FILE="$LOG_DIR/dev.state"
 
 api_port=8000
 web_port=5173
+# Serving the web on the LAN by default is what makes the reader usable from a phone
+# without any extra setup. Vite proxies /api itself, so the api needs no LAN bind.
+web_host="${DEV_WEB_HOST:-0.0.0.0}"
 provider="${DEV_PROVIDER:-qwen}"
 no_server="${DEV_NO_SERVER:-0}"
 no_web="${DEV_NO_WEB:-0}"
@@ -185,6 +195,42 @@ port_owner() {
   ss -ltnpH "sport = :$1" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2
 }
 
+# True unless a bind address is loopback-only, i.e. nothing else can reach it.
+host_binds_lan() {
+  case "${1:-}" in
+    "" | localhost | 127.* | "::1" | "[::1]") return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# The host's primary LAN address, best-effort. Every probe here can fail (no
+# default route, an unusual toolchain) — that just means we print nothing. Each
+# probe ends in a pipeline so `set -e` sees awk's status, not the failing tool's.
+lan_ip() {
+  local ip=""
+  if have ip; then
+    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')
+    if [[ -z $ip ]]; then
+      ip=$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR == 1 { split($4, a, "/"); print a[1] }')
+    fi
+  fi
+  if [[ -z $ip ]] && have hostname; then
+    ip=$(hostname -I 2>/dev/null | awk '{ print $1 }')
+  fi
+  printf '%s' "$ip"
+  return 0
+}
+
+# Prints the web URL other devices can use, or nothing when the server is
+# loopback-only or no LAN address is derivable.
+lan_url() {
+  local host=$1 ip
+  host_binds_lan "$host" || return 0
+  ip=$(lan_ip)
+  [[ -n $ip ]] && printf 'http://%s:%s' "$ip" "$web_port"
+  return 0
+}
+
 # --- spinner -----------------------------------------------------------------
 SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
@@ -222,6 +268,7 @@ state_write() {
     printf 'provider %s\n' "$provider"
     printf 'api_port %s\n' "$api_port"
     printf 'web_port %s\n' "$web_port"
+    printf 'web_host %s\n' "$web_host"
     printf 'api_pid %s\n' "$api_pid"
     printf 'web_pid %s\n' "$web_pid"
   } >"$STATE_FILE"
@@ -351,8 +398,8 @@ start_web() {
     return 0
   fi
 
-  info "starting web on ${BOLD}$web_url${OFF}"
-  start_proc web "$WEB_LOG" bun run dev -- --port "$web_port"
+  info "starting web on ${BOLD}$web_url${OFF} ${DIM}(host: $web_host)${OFF}"
+  start_proc web "$WEB_LOG" bun run dev -- --host "$web_host" --port "$web_port"
   web_pid=$proc_pid
   return 0
 }
@@ -580,9 +627,22 @@ start() {
     web_plain="● up  $web_url"
   fi
 
+  # Only meaningful when this script started the web server: a foreign listener's
+  # bind address is not ours to claim. The api needs no row of its own — LAN
+  # clients reach it through Vite's proxy.
+  local lan_plain="" lan_txt="" lan_addr
+  if [[ -n $web_pid ]]; then
+    lan_addr=$(lan_url "$web_host")
+    if [[ -n $lan_addr ]]; then
+      lan_plain="$lan_addr  (other devices)"
+      lan_txt="${C_OK}${lan_addr}${OFF}  ${DIM}(other devices)${OFF}"
+    fi
+  fi
+
   box_open "ReadFlow dev · running"
   box_row "api" "$api_plain" "$api_txt"
   box_row "web" "$web_plain" "$web_txt"
+  [[ -n $lan_plain ]] && box_row "network" "$lan_plain" "$lan_txt"
   box_row "provider" "$provider_txt" "$provider_shown"
   box_row "logs" ".dev-logs/" "${DIM}.dev-logs/${OFF}"
   box_close
@@ -665,6 +725,14 @@ status() {
   box_open "ReadFlow dev · $overall"
   box_row "api" "$api_plain" "$api_txt"
   box_row "web" "$web_plain" "$web_txt"
+  if ((web_up)) && [[ -n $s_web ]]; then
+    local sw_host sw_lan
+    sw_host=$(state_get web_host)
+    sw_lan=$(lan_url "$sw_host")
+    if [[ -n $sw_lan ]]; then
+      box_row "network" "$sw_lan  (other devices)" "${C_OK}${sw_lan}${OFF}  ${DIM}(other devices)${OFF}"
+    fi
+  fi
   if [[ -n $(state_get provider) ]]; then
     local sp; sp=$(state_get provider)
     box_row "provider" "$sp" "${BOLD}$sp${OFF}"
@@ -724,6 +792,7 @@ while ((i < ${#args[@]})); do
       ;;
     --fake) provider=fake ;;
     --real) provider=qwen ;;
+    --localhost) web_host=localhost ;;
     --no-server) no_server=1 ;;
     --no-web) no_web=1 ;;
     --no-follow) no_follow=1 ;;

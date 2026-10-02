@@ -888,8 +888,8 @@ not `uvicorn` by hand, not `bun run dev` — is the canonical local run path. Ke
 in docs and in any new tooling.
 
 Shape: `start` (default) · `restart` · `stop` · `status` · `logs` · `test` · `test-e2e` ·
-`lint` · `typecheck` · `help`, plus `--fake`/`--real`, `--no-server`, `--no-web`,
-`--no-follow`, `--access-log`.
+`lint` · `typecheck` · `help`, plus `--fake`/`--real`, `--localhost`, `--no-server`,
+`--no-web`, `--no-follow`, `--access-log`.
 
 Design rules that are deliberate and easy to break:
 
@@ -899,6 +899,12 @@ Design rules that are deliberate and easy to break:
 - **Ports are hardcoded 8000/5173** and are *not* configurable on purpose: Vite's proxy
   target is compiled against 8000, so an `--api-port` flag would silently desynchronize the
   two halves. A busy port is reported (with `ss`-derived owner pid) and left alone.
+- **The web dev server binds `0.0.0.0` by default** (`DEV_WEB_HOST`; `--localhost` opts out)
+  so the reader is usable from a phone with no extra setup, and the start/status boxes print
+  the LAN URL whenever the bind is not loopback-only. The api keeps uvicorn's loopback
+  default: LAN clients reach it *only* through Vite's `/api` proxy, so never "fix" LAN access
+  by binding uvicorn to `0.0.0.0`. Vite 6 already allows IP-address hosts; only a hostname
+  would need `server.allowedHosts`.
 - **Never kill by pattern.** Only pids this script recorded are signalled, and each child is
   started with `setsid` so `kill -TERM -<pid>` reaches `uv run` *and* the `uvicorn --reload`
   child. Process groups are why `stop` cannot take out an unrelated dev server.
