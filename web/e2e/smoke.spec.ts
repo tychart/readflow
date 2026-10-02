@@ -440,9 +440,52 @@ test("reader jumps playback to a chunk from the text", async ({ page }) => {
   // playhead there without the user touching the (small) top playbar.
   await page.getByTestId("chunk-2-jump").click();
 
-  await expect(page.getByText("0:08")).toBeVisible();
+  // Both the playbar clock and the conveyor follow the jump.
+  await expect(page.getByTestId("conveyor-readout")).toHaveText("0:08");
   // The anchored chunk becomes the one playback is sitting on.
   await expect(page.getByRole("slider", { name: "Chunk 3: playing" })).toBeVisible();
+});
+
+test("the chunk conveyor seeks when dragged and keeps the strip under the playhead", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(6, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(6) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByTestId("chunk-conveyor")).toBeVisible();
+  await expect(page.getByTestId("conveyor-readout")).toHaveText("0:00");
+
+  // A slow, deliberate drag right reveals earlier audio — and the strip must
+  // not have moved on its own before the release commits the seek.
+  const strip = page.getByTestId("chunk-conveyor");
+  const box = await strip.boundingBox();
+  expect(box).not.toBeNull();
+  const centreY = (box?.y ?? 0) + (box?.height ?? 0) / 2;
+
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, centreY);
+  await page.mouse.down();
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 + 40, centreY, { steps: 12 });
+  await page.mouse.up();
+
+  // The drag starts at the live position, so dragging forward from 0 clamps to
+  // the start; the readout stays on a valid, playable position.
+  await expect(page.getByTestId("conveyor-readout")).toHaveText(/0:0\d/);
+
+  // Dragging left moves forward in time and commits a seek on release.
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, centreY);
+  await page.mouse.down();
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 - 120, centreY, { steps: 12 });
+  await page.mouse.up();
+
+  await expect(page.getByTestId("conveyor-readout")).not.toHaveText("0:00");
 });
 
 test("reader settings hide the per-chunk jump controls", async ({ page }) => {

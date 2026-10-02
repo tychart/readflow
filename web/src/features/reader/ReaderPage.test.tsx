@@ -491,12 +491,15 @@ test("renders analyzed waveform bars fetched from the backend", async () => {
   );
 
   await screen.findByText("Reader job");
+  expect(container.querySelector("audio")).not.toBeNull();
 
   // The written chunk's bar heights come from the fetched peaks.
   // jsdom has no layout, so the timeline renders a single bar whose height
   // is the max-pooled peak (0.75 → 75%).
   await waitFor(() => {
-    const bars = container.querySelectorAll("[data-wave-bar]");
+    const bars = screen
+      .getByLabelText("Audio waveform timeline")
+      .querySelectorAll("[data-wave-bar]");
     expect(bars.length).toBeGreaterThan(0);
     expect((bars[0] as HTMLElement).style.height).toBe("75%");
   });
@@ -746,7 +749,8 @@ test("the chunk jump button moves the playhead without starting playback", async
   // Chunk 2 starts 4s into the document.
   await user.click(screen.getByRole("button", { name: "Jump playback to chunk 2" }));
 
-  expect(screen.getByText("0:04")).toBeInTheDocument();
+  // Both the playbar clock and the conveyor readout follow the jump.
+  expect(screen.getByTestId("conveyor-readout")).toHaveTextContent("0:04");
   // A seek on a paused reader must not activate backend scheduling.
   expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything());
 });
@@ -766,7 +770,7 @@ test("reader settings can remove the per-chunk jump controls", async () => {
   expect(screen.queryByRole("button", { name: "Jump playback to chunk 2" })).toBeNull();
 });
 
-test("the settings panel shows the conveyor controls once that feature exists", async () => {
+test("the settings panel exposes the conveyor controls", async () => {
   const user = userEvent.setup();
   seedStore();
   mockReaderFetch(buildTextChunks(2));
@@ -775,10 +779,24 @@ test("the settings panel shows the conveyor controls once that feature exists", 
   await screen.findByText("Reader job");
   await user.click(screen.getByRole("button", { name: "Reader settings" }));
 
-  // Shortcuts are always documented; conveyor wiring arrives in the next step,
-  // so the panel must not advertise a control that does nothing yet.
   expect(screen.getByTestId("shortcut-guide")).toBeInTheDocument();
-  expect(screen.queryByLabelText("Show chunk conveyor")).toBeNull();
+  expect(screen.getByLabelText("Show chunk conveyor")).toBeChecked();
+  expect(screen.getByText("Chunks in view")).toBeInTheDocument();
+});
+
+test("hiding the conveyor removes the strip", async () => {
+  const user = userEvent.setup();
+  seedStore();
+  mockReaderFetch(buildTextChunks(2));
+
+  renderReader();
+  await screen.findByText("Reader job");
+  expect(screen.getByTestId("chunk-conveyor")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Reader settings" }));
+  await user.click(screen.getByLabelText("Show chunk conveyor"));
+
+  expect(screen.queryByTestId("chunk-conveyor")).toBeNull();
 });
 
 test("space toggles playback without focusing the controls first", async () => {
@@ -1045,7 +1063,7 @@ describe("chunk versioning & reprocessing", () => {
     });
     global.fetch = fetchMock as typeof fetch;
 
-    const { container } = render(
+    render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1070,7 +1088,7 @@ describe("chunk versioning & reprocessing", () => {
       toJSON: () => ({}),
     } as DOMRect);
 
-    const slotEls = container.querySelectorAll<HTMLElement>("[data-slot-state]");
+    const slotEls = timeline.querySelectorAll<HTMLElement>("[data-slot-state]");
     expect(slotEls.length).toBe(3);
 
     fireEvent.pointerDown(slotEls[2], { button: 0, clientX: 225, pointerId: 1 });
@@ -1087,7 +1105,7 @@ describe("chunk versioning & reprocessing", () => {
     // chunk 2 is filled 25% ((9-8)/4). This guards against the stream-reset
     // race that used to leave the fill at the beginning of the section.
     await waitFor(() => {
-      const bars = container.querySelectorAll<HTMLElement>("[data-wave-bar]");
+      const bars = timeline.querySelectorAll<HTMLElement>("[data-wave-bar]");
       expect(bars.length).toBe(3);
       const fills = Array.from(bars).map((bar) => bar.querySelector<HTMLElement>("[data-wave-fill]"));
       expect(fills[0]?.style.width).toBe("100%");
@@ -1136,7 +1154,7 @@ describe("chunk versioning & reprocessing", () => {
     });
     global.fetch = fetchMock as typeof fetch;
 
-    const { container } = render(
+    render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1164,7 +1182,7 @@ describe("chunk versioning & reprocessing", () => {
       toJSON: () => ({}),
     } as DOMRect);
 
-    const slotEls = container.querySelectorAll<HTMLElement>("[data-slot-state]");
+    const slotEls = timeline.querySelectorAll<HTMLElement>("[data-slot-state]");
     fireEvent.pointerDown(slotEls[2], { button: 0, clientX: 225, pointerId: 1 });
     fireEvent.pointerUp(slotEls[2], { clientX: 225, pointerId: 1 });
 

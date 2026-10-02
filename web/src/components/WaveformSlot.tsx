@@ -53,6 +53,12 @@ export interface WaveformSlotProps {
   compact: boolean;
   /** Renders the vertical separator after this slot. */
   showSeparator: boolean;
+  /**
+   * When false the slot is decorative: no ARIA role, no tab stop and no pointer
+   * input. Used by the conveyor, which handles gestures at the strip level and
+   * would otherwise nest sliders inside a slider.
+   */
+  interactive?: boolean;
   /** Layout is owned by the parent (flex share or fixed px width). */
   style?: CSSProperties;
   interaction: WaveformSlotInteraction;
@@ -74,6 +80,7 @@ export function WaveformSlot({
   renderedDurationSeconds,
   compact,
   showSeparator,
+  interactive = true,
   style,
   interaction,
 }: WaveformSlotProps) {
@@ -83,25 +90,31 @@ export function WaveformSlot({
 
   return (
     <div
-      aria-label={`Chunk ${slot.chunkIndex + 1}: ${slot.state}`}
-      className={`relative flex h-full cursor-pointer items-end overflow-hidden transition-colors ${
-        dimmed ? "opacity-40" : ""
-      }`}
+      aria-hidden={interactive ? undefined : true}
+      aria-label={interactive ? `Chunk ${slot.chunkIndex + 1}: ${slot.state}` : undefined}
+      className={`relative flex h-full items-end overflow-hidden transition-colors ${
+        interactive ? "cursor-pointer" : ""
+      } ${dimmed ? "opacity-40" : ""}`}
       data-slot-state={slot.state}
-      onClick={() => interaction.onActivate(slot)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          interaction.onActivate(slot);
-        }
-      }}
-      onPointerCancel={(event) => interaction.onPointerCancel(event, slot)}
-      onPointerDown={(event) => interaction.onPointerDown(event, slot)}
-      onPointerMove={(event) => interaction.onPointerMove(event, slot)}
-      onPointerUp={(event) => interaction.onPointerUp(event, slot)}
-      role="slider"
+      data-waveform-slot={slot.chunkIndex}
+      onClick={interactive ? () => interaction.onActivate(slot) : undefined}
+      onKeyDown={
+        interactive
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                interaction.onActivate(slot);
+              }
+            }
+          : undefined
+      }
+      onPointerCancel={interactive ? (event) => interaction.onPointerCancel(event, slot) : undefined}
+      onPointerDown={interactive ? (event) => interaction.onPointerDown(event, slot) : undefined}
+      onPointerMove={interactive ? (event) => interaction.onPointerMove(event, slot) : undefined}
+      onPointerUp={interactive ? (event) => interaction.onPointerUp(event, slot) : undefined}
+      role={interactive ? "slider" : undefined}
       style={style}
-      tabIndex={0}
+      tabIndex={interactive ? 0 : undefined}
     >
       {/* Background tint based on state */}
       <div

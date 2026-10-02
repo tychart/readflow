@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
+import { ChunkConveyor } from "../../components/ChunkConveyor";
 import { Playbar } from "../../components/Playbar";
 import { ReaderSettingsMenu } from "../../components/ReaderSettingsMenu";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
-import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { useReaderSettings, useReaderMotion } from "../../hooks/useReaderSettings";
 import { api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
 import { useMediaSourcePlayer } from "../../lib/media-source";
@@ -117,6 +118,7 @@ export function ReaderPage() {
 
   // Device-local reader preferences (jump controls, conveyor, motion).
   const settings = useReaderSettings();
+  const motion = useReaderMotion();
 
   // ── Derived data ────────────────────────────────────────
   const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
@@ -792,7 +794,7 @@ export function ReaderPage() {
                 onChange={handleSettingsChange}
                 onReset={resetReaderSettings}
                 settings={settings}
-                showConveyorControls={false}
+                showConveyorControls
               />
             }
             slots={timelineSlots}
@@ -800,6 +802,23 @@ export function ReaderPage() {
             waveforms={waveforms}
             writtenChunks={writtenChunkCount}
           />
+
+          {/* Chunk conveyor — the zoomed, thumb-sized scrub strip. Shares the
+              sticky wrapper with the main playbar so it stays reachable while
+              reading deep into a long document. */}
+          {settings.showConveyor ? (
+            <div className="mt-2">
+              <ChunkConveyor
+                maxSeekSeconds={displayRenderedDurationSeconds}
+                motion={motion}
+                onSeek={handleSeekToChunkWithScroll}
+                playheadSeconds={displayTimeSeconds}
+                slots={timelineSlots}
+                waveforms={waveforms}
+                windowSizeSetting={settings.conveyorWindowSize}
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 
