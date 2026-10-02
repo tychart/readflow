@@ -83,6 +83,7 @@ class AdminConfigResponse(BaseModel):
     idle_unload_seconds: int
     max_prebuffer_seconds: int
     target_buffer_seconds: int
+    inactive_job_ahead_chunks: int
     batch_candidates_small_model: list[int]
     batch_candidates_large_model: list[int]
     vram_soft_limit_mb: int
@@ -94,6 +95,7 @@ class AdminConfigUpdateRequest(BaseModel):
     idle_unload_seconds: int | None = None
     max_prebuffer_seconds: int | None = None
     target_buffer_seconds: int | None = None
+    inactive_job_ahead_chunks: int | None = None
     batch_candidates_small_model: list[int] | None = None
     batch_candidates_large_model: list[int] | None = None
     vram_soft_limit_mb: int | None = None
@@ -129,11 +131,13 @@ class QueueChunkVersionResponse(BaseModel):
 
 
 class QueueChunkResponse(BaseModel):
-    """A pending chunk plus the derived scheduling facts an operator needs.
+    """One chunk plus the derived scheduling facts an operator needs.
 
     This is an admin-only debugging view: it includes the chunk text and the
     exact inputs behind the scheduler's ordering (priority band, job buffer
     state, rank) so the operator can see *why* work is ordered the way it is.
+    Written chunks are included too so the full job lifecycle is visible;
+    `is_pending` distinguishes the ones the scheduler can still act on.
     """
 
     job_id: str
@@ -154,10 +158,14 @@ class QueueChunkResponse(BaseModel):
     char_end: int
     char_count: int
     estimated_duration_seconds: float
+    duration_seconds: float = 0.0
+    start_seconds: float = 0.0
     priority_band: int
     priority_label: str
     priority_reason: str
+    # Position within the global pending priority order; 0 for non-pending.
     rank: int
+    is_pending: bool
     is_rendering: bool
     in_next_batch: bool
     created_at: float
@@ -166,12 +174,36 @@ class QueueChunkResponse(BaseModel):
     versions: list[QueueChunkVersionResponse] = Field(default_factory=list)
 
 
+class QueueJobGroup(BaseModel):
+    """A job plus its full chunk lifecycle, for the admin queue inspector."""
+
+    job_id: str
+    job_title: str | None
+    job_status: str
+    job_is_active_listening: bool
+    job_buffered_seconds: float
+    job_target_buffer_seconds: int
+    model_id: str
+    language: str
+    voice_id: str
+    total_chunks: int
+    written_chunks: int
+    pending_chunks: int
+    failed_chunks: int
+    # Characters in the canonical source text the planner has not reached yet.
+    unplanned_chars: int
+    # True when older chunks were dropped to bound the payload; the returned
+    # list always keeps every pending chunk and the most recent history.
+    chunks_truncated: bool = False
+    chunks: list[QueueChunkResponse] = Field(default_factory=list)
+
+
 class AdminQueueResponse(BaseModel):
     generated_at: float
     queue_depth: int
     active_batch: QueueBatch | None = None
     next_batch: QueueBatch | None = None
-    items: list[QueueChunkResponse] = Field(default_factory=list)
+    jobs: list[QueueJobGroup] = Field(default_factory=list)
 
 
 class AdminMemoryStats(BaseModel):

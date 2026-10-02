@@ -169,6 +169,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             idle_unload_seconds=runtime.idle_unload_seconds,
             max_prebuffer_seconds=runtime.max_prebuffer_seconds,
             target_buffer_seconds=runtime.target_buffer_seconds,
+            inactive_job_ahead_chunks=runtime.inactive_job_ahead_chunks,
             batch_candidates_small_model=runtime.batch_candidates_small_model,
             batch_candidates_large_model=runtime.batch_candidates_large_model,
             vram_soft_limit_mb=runtime.vram_soft_limit_mb,

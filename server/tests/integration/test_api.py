@@ -532,12 +532,17 @@ async def test_activation_endpoints_return_summaries(client):
 # ─── Admin queue inspection tests ─────────────────────────────────────
 
 
+def _queue_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten the grouped admin queue payload into a single chunk list."""
+    return [chunk for job in payload["jobs"] for chunk in job["chunks"]]
+
+
 async def test_admin_queue_empty(client):
     response = await client.get("/api/admin/queue")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["items"] == []
+    assert payload["jobs"] == []
     assert payload["active_batch"] is None
     assert payload["next_batch"] is None
     assert payload["queue_depth"] == 0
@@ -556,8 +561,14 @@ async def test_admin_queue_reports_pending_chunks_after_dispatch(client, service
     response = await client.get("/api/admin/queue")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["items"], "active job should keep chunks planned ahead"
-    first = payload["items"][0]
+    chunks = _queue_chunks(payload)
+    assert chunks, "active job should keep chunks planned ahead"
+    # The lifecycle includes already-rendered chunks, so rank only applies to
+    # the pending ones.
+    assert any(chunk["status"] == "written" for chunk in chunks)
+    pending = [chunk for chunk in chunks if chunk["is_pending"]]
+    assert pending
+    first = pending[0]
     assert first["job_id"] == job_id
     assert first["job_title"] == "Queued book"
     assert first["text"]
@@ -565,7 +576,7 @@ async def test_admin_queue_reports_pending_chunks_after_dispatch(client, service
     assert first["priority_band"] == 0
     assert first["priority_label"] == "Urgent"
     assert first["char_count"] == len(first["text"])
-    assert [item["rank"] for item in payload["items"]] == list(range(1, len(payload["items"]) + 1))
+    assert [item["rank"] for item in pending] == list(range(1, len(pending) + 1))
 
 
 async def test_admin_queue_marks_paused_job_chunks(client, services):
@@ -586,9 +597,10 @@ async def test_admin_queue_marks_paused_job_chunks(client, services):
 
     response = await client.get("/api/admin/queue")
     payload = response.json()
-    assert payload["items"]
-    assert all(item["priority_band"] == 99 for item in payload["items"])
-    assert all(item["priority_label"] == "Paused" for item in payload["items"])
+    pending = [chunk for chunk in _queue_chunks(payload) if chunk["is_pending"]]
+    assert pending
+    assert all(item["priority_band"] == 99 for item in pending)
+    assert all(item["priority_label"] == "Paused" for item in pending)
 
 
 async def test_admin_queue_reports_active_batch_while_rendering(client, services):
@@ -630,7 +642,7 @@ async def test_admin_queue_reports_active_batch_while_rendering(client, services
     assert payload["active_batch"]["chunk_count"] >= 1
     assert payload["active_batch"]["voice_id"] == "suzy"
     assert payload["active_batch"]["started_at"] is not None
-    assert any(item["is_rendering"] for item in payload["items"])
+    assert any(item["is_rendering"] for item in _queue_chunks(payload))
 
     release.set()
     await asyncio.wait_for(task, timeout=5)
@@ -705,7 +717,7 @@ async def test_admin_queue_reflects_reprocessed_chunk(client, services):
 
     response = await client.get("/api/admin/queue")
     payload = response.json()
-    items = [item for item in payload["items"] if item["index"] == 0]
+    items = [item for item in _queue_chunks(payload) if item["index"] == 0]
     assert len(items) == 1
     item = items[0]
     assert item["version"] == 1
@@ -743,5 +755,25 @@ async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, serv
 
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload["items"]) == 1
-    assert payload["items"][0]["status"] == "planned"
+    chunks = _queue_chunks(payload)
+    assert len(chunks) == 1
+    assert chunks[0]["status"] == "planned"
+
+
+async def test_admin_config_exposes_and_updates_inactive_ahead_window(client, services):
+    initial = await client.get("/api/admin/config")
+    assert initial.status_code == 200
+    assert initial.json()["inactive_job_ahead_chunks"] == 1
+
+    updated = await client.post("/api/admin/config", json={"inactive_job_ahead_chunks": 4})
+    assert updated.status_code == 200
+    assert updated.json()["inactive_job_ahead_chunks"] == 4
+    assert services.settings.runtime.inactive_job_ahead_chunks == 4
+
+    # An inactive job now plans up to the configured window.
+    long_text = "A sentence that is long enough to plan a chunk. " * 200
+    created = await client.post("/api/jobs", data={"text": long_text, "voice_id": "suzy"})
+    job_id = created.json()["job"]["id"]
+    services.scheduler._ensure_planned_chunks()
+    job = services.job_manager.get_job(job_id)
+    assert sum(1 for chunk in job.chunks if chunk.status == "planned") == 4

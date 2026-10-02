@@ -63,6 +63,7 @@ export interface AdminConfig {
   idle_unload_seconds: number;
   max_prebuffer_seconds: number;
   target_buffer_seconds: number;
+  inactive_job_ahead_chunks: number;
   batch_candidates_small_model: number[];
   batch_candidates_large_model: number[];
   vram_soft_limit_mb: number;
@@ -97,10 +98,14 @@ export interface QueueChunk {
   char_end: number;
   char_count: number;
   estimated_duration_seconds: number;
+  duration_seconds: number;
+  start_seconds: number;
   priority_band: number;
   priority_label: string;
   priority_reason: string;
+  /** Position in the global pending priority order; 0 when not pending. */
   rank: number;
+  is_pending: boolean;
   is_rendering: boolean;
   in_next_batch: boolean;
   created_at: number;
@@ -115,12 +120,33 @@ export interface QueueChunkVersion {
   deprecated: boolean;
 }
 
+/** A job plus its full chunk lifecycle, for the admin queue inspector. */
+export interface QueueJobGroup {
+  job_id: string;
+  job_title: string | null;
+  job_status: JobStatus;
+  job_is_active_listening: boolean;
+  job_buffered_seconds: number;
+  job_target_buffer_seconds: number;
+  model_id: string;
+  language: string;
+  voice_id: string;
+  total_chunks: number;
+  written_chunks: number;
+  pending_chunks: number;
+  failed_chunks: number;
+  /** Characters of the source text the planner has not reached yet. */
+  unplanned_chars: number;
+  chunks_truncated: boolean;
+  chunks: QueueChunk[];
+}
+
 export interface AdminQueue {
   generated_at: number;
   queue_depth: number;
   active_batch: QueueBatch | null;
   next_batch: QueueBatch | null;
-  items: QueueChunk[];
+  jobs: QueueJobGroup[];
 }
 
 export interface SchedulerState {

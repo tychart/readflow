@@ -1,10 +1,17 @@
-import { act, cleanup, within, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, vi } from "vitest";
 
 import { QueueInspector } from "./QueueInspector";
 import { useAppStore } from "../../state/store";
-import type { AdminQueue, AdminState, QueueChunk, SchedulerState, Voice } from "../../types/api";
+import type {
+  AdminQueue,
+  AdminState,
+  QueueChunk,
+  QueueJobGroup,
+  SchedulerState,
+  Voice,
+} from "../../types/api";
 
 /* ── Fixtures ─────────────────────────────────────────────── */
 
@@ -30,10 +37,13 @@ function buildChunk(overrides: Partial<QueueChunk> = {}): QueueChunk {
     char_end: 25,
     char_count: 25,
     estimated_duration_seconds: 1.4,
+    duration_seconds: 0,
+    start_seconds: 0,
     priority_band: 0,
     priority_label: "Urgent",
     priority_reason: "Active listener with 12.5s buffered (below 45s target).",
     rank: 1,
+    is_pending: true,
     is_rendering: false,
     in_next_batch: true,
     created_at: NOW - 30,
@@ -44,27 +54,50 @@ function buildChunk(overrides: Partial<QueueChunk> = {}): QueueChunk {
   };
 }
 
+function buildGroup(overrides: Partial<QueueJobGroup> = {}): QueueJobGroup {
+  const chunks =
+    overrides.chunks ??
+    [
+      buildChunk({
+        index: 0,
+        status: "written",
+        is_pending: false,
+        rank: 0,
+        text: "An already written chunk.",
+        duration_seconds: 12.4,
+        versions: [{ version: 0, status: "written", deprecated: false }],
+      }),
+      buildChunk(),
+      buildChunk({ index: 4, rank: 2, text: "Second pending chunk." }),
+    ];
+  return {
+    job_id: "job-1",
+    job_title: "Chapter One",
+    job_status: "playing",
+    job_is_active_listening: true,
+    job_buffered_seconds: 12.5,
+    job_target_buffer_seconds: 45,
+    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    language: "English",
+    voice_id: "suzy",
+    total_chunks: 3,
+    written_chunks: 1,
+    pending_chunks: 2,
+    failed_chunks: 0,
+    unplanned_chars: 1582,
+    chunks_truncated: false,
+    ...overrides,
+    chunks,
+  };
+}
+
 function buildQueue(overrides: Partial<AdminQueue> = {}): AdminQueue {
   return {
     generated_at: NOW,
     queue_depth: 2,
     active_batch: null,
     next_batch: null,
-    items: [
-      buildChunk(),
-      buildChunk({
-        job_id: "job-2",
-        job_title: "Notes",
-        index: 0,
-        rank: 2,
-        text: "Second chunk text.",
-        voice_id: "howard",
-        priority_band: 2,
-        priority_label: "Normal",
-        priority_reason: "Queued job with no active listener.",
-        in_next_batch: false,
-      }),
-    ],
+    jobs: [buildGroup()],
     ...overrides,
   };
 }
@@ -74,6 +107,7 @@ const BASE_CONFIG = {
   idle_unload_seconds: 300,
   max_prebuffer_seconds: 300,
   target_buffer_seconds: 45,
+  inactive_job_ahead_chunks: 1,
   batch_candidates_small_model: [8, 7, 6, 5],
   batch_candidates_large_model: [6, 5, 4, 3],
   vram_soft_limit_mb: 9000,
@@ -142,23 +176,19 @@ afterEach(() => {
   useAppStore.setState({ adminState: null, voices: [] });
 });
 
-function queueCalls(calls: FetchCall[]): FetchCall[] {
-  return calls.filter((call) => call.url.endsWith("/api/admin/queue"));
-}
-
-/* ── Tests ────────────────────────────────────────────────── */
-
 /** Render and flush the initial queue fetch so no state update lands outside act. */
 async function renderInspector() {
-  // `render` flushes passive effects as its own act exits, which kicks off the
-  // initial queue fetch. Drain that promise chain in a following act so the
-  // resulting state updates are covered.
   render(<QueueInspector />);
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
+function queueCalls(calls: FetchCall[]): FetchCall[] {
+  return calls.filter((call) => call.url.endsWith("/api/admin/queue"));
+}
+
+/* ── Tests ────────────────────────────────────────────────── */
 
 test("shows a loading state before the first fetch resolves", async () => {
   let resolveFetch: ((value: Response) => void) | undefined;
@@ -177,33 +207,55 @@ test("shows a loading state before the first fetch resolves", async () => {
   expect(screen.getByText(/loading scheduler queue/i)).toBeInTheDocument();
 
   await act(async () => {
-    resolveFetch?.(jsonResponse(buildQueue({ items: [], queue_depth: 0 })));
+    resolveFetch?.(jsonResponse(buildQueue({ jobs: [], queue_depth: 0 })));
   });
 });
 
-test("renders the empty state when nothing is queued", async () => {
-  mockFetch(buildQueue({ items: [], queue_depth: 0 }));
+test("renders the empty state when there are no jobs", async () => {
+  mockFetch(buildQueue({ jobs: [], queue_depth: 0 }));
   setStore();
 
   await renderInspector();
 
-  expect(await screen.findByText(/nothing queued/i)).toBeInTheDocument();
+  expect(screen.getByText(/nothing queued/i)).toBeInTheDocument();
 });
 
-test("renders pending chunks in priority-rank order", async () => {
+test("renders the full chunk lifecycle for a job", async () => {
   mockFetch(buildQueue());
   setStore();
 
   await renderInspector();
 
-  const rows = await screen.findAllByRole("listitem");
-  expect(rows).toHaveLength(2);
-  expect(within(rows[0]).getByText(/The first chunk of text/i)).toBeInTheDocument();
-  expect(within(rows[1]).getByText(/Second chunk text/i)).toBeInTheDocument();
-  expect(within(rows[0]).getByText("Urgent")).toBeInTheDocument();
-  expect(within(rows[1]).getByText("Normal")).toBeInTheDocument();
-  expect(within(rows[0]).getByText("1")).toBeInTheDocument();
-  expect(within(rows[1]).getByText("2")).toBeInTheDocument();
+  // Job header summary.
+  expect(screen.getByText(/1\/3 written · 2 pending/)).toBeInTheDocument();
+  expect(screen.getByText(/1,582 chars unplanned/)).toBeInTheDocument();
+  // Written chunk is present with its duration, not a priority badge.
+  expect(screen.getByText(/An already written chunk/i)).toBeInTheDocument();
+  expect(screen.getByText("12.4s")).toBeInTheDocument();
+  // Pending chunks are present with priority badges.
+  expect(screen.getByText(/The first chunk of text/i)).toBeInTheDocument();
+  expect(screen.getByText(/Second pending chunk/i)).toBeInTheDocument();
+  expect(screen.getAllByText("Urgent")).toHaveLength(2);
+  // Unplanned remainder footer.
+  expect(screen.getByText(/more characters not yet planned/i)).toBeInTheDocument();
+});
+
+test("collapses and expands a job group", async () => {
+  const user = userEvent.setup();
+  mockFetch(buildQueue());
+  setStore();
+
+  await renderInspector();
+
+  const header = screen.getByRole("button", { name: /Chapter One/ });
+  expect(header).toHaveAttribute("aria-expanded", "true");
+
+  await user.click(header);
+  expect(header).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByText(/The first chunk of text/i)).not.toBeInTheDocument();
+
+  await user.click(header);
+  expect(screen.getByText(/The first chunk of text/i)).toBeInTheDocument();
 });
 
 test("shows the rendering batch while a batch is in flight", async () => {
@@ -222,7 +274,7 @@ test("shows the rendering batch while a batch is in flight", async () => {
 
   await renderInspector();
 
-  expect(await screen.findByText(/Rendering now/i)).toBeInTheDocument();
+  expect(screen.getByText(/Rendering now/i)).toBeInTheDocument();
   expect(screen.getByText(/2 chunks · voice suzy · English/)).toBeInTheDocument();
   expect(screen.getByText(/elapsed/i)).toBeInTheDocument();
 });
@@ -243,38 +295,63 @@ test("shows the predicted next batch when nothing is rendering", async () => {
 
   await renderInspector();
 
-  expect(await screen.findByText(/Up next/i)).toBeInTheDocument();
+  expect(screen.getByText(/Up next/i)).toBeInTheDocument();
   expect(screen.getByText(/3 chunks · voice suzy · English/)).toBeInTheDocument();
   expect(screen.queryByText(/Rendering now/i)).not.toBeInTheDocument();
 });
 
-test("clicking a chunk reveals its text, priority, and metadata", async () => {
+test("clicking a pending chunk reveals its text, priority, and metadata", async () => {
   const user = userEvent.setup();
   mockFetch(buildQueue());
   setStore();
 
   await renderInspector();
 
-  const rows = await screen.findAllByRole("listitem");
-  await user.click(within(rows[0]).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
 
   expect(screen.getByText(/Active listener with 12.5s buffered/i)).toBeInTheDocument();
-  expect(screen.getByText(/job buffer/i)).toBeInTheDocument();
+  expect(screen.getByText(/buffer 12.5s \/ target 45s/)).toBeInTheDocument();
   expect(screen.getByText(/Qwen3-TTS-12Hz-0.6B-Base/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Pause job/i })).toBeInTheDocument();
-
-  // The selected row is marked for assistive tech.
-  expect(within(rows[0]).getByRole("button")).toHaveAttribute("aria-current", "true");
 });
 
-test("falls back to the placeholder until a chunk is selected", async () => {
+test("clicking a written chunk shows its audio duration instead of priority", async () => {
+  const user = userEvent.setup();
   mockFetch(buildQueue());
   setStore();
 
   await renderInspector();
 
-  await screen.findAllByRole("listitem");
-  expect(screen.getByText(/select a chunk to inspect/i)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /An already written chunk/i }));
+
+  expect(screen.getByText(/Rendered audio · 12.4s/)).toBeInTheDocument();
+  expect(screen.getByText(/Audio duration/i)).toBeInTheDocument();
+  expect(screen.queryByText(/Active listener with 12.5s buffered/i)).not.toBeInTheDocument();
+});
+
+test("hides the detail sidebar until a chunk is selected", async () => {
+  mockFetch(buildQueue());
+  setStore();
+
+  await renderInspector();
+
+  expect(screen.queryByRole("complementary", { name: "Chunk details" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Close chunk details" })).not.toBeInTheDocument();
+});
+
+test("the close button dismisses the detail sidebar", async () => {
+  const user = userEvent.setup();
+  mockFetch(buildQueue());
+  setStore();
+
+  await renderInspector();
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  expect(screen.getByRole("complementary", { name: "Chunk details" })).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Close chunk details" }));
+
+  expect(screen.queryByRole("complementary", { name: "Chunk details" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Close chunk details" })).not.toBeInTheDocument();
 });
 
 test("refetches the queue when the scheduler tick changes", async () => {
@@ -282,13 +359,12 @@ test("refetches the queue when the scheduler tick changes", async () => {
   setStore();
 
   await renderInspector();
-  await screen.findByText(/The first chunk of text/i);
   expect(queueCalls(calls)).toHaveLength(1);
 
-  const current = useAppStore.getState().adminState;
+  const current = useAppStore.getState().adminState as AdminState;
   act(() => {
     useAppStore.getState().setAdminState({
-      ...(current as AdminState),
+      ...current,
       scheduler: { ...BASE_SCHEDULER, queue_depth: 9 },
     });
   });
@@ -301,7 +377,6 @@ test("does not refetch when unrelated admin state changes", async () => {
   setStore();
 
   await renderInspector();
-  await screen.findByText(/The first chunk of text/i);
 
   const current = useAppStore.getState().adminState as AdminState;
   act(() => {
@@ -328,8 +403,7 @@ test("pause action calls the API and refetches", async () => {
   setStore();
 
   await renderInspector();
-  const rows = await screen.findAllByRole("listitem");
-  await user.click(within(rows[0]).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
   await user.click(screen.getByRole("button", { name: /Pause job/i }));
 
   await waitFor(() =>
@@ -341,12 +415,23 @@ test("pause action calls the API and refetches", async () => {
 
 test("offers resume for a paused job", async () => {
   const user = userEvent.setup();
-  const calls = mockFetch(buildQueue({ items: [buildChunk({ job_status: "paused" })] }));
+  const calls = mockFetch(
+    buildQueue({
+      jobs: [
+        buildGroup({
+          job_status: "paused",
+          chunks: [buildChunk({ job_status: "paused" })],
+          total_chunks: 1,
+          written_chunks: 0,
+          pending_chunks: 1,
+        }),
+      ],
+    }),
+  );
   setStore();
 
   await renderInspector();
-  const rows = await screen.findAllByRole("listitem");
-  await user.click(within(rows[0]).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
   await user.click(screen.getByRole("button", { name: /Resume job/i }));
 
   await waitFor(() =>
@@ -366,8 +451,7 @@ test("reprocess edits text and voice, then calls the API", async () => {
   });
 
   await renderInspector();
-  const rows = await screen.findAllByRole("listitem");
-  await user.click(within(rows[0]).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
 
   await user.click(screen.getByRole("button", { name: /Reprocess chunk/i }));
   const textarea = screen.getByLabelText(/Chunk text/i);
@@ -395,13 +479,20 @@ test("reprocess edits text and voice, then calls the API", async () => {
 test("set-active-version calls the API", async () => {
   const user = userEvent.setup();
   const queue = buildQueue({
-    items: [
-      buildChunk({
-        version: 1,
-        versions: [
-          { version: 0, status: "written", deprecated: true },
-          { version: 1, status: "planned", deprecated: false },
+    jobs: [
+      buildGroup({
+        chunks: [
+          buildChunk({
+            version: 1,
+            versions: [
+              { version: 0, status: "written", deprecated: true },
+              { version: 1, status: "planned", deprecated: false },
+            ],
+          }),
         ],
+        total_chunks: 1,
+        written_chunks: 0,
+        pending_chunks: 1,
       }),
     ],
   });
@@ -409,8 +500,7 @@ test("set-active-version calls the API", async () => {
   setStore();
 
   await renderInspector();
-  const rows = await screen.findAllByRole("listitem");
-  await user.click(within(rows[0]).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
   await user.click(screen.getByRole("button", { name: /v0 · written/i }));
 
   await waitFor(() =>
@@ -429,12 +519,10 @@ test("surfaces action errors without crashing", async () => {
   setStore();
 
   await renderInspector();
-  const rows = await screen.findAllByRole("listitem");
-  await user.click(within(rows[0]).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
   await user.click(screen.getByRole("button", { name: /Pause job/i }));
 
   expect(await screen.findByText(/Model exploded/i)).toBeInTheDocument();
-  expect(within(rows[0]).getByRole("button")).toBeInTheDocument();
 });
 
 test("surfaces queue load errors", async () => {

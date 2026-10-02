@@ -137,6 +137,7 @@ function AdminOverview() {
     formState.idle_unload_seconds !== adminState.config.idle_unload_seconds ||
     formState.max_prebuffer_seconds !== adminState.config.max_prebuffer_seconds ||
     formState.target_buffer_seconds !== adminState.config.target_buffer_seconds ||
+    formState.inactive_job_ahead_chunks !== adminState.config.inactive_job_ahead_chunks ||
     formState.vram_soft_limit_mb !== adminState.config.vram_soft_limit_mb ||
     formState.vram_hard_limit_mb !== adminState.config.vram_hard_limit_mb ||
     formState.batch_candidates_small_model.length !== adminState.config.batch_candidates_small_model.length ||
@@ -227,6 +228,23 @@ function AdminOverview() {
               value={formState.max_prebuffer_seconds}
               onChange={(e) => setFormState({ ...formState, max_prebuffer_seconds: Number(e.target.value) })}
             />
+          </label>
+
+          <label className={labelClass()}>
+            Inactive job lookahead (chunks)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="1"
+              value={formState.inactive_job_ahead_chunks}
+              onChange={(e) =>
+                setFormState({ ...formState, inactive_job_ahead_chunks: Number(e.target.value) })
+              }
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              Chunks the planner keeps ready for jobs that are not actively playing. Higher
+              values let inactive jobs render in larger batches.
+            </span>
           </label>
 
           <label className={labelClass()}>

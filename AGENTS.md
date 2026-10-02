@@ -1002,21 +1002,35 @@ Admin page:
 A read-only-plus-actions inspector over the scheduler's work queue, built to make
 scheduler behavior debuggable, not just pretty.
 
-- `GET /api/admin/queue` (`SchedulerService.queue_snapshot()`) returns every
-  pending chunk (`planned`/`queued`/`rendering`, matching plan version, not
-  deprecated) ranked by the **same** `_chunk_priority` key the scheduler
-  dispatches with — band, then chunk index, then text length. Never re-derive
-  priority in the frontend.
-- The response carries `active_batch` (currently `RENDERING` chunks, grouped by
-  `(model_id, language, voice_id)`, `started_at = min(updated_at)`) and
-  `next_batch` (the real next dispatch, computed by the shared
-  `_select_next_batch` helper), plus per-chunk `priority_band/label/reason`,
-  job buffer figures, char range, estimated duration, and version history.
-- The tab is flat and priority-ranked; rendering rows are marked, the active
-  batch shows as a "Rendering now" strip with elapsed time, and upcoming rows
-  get a "Next" tag. Selecting a chunk opens a detail panel with its text,
-  priority reason, metadata, version switcher, pause/resume, and chunk
-  reprocess (edit text + voice). All actions reuse existing endpoints.
+- `GET /api/admin/queue` (`SchedulerService.queue_snapshot()`) returns one
+  `QueueJobGroup` per job with that job's **full chunk lifecycle** — written,
+  rendering, planned, failed, stale — plus `written_chunks`/`pending_chunks`/
+  `failed_chunks`, `unplanned_chars` (source text the planner has not reached),
+  and `chunks_truncated`. Pending chunks carry the scheduler's own
+  `priority_band/label/reason` and `rank`; `is_pending` tells the UI which rows
+  the scheduler can still act on. Never re-derive priority in the frontend.
+- Important: for an **inactive** (not-playing) job the planner keeps only
+  `inactive_job_ahead_chunks` chunks ready (default 1), so its queue is tiny by
+  design and batches are single-chunk. Multi-chunk batches come from actively
+  listening jobs (5 ahead) or several queued jobs. `inactive_job_ahead_chunks`
+  is exposed in Admin → Overview so this can be tuned live.
+- Rows are bounded server-side by `QUEUE_SNAPSHOT_CHUNK_LIMIT` (200/job); every
+  pending chunk is always kept and the rest of the budget goes to the most
+  recent history, with `chunks_truncated` set when history was dropped.
+- The top of the tab also carries `active_batch` (currently `RENDERING` chunks,
+  grouped by `(model_id, language, voice_id)`, `started_at = min(updated_at)`)
+  and `next_batch` (the real next dispatch, from the shared
+  `_select_next_batch` helper). The UI shows a "Rendering now" strip with
+  elapsed time and an "Up next" strip, and marks rows with a "Next" tag.
+- Selecting a chunk opens a detail panel with its text, priority reason (for
+  pending chunks) or rendered duration (for written chunks), metadata, version
+  switcher, pause/resume, and chunk reprocess (edit text + voice). All actions
+  reuse existing endpoints. The panel is a fixed-width (400px) sticky aside that
+  only renders while a chunk is selected and has a close (×) button that clears
+  the selection. The outer grid uses `minmax(0,1fr) 400px` (and `min-w-0` on
+  both columns) so the table flexes to full width when the panel is closed — do
+  not go back to unconstrained `fr` columns, which let the wide table squeeze
+  the panel.
 - Live refresh is **push-driven, not polled**: the scheduler broadcasts a
   lightweight `scheduler_state` tick that includes `active_batch`, and the tab
   refetches the full queue only when that signature (`queue_depth` + active
@@ -1062,8 +1076,12 @@ Future agents should know that the following were created or materially changed 
 - custom streaming reader/player with gap-aware playback
 - static backend-computed waveform playbar (replaces the live Web Audio analyser)
 - admin **Queue tab**: `GET /api/admin/queue` + `SchedulerService.queue_snapshot()`,
-  priority-ranked pending-chunk inspector with active/next batch, priority
-  reasons, version switching, and pause/resume/reprocess actions
+  per-job full chunk-lifecycle inspector (written/rendering/planned/failed +
+  unplanned remainder) with active/next batch, priority reasons, version
+  switching, and pause/resume/reprocess actions
+- `inactive_job_ahead_chunks` exposed as a live Admin → Overview knob (default
+  1); the queue inspector's "only one chunk" case is the intended lazy-planning
+  behavior for non-playing jobs, not a bug
 - scheduler partial-batch requeue fix (`mark_chunk_planned`, `zip(strict=False)`)
   so OOM-retry leftovers are retried instead of stuck in `RENDERING`
 - server-side `.m4a` export for contiguous rendered audio

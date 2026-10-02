@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../../lib/api";
 import { useAppStore } from "../../state/store";
-import type { AdminQueue, QueueBatch, QueueChunk } from "../../types/api";
+import type { AdminQueue, QueueBatch, QueueChunk, QueueJobGroup } from "../../types/api";
 
 /* ── Formatting helpers ───────────────────────────────────── */
 
@@ -47,6 +47,26 @@ const STATUS_STYLES: Record<string, string> = {
   max_retries_exceeded: "border-[var(--rose)]/20 bg-[var(--rose)]/10 text-[var(--rose)]",
   paused: "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
 };
+
+const STATUS_GLYPHS: Record<string, { glyph: string; className: string }> = {
+  written: { glyph: "✓", className: "text-[var(--emerald)]" },
+  rendering: { glyph: "●", className: "text-[var(--amber)] animate-pulse" },
+  queued: { glyph: "◐", className: "text-[var(--amber)]" },
+  planned: { glyph: "○", className: "text-[var(--ink-secondary)]" },
+  reprocessing: { glyph: "↻", className: "text-[var(--amber)]" },
+  failed: { glyph: "✕", className: "text-[var(--rose)]" },
+  max_retries_exceeded: { glyph: "✕", className: "text-[var(--rose)]" },
+  stale: { glyph: "–", className: "text-[var(--ink-secondary)]" },
+};
+
+function StatusGlyph({ status }: { status: string }) {
+  const entry = STATUS_GLYPHS[status] ?? STATUS_GLYPHS.planned;
+  return (
+    <span aria-hidden="true" className={`w-4 shrink-0 text-center text-xs ${entry.className}`}>
+      {entry.glyph}
+    </span>
+  );
+}
 
 function PriorityBadge({ band, label }: { band: number; label: string }) {
   return (
@@ -114,7 +134,127 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-1">
       <dt className="text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]">{label}</dt>
-      <dd className="text-right text-xs text-[var(--ink-primary)]">{value}</dd>
+      <dd className="text-right text-xs break-words text-[var(--ink-primary)]">{value}</dd>
+    </div>
+  );
+}
+
+/* ── Job group ────────────────────────────────────────────── */
+
+function JobGroupCard({
+  group,
+  selectedKey,
+  expanded,
+  onSelect,
+  onToggle,
+}: {
+  group: QueueJobGroup;
+  selectedKey: string | null;
+  expanded: boolean;
+  onSelect: (item: QueueChunk) => void;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]">
+      <button
+        aria-expanded={expanded}
+        className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-left transition hover:bg-[var(--surface-raised)]"
+        onClick={onToggle}
+        type="button"
+      >
+        <span
+          aria-hidden="true"
+          className={`text-[10px] text-[var(--ink-secondary)] transition-transform ${
+            expanded ? "rotate-90" : ""
+          }`}
+        >
+          ▶
+        </span>
+        <span className="min-w-0 truncate text-sm font-semibold text-[var(--ink-primary)]">
+          {group.job_title ?? "Untitled job"}
+        </span>
+        <StatusChip status={group.job_status} />
+        <span className="shrink-0 text-xs text-[var(--ink-secondary)]">
+          {group.written_chunks}/{group.total_chunks} written
+          {group.pending_chunks > 0 ? ` · ${group.pending_chunks} pending` : ""}
+          {group.failed_chunks > 0 ? ` · ${group.failed_chunks} failed` : ""}
+        </span>
+        <span className="ml-auto flex flex-wrap items-center gap-x-3 text-[11px] text-[var(--ink-secondary)]">
+          <span>voice {group.voice_id}</span>
+          <span>
+            buffer {group.job_buffered_seconds.toFixed(0)}s / {group.job_target_buffer_seconds}s
+          </span>
+          {group.unplanned_chars > 0 && (
+            <span>{group.unplanned_chars.toLocaleString()} chars unplanned</span>
+          )}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
+          {group.chunks_truncated && (
+            <div className="px-4 py-2 text-[11px] text-[var(--ink-secondary)]">
+              Showing the most recent chunks — older history is hidden.
+            </div>
+          )}
+          {group.chunks.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-[var(--ink-secondary)]">
+              No chunks planned yet.
+            </div>
+          ) : (
+            group.chunks.map((item) => {
+              const key = chunkKey(item);
+              const isSelected = key === selectedKey;
+              return (
+                <button
+                  aria-current={isSelected ? "true" : undefined}
+                  className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition ${
+                    isSelected ? "bg-[var(--amber-soft)]" : "hover:bg-[var(--surface-raised)]"
+                  }`}
+                  key={key}
+                  onClick={() => onSelect(item)}
+                  type="button"
+                >
+                  <StatusGlyph status={item.status} />
+                  <span className="w-11 shrink-0 font-mono text-[11px] text-[var(--ink-secondary)]">
+                    #{item.index}
+                    {item.version > 0 ? ` v${item.version}` : ""}
+                  </span>
+                  <span
+                    className={`min-w-0 flex-1 truncate text-sm ${
+                      item.is_pending
+                        ? "text-[var(--ink-primary)]"
+                        : "text-[var(--ink-secondary)]"
+                    }`}
+                  >
+                    {item.text.trim().slice(0, 120) || "(empty chunk)"}
+                  </span>
+                  {item.is_pending && item.in_next_batch && !item.is_rendering && (
+                    <span className="shrink-0 rounded-md border border-[var(--emerald)]/20 bg-[var(--emerald)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--emerald)]">
+                      Next
+                    </span>
+                  )}
+                  {item.is_pending ? (
+                    <PriorityBadge band={item.priority_band} label={item.priority_label} />
+                  ) : (
+                    item.status === "written" && (
+                      <span className="shrink-0 text-[11px] text-[var(--ink-secondary)]">
+                        {formatSeconds(item.duration_seconds)}
+                      </span>
+                    )
+                  )}
+                  <StatusChip status={item.status} />
+                </button>
+              );
+            })
+          )}
+          {group.unplanned_chars > 0 && (
+            <div className="px-4 py-2 text-[11px] italic text-[var(--ink-secondary)]">
+              · {group.unplanned_chars.toLocaleString()} more characters not yet planned
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -129,6 +269,7 @@ export function QueueInspector() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [collapsedJobs, setCollapsedJobs] = useState<Set<string>>(() => new Set());
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<{
     type: "success" | "error";
@@ -180,7 +321,13 @@ export function QueueInspector() {
     if (!snapshot || !selectedKey) {
       return null;
     }
-    return snapshot.items.find((item) => chunkKey(item) === selectedKey) ?? null;
+    for (const group of snapshot.jobs) {
+      const match = group.chunks.find((item) => chunkKey(item) === selectedKey);
+      if (match) {
+        return match;
+      }
+    }
+    return null;
   }, [snapshot, selectedKey]);
 
   const voiceOptions = useMemo(() => {
@@ -210,6 +357,24 @@ export function QueueInspector() {
     },
     [load],
   );
+
+  function selectChunk(item: QueueChunk) {
+    setSelectedKey(chunkKey(item));
+    setIsEditing(false);
+    setActionMessage(null);
+  }
+
+  function toggleJob(jobId: string) {
+    setCollapsedJobs((current) => {
+      const next = new Set(current);
+      if (next.has(jobId)) {
+        next.delete(jobId);
+      } else {
+        next.add(jobId);
+      }
+      return next;
+    });
+  }
 
   function handlePauseResume(item: QueueChunk) {
     const pausing = item.job_status !== "paused";
@@ -248,7 +413,7 @@ export function QueueInspector() {
     );
   }
 
-  const items = snapshot?.items ?? [];
+  const jobs = snapshot?.jobs ?? [];
   const activeBatch = snapshot?.active_batch ?? null;
   const nextBatch = snapshot?.next_batch ?? null;
   const elapsedSeconds =
@@ -274,9 +439,9 @@ export function QueueInspector() {
           </p>
           <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">Synthesis queue</h2>
           <p className="mt-1 max-w-3xl text-sm leading-relaxed text-[var(--ink-secondary)]">
-            Pending chunks in the exact order the scheduler will dispatch them. Priority bands,
-            batch grouping, and the predicted next batch come straight from the scheduler, so this
-            mirrors what the server will actually render.
+            Every job's full chunk lifecycle — written, rendering, planned, and how much text the
+            planner has not reached yet. Priority bands, batch grouping, and the predicted next
+            batch come straight from the scheduler.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -310,112 +475,101 @@ export function QueueInspector() {
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[1.15fr_1fr]">
-        {/* Queue list */}
-        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)]">
-          <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
-            <h3 className="text-sm font-semibold text-[var(--ink-primary)]">Pending chunks</h3>
-            <span
-              className="text-[10px] uppercase tracking-wider text-[var(--ink-secondary)]"
-              title="Ranked by the scheduler's priority key: band, then chunk index, then text length."
-            >
-              scheduler priority order
-            </span>
-          </div>
-          {items.length === 0 ? (
-            <div className="px-4 py-12 text-center text-sm text-[var(--ink-secondary)]">
+      <div
+        className={`grid gap-4 ${
+          selected ? "xl:grid-cols-[minmax(0,1fr)_400px]" : "grid-cols-1"
+        }`}
+      >
+        {/* Job lifecycles */}
+        <div className="min-w-0 space-y-3">
+          {jobs.length === 0 ? (
+            <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-12 text-center text-sm text-[var(--ink-secondary)]">
               {loadError
                 ? "Queue unavailable — the last request failed. Use Refresh to retry."
                 : "Nothing queued. The scheduler is idle."}
             </div>
           ) : (
-            <div className="divide-y divide-[var(--line)]" role="list">
-              {items.map((item) => {
-                const key = chunkKey(item);
-                const isSelected = key === selectedKey;
-                return (
-                  <div key={key} role="listitem">
-                    <button
-                      aria-current={isSelected ? "true" : undefined}
-                      className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
-                        isSelected
-                          ? "bg-[var(--amber-soft)]"
-                          : "hover:bg-[var(--surface-raised)]"
-                      }`}
-                      onClick={() => {
-                        setSelectedKey(key);
-                        setIsEditing(false);
-                        setActionMessage(null);
-                      }}
-                      type="button"
-                    >
-                      <span className="w-7 shrink-0 text-right font-mono text-xs text-[var(--ink-secondary)]">
-                        {item.rank}
-                      </span>
-                      <span className="flex w-2 shrink-0 justify-center">
-                        {item.is_rendering && (
-                          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--amber)]" />
-                        )}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-[var(--ink-primary)]">
-                          {item.text.trim().slice(0, 100) || "(empty chunk)"}
-                        </span>
-                        <span className="mt-0.5 block truncate text-xs text-[var(--ink-secondary)]">
-                          {item.job_title ?? "Untitled job"} · #{item.index}
-                          {item.version > 0 ? ` · v${item.version}` : ""} · {item.voice_id}
-                        </span>
-                      </span>
-                      {item.in_next_batch && !item.is_rendering && (
-                        <span className="shrink-0 rounded-md border border-[var(--emerald)]/20 bg-[var(--emerald)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--emerald)]">
-                          Next
-                        </span>
-                      )}
-                      <PriorityBadge band={item.priority_band} label={item.priority_label} />
-                      <StatusChip status={item.status} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+            jobs.map((group) => (
+              <JobGroupCard
+                expanded={!collapsedJobs.has(group.job_id)}
+                group={group}
+                key={group.job_id}
+                onSelect={selectChunk}
+                onToggle={() => toggleJob(group.job_id)}
+                selectedKey={selectedKey}
+              />
+            ))
           )}
         </div>
 
-        {/* Detail */}
-        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5">
-          {!selected ? (
-            <div className="flex h-full min-h-[16rem] items-center justify-center px-4 text-center text-sm text-[var(--ink-secondary)]">
-              Select a chunk to inspect its text, priority, and scheduling metadata.
-            </div>
-          ) : (
+        {/* Detail sidebar */}
+        {selected && (
+          <aside
+            aria-label="Chunk details"
+            className="min-w-0 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 xl:sticky xl:top-24 xl:max-h-[calc(100vh-7rem)] xl:self-start xl:overflow-y-auto"
+          >
             <div className="space-y-4">
               <div>
-                <div className="flex items-start justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-[var(--ink-primary)]">
+                <div className="flex items-start justify-between gap-2">
+                  <h3
+                    className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink-primary)]"
+                    title={selected.job_title ?? "Untitled job"}
+                  >
                     {selected.job_title ?? "Untitled job"}
                   </h3>
-                  <StatusChip status={selected.job_status} />
+                  <button
+                    aria-label="Close chunk details"
+                    className="-mr-1 -mt-1 shrink-0 rounded-md p-1 text-[var(--ink-secondary)] transition hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)]"
+                    onClick={() => setSelectedKey(null)}
+                    type="button"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+                    </svg>
+                  </button>
                 </div>
-                <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
-                  chunk #{selected.index} · v{selected.version} · rank {selected.rank}
-                </p>
-              </div>
-
-              <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] p-3">
-                <div className="flex items-center gap-2">
-                  <PriorityBadge band={selected.priority_band} label={selected.priority_label} />
-                  <span className="text-xs text-[var(--ink-primary)]">
-                    {selected.priority_reason}
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <StatusChip status={selected.job_status} />
+                  <span className="text-xs text-[var(--ink-secondary)]">
+                    chunk #{selected.index} · v{selected.version}
+                    {selected.is_pending ? ` · rank ${selected.rank}` : " · not pending"}
                   </span>
                 </div>
-                <div className="mt-2 text-[11px] text-[var(--ink-secondary)]">
-                  band {selected.priority_band} · job buffer{" "}
-                  {selected.job_buffered_seconds.toFixed(1)}s / target{" "}
-                  {selected.job_target_buffer_seconds}s ·{" "}
-                  {selected.job_is_active_listening ? "active listener" : "not listening"}
-                  {selected.in_next_batch ? " · in next batch" : ""}
-                </div>
               </div>
+
+              {selected.is_pending ? (
+                <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] p-3">
+                  <PriorityBadge band={selected.priority_band} label={selected.priority_label} />
+                  <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-primary)]">
+                    {selected.priority_reason}
+                  </p>
+                  <p className="mt-2 text-[11px] leading-relaxed text-[var(--ink-secondary)]">
+                    band {selected.priority_band} · buffer{" "}
+                    {selected.job_buffered_seconds.toFixed(1)}s / target{" "}
+                    {selected.job_target_buffer_seconds}s ·{" "}
+                    {selected.job_is_active_listening ? "active listener" : "not listening"}
+                    {selected.in_next_batch ? " · in next batch" : ""}
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] p-3">
+                  <div className="flex items-center gap-2">
+                    <StatusChip status={selected.status} />
+                    <span className="text-xs text-[var(--ink-primary)]">
+                      {selected.status === "written"
+                        ? `Rendered audio · ${formatSeconds(selected.duration_seconds)}`
+                        : "This chunk is not scheduled for rendering."}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
@@ -442,10 +596,17 @@ export function QueueInspector() {
                   label="Characters"
                   value={`${selected.char_count} (${selected.char_start}–${selected.char_end})`}
                 />
-                <MetadataRow
-                  label="Est. duration"
-                  value={formatSeconds(selected.estimated_duration_seconds)}
-                />
+                {selected.status === "written" ? (
+                  <MetadataRow
+                    label="Audio duration"
+                    value={formatSeconds(selected.duration_seconds)}
+                  />
+                ) : (
+                  <MetadataRow
+                    label="Est. duration"
+                    value={formatSeconds(selected.estimated_duration_seconds)}
+                  />
+                )}
                 <MetadataRow label="Created" value={formatAge(selected.created_at)} />
                 <MetadataRow label="Updated" value={formatAge(selected.updated_at)} />
               </dl>
@@ -561,8 +722,8 @@ export function QueueInspector() {
                 </div>
               )}
             </div>
-          )}
-        </div>
+          </aside>
+        )}
       </div>
     </div>
   );

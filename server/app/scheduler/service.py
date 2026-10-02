@@ -14,6 +14,7 @@ from app.schemas.api import (
     QueueBatch,
     QueueChunkResponse,
     QueueChunkVersionResponse,
+    QueueJobGroup,
     WsEnvelope,
     chunk_to_response,
     job_to_summary,
@@ -22,6 +23,14 @@ from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import ModelVRAMError, SynthesisOOMError
 from app.synthesis.worker import SynthesisWorker
 from app.telemetry.service import TelemetryService
+
+# Chunks the scheduler can still act on. Shared so priority ranking and the
+# admin queue read-model cannot disagree about what "pending" means.
+_PENDING_STATUSES = frozenset({ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING})
+
+# Upper bound on rows returned per job by `queue_snapshot`; pending chunks are
+# always kept and the rest of the budget goes to the most recent history.
+QUEUE_SNAPSHOT_CHUNK_LIMIT = 200
 
 
 class SchedulerService:
@@ -319,7 +328,7 @@ class SchedulerService:
             for chunk in job.chunks
             if chunk.plan_version == job.plan_version
             and not chunk.deprecated
-            and chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}
+            and chunk.status in _PENDING_STATUSES
         ]
         return sorted(chunks, key=self._chunk_priority)
 
@@ -361,6 +370,133 @@ class SchedulerService:
             started_at=None,
         )
 
+    def _active_chunks(self, job: Job) -> list[ChunkRecord]:
+        """Non-deprecated chunks of a job (one per index), in index order."""
+        return sorted(
+            (chunk for chunk in job.chunks if not chunk.deprecated),
+            key=lambda chunk: chunk.index,
+        )
+
+    def _unplanned_chars(self, job: Job) -> int:
+        """Characters of the canonical source text the planner has not reached."""
+        offset = job.planner_cursor.offset
+        if offset < 0:
+            return 0
+        return max(0, len(job.source_text) - offset)
+
+    def _limit_chunks(
+        self, active: list[ChunkRecord], pending: list[ChunkRecord]
+    ) -> tuple[list[ChunkRecord], bool]:
+        """Bound the rows returned per job while never dropping pending work.
+
+        Every pending chunk is kept; remaining slots are filled with the most
+        recent history so a whole book does not serialize on every refresh.
+        """
+        if len(active) <= QUEUE_SNAPSHOT_CHUNK_LIMIT:
+            return active, False
+        pending_ids = {id(chunk) for chunk in pending}
+        others = [chunk for chunk in active if id(chunk) not in pending_ids]
+        slots = max(0, QUEUE_SNAPSHOT_CHUNK_LIMIT - len(pending))
+        chosen = pending + (others[-slots:] if slots else [])
+        chosen.sort(key=lambda chunk: chunk.index)
+        return chosen, True
+
+    def _chunk_response(
+        self,
+        job: Job,
+        chunk: ChunkRecord,
+        *,
+        rank: int,
+        next_batch_ids: set[tuple[str, int, int]],
+    ) -> QueueChunkResponse:
+        band, label, reason = self._priority_info(job, chunk)
+        versions = sorted(
+            (item for item in job.chunks if item.index == chunk.index),
+            key=lambda item: item.version,
+        )
+        return QueueChunkResponse(
+            job_id=job.id,
+            job_title=job.title,
+            job_status=job.status,
+            job_is_active_listening=job.is_active_listening,
+            job_buffered_seconds=job.buffered_seconds,
+            job_target_buffer_seconds=self._config.target_buffer_seconds,
+            index=chunk.index,
+            version=chunk.version,
+            status=chunk.status,
+            plan_version=chunk.plan_version,
+            voice_id=chunk.voice_id,
+            language=chunk.language,
+            model_id=job.model_id,
+            text=chunk.text,
+            char_start=chunk.char_start,
+            char_end=chunk.char_end,
+            char_count=len(chunk.text),
+            estimated_duration_seconds=max(
+                1.0, len(chunk.text) / self._config.estimated_chars_per_second
+            ),
+            duration_seconds=chunk.duration_seconds,
+            start_seconds=chunk.start_seconds,
+            priority_band=band,
+            priority_label=label,
+            priority_reason=reason,
+            rank=rank,
+            is_pending=chunk.status in _PENDING_STATUSES,
+            is_rendering=chunk.status == ChunkStatus.RENDERING,
+            in_next_batch=(chunk.job_id, chunk.index, chunk.version) in next_batch_ids,
+            created_at=chunk.created_at,
+            updated_at=chunk.updated_at,
+            error=chunk.error,
+            versions=[
+                QueueChunkVersionResponse(
+                    version=item.version,
+                    status=item.status,
+                    deprecated=item.deprecated,
+                )
+                for item in versions
+            ],
+        )
+
+    def _job_group(
+        self,
+        job: Job,
+        pending_ranks: dict[tuple[str, int, int], int],
+        next_batch_ids: set[tuple[str, int, int]],
+    ) -> QueueJobGroup:
+        active = self._active_chunks(job)
+        pending = [chunk for chunk in active if chunk.status in _PENDING_STATUSES]
+        chosen, truncated = self._limit_chunks(active, pending)
+        return QueueJobGroup(
+            job_id=job.id,
+            job_title=job.title,
+            job_status=job.status,
+            job_is_active_listening=job.is_active_listening,
+            job_buffered_seconds=job.buffered_seconds,
+            job_target_buffer_seconds=self._config.target_buffer_seconds,
+            model_id=job.model_id,
+            language=job.language,
+            voice_id=job.voice_id,
+            total_chunks=len(active),
+            written_chunks=sum(1 for chunk in active if chunk.status == ChunkStatus.WRITTEN),
+            pending_chunks=len(pending),
+            failed_chunks=sum(
+                1
+                for chunk in active
+                if chunk.status in {ChunkStatus.FAILED, ChunkStatus.MAX_RETRIES_EXCEEDED}
+            ),
+            unplanned_chars=self._unplanned_chars(job),
+            chunks_truncated=truncated,
+            chunks=[
+                self._chunk_response(
+                    job,
+                    chunk,
+                    rank=pending_ranks.get((chunk.job_id, chunk.index, chunk.version), 0),
+                    next_batch_ids=next_batch_ids,
+                )
+                for chunk in chosen
+            ],
+        )
+
     def queue_snapshot(self) -> AdminQueueResponse:
         """Build the admin queue read-model.
 
@@ -385,61 +521,18 @@ class SchedulerService:
         # `_render_next_batch`.
         _next_key, next_batch = self._select_next_batch(renderable, 0, 0)
         next_batch_ids = {(chunk.job_id, chunk.index, chunk.version) for chunk in next_batch}
-
-        items: list[QueueChunkResponse] = []
-        for rank, chunk in enumerate(pending, start=1):
-            job = self._job_manager.get_job(chunk.job_id)
-            band, label, reason = self._priority_info(job, chunk)
-            versions = sorted(
-                (item for item in job.chunks if item.index == chunk.index),
-                key=lambda item: item.version,
-            )
-            items.append(
-                QueueChunkResponse(
-                    job_id=job.id,
-                    job_title=job.title,
-                    job_status=job.status,
-                    job_is_active_listening=job.is_active_listening,
-                    job_buffered_seconds=job.buffered_seconds,
-                    job_target_buffer_seconds=self._config.target_buffer_seconds,
-                    index=chunk.index,
-                    version=chunk.version,
-                    status=chunk.status,
-                    plan_version=chunk.plan_version,
-                    voice_id=chunk.voice_id,
-                    language=chunk.language,
-                    model_id=job.model_id,
-                    text=chunk.text,
-                    char_start=chunk.char_start,
-                    char_end=chunk.char_end,
-                    char_count=len(chunk.text),
-                    estimated_duration_seconds=max(
-                        1.0, len(chunk.text) / self._config.estimated_chars_per_second
-                    ),
-                    priority_band=band,
-                    priority_label=label,
-                    priority_reason=reason,
-                    rank=rank,
-                    is_rendering=chunk.status == ChunkStatus.RENDERING,
-                    in_next_batch=(chunk.job_id, chunk.index, chunk.version) in next_batch_ids,
-                    created_at=chunk.created_at,
-                    updated_at=chunk.updated_at,
-                    error=chunk.error,
-                    versions=[
-                        QueueChunkVersionResponse(
-                            version=item.version,
-                            status=item.status,
-                            deprecated=item.deprecated,
-                        )
-                        for item in versions
-                    ],
-                )
-            )
+        pending_ranks = {
+            (chunk.job_id, chunk.index, chunk.version): rank
+            for rank, chunk in enumerate(pending, start=1)
+        }
 
         return AdminQueueResponse(
             generated_at=time(),
             queue_depth=self._job_manager.queue_depth(),
             active_batch=self._active_batch(),
             next_batch=self._batch_summary(next_batch),
-            items=items,
+            jobs=[
+                self._job_group(job, pending_ranks, next_batch_ids)
+                for job in self._job_manager.list_jobs()
+            ],
         )

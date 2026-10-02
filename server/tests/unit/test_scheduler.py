@@ -128,6 +128,11 @@ def _add_chunk(services, job, text: str, *, index_plan_version: int | None = Non
     )
 
 
+def _snapshot_chunks(snapshot):
+    """Flatten the grouped queue snapshot into a single chunk list."""
+    return [chunk for job in snapshot.jobs for chunk in job.chunks]
+
+
 def test_priority_band_matrix(services):
     cases = [
         (False, 0.0, True, 99),
@@ -291,10 +296,13 @@ def test_queue_snapshot_ranks_are_contiguous_and_priority_ordered(services):
 
     snapshot = services.scheduler.queue_snapshot()
 
-    assert [item.rank for item in snapshot.items] == [1, 2, 3]
-    assert snapshot.items[0].priority_band == 0
-    assert snapshot.items[-1].priority_band == 2
-    keys = [(item.priority_band, item.index, item.char_count) for item in snapshot.items]
+    pending = [chunk for chunk in _snapshot_chunks(snapshot) if chunk.is_pending]
+    # Groups are per job (newest first), so check rank order explicitly.
+    assert sorted(item.rank for item in pending) == [1, 2, 3]
+    ordered = sorted(pending, key=lambda item: item.rank)
+    assert ordered[0].priority_band == 0
+    assert ordered[-1].priority_band == 2
+    keys = [(item.priority_band, item.index, item.char_count) for item in ordered]
     assert keys == sorted(keys)
 
 
@@ -303,7 +311,7 @@ def test_queue_snapshot_includes_text_and_estimated_duration(services):
     chunk = _add_chunk(services, job, "A chunk of text for estimation.")
 
     snapshot = services.scheduler.queue_snapshot()
-    item = snapshot.items[0]
+    item = _snapshot_chunks(snapshot)[0]
 
     assert item.text == chunk.text
     assert item.char_count == len(chunk.text)
@@ -312,6 +320,7 @@ def test_queue_snapshot_includes_text_and_estimated_duration(services):
     expected = max(1.0, len(chunk.text) / services.settings.runtime.estimated_chars_per_second)
     assert item.estimated_duration_seconds == expected
     assert item.status == "planned"
+    assert item.is_pending is True
     assert item.is_rendering is False
     assert item.job_title == "snapshot text"
 
@@ -330,8 +339,9 @@ def test_queue_snapshot_lists_version_history(services):
     )
 
     snapshot = services.scheduler.queue_snapshot()
-    assert len(snapshot.items) == 1
-    item = snapshot.items[0]
+    chunks = _snapshot_chunks(snapshot)
+    assert len(chunks) == 1
+    item = chunks[0]
     assert item.version == 1
     assert [version.version for version in item.versions] == [0, 1]
     assert item.versions[0].deprecated is True
@@ -348,8 +358,9 @@ def test_queue_snapshot_marks_next_batch(services):
 
     assert snapshot.next_batch is not None
     assert snapshot.next_batch.chunk_count == 2
-    assert sum(1 for item in snapshot.items if item.in_next_batch) == 2
-    assert [item.in_next_batch for item in snapshot.items] == [True, True, False]
+    pending = [chunk for chunk in _snapshot_chunks(snapshot) if chunk.is_pending]
+    assert sum(1 for item in pending if item.in_next_batch) == 2
+    assert [item.in_next_batch for item in pending] == [True, True, False]
 
 
 def test_queue_snapshot_queue_depth_matches_manager(services):
@@ -447,7 +458,8 @@ def test_queue_snapshot_never_calls_provider_memory_stats(services):
 
     snapshot = services.scheduler.queue_snapshot()
 
-    assert len(snapshot.items) == 1
+    assert len(_snapshot_chunks(snapshot)) == 1
+    assert snapshot.jobs[0].pending_chunks == 1
 
 
 def test_queue_snapshot_only_returns_schedulable_statuses(services):
@@ -463,9 +475,12 @@ def test_queue_snapshot_only_returns_schedulable_statuses(services):
 
     snapshot = services.scheduler.queue_snapshot()
 
-    assert all(item.status in {"planned", "queued", "rendering"} for item in snapshot.items)
-    assert snapshot.queue_depth == len(snapshot.items)
-    assert sum(1 for item in snapshot.items if item.is_rendering) == 1
+    pending = [chunk for chunk in _snapshot_chunks(snapshot) if chunk.is_pending]
+    assert all(item.status in {"planned", "queued", "rendering"} for item in pending)
+    assert snapshot.queue_depth == len(pending) == 2
+    assert sum(1 for item in pending if item.is_rendering) == 1
+    # The written chunk is still present in the lifecycle, just not pending.
+    assert any(item.status == "written" and not item.is_pending for item in snapshot.jobs[0].chunks)
 
 
 def test_queue_snapshot_reports_the_rendering_batch_while_in_flight(services):
@@ -478,7 +493,92 @@ def test_queue_snapshot_reports_the_rendering_batch_while_in_flight(services):
 
     snapshot = services.scheduler.queue_snapshot()
 
-    assert len(snapshot.items) == 3
+    chunks = _snapshot_chunks(snapshot)
+    assert len(chunks) == 3
     assert snapshot.active_batch is not None
     assert snapshot.active_batch.chunk_count == 3
-    assert all(item.is_rendering for item in snapshot.items)
+    assert all(item.is_rendering for item in chunks)
+
+
+def test_queue_snapshot_groups_full_lifecycle_per_job(services):
+    from app.jobs.models import ChunkStatus
+
+    first = _create_job(services, title="first job")
+    second = _create_job(services, title="second job", voice_id="howard")
+    written = _add_chunk(services, first, "already rendered")
+    written.status = ChunkStatus.WRITTEN
+    written.duration_seconds = 4.2
+    _add_chunk(services, first, "still to render")
+    _add_chunk(services, second, "other job pending")
+
+    snapshot = services.scheduler.queue_snapshot()
+
+    by_title = {group.job_title: group for group in snapshot.jobs}
+    first_group = by_title["first job"]
+    assert first_group.total_chunks == 2
+    assert first_group.written_chunks == 1
+    assert first_group.pending_chunks == 1
+    assert [chunk.status for chunk in first_group.chunks] == ["written", "planned"]
+    assert first_group.chunks[0].duration_seconds == 4.2
+    assert len(by_title["second job"].chunks) == 1
+
+
+def test_queue_snapshot_reports_unplanned_remaining_chars(services):
+    job = _create_job(services, title="unplanned")
+    # Do not plan at all: the whole source text is still unplanned.
+    snapshot = services.scheduler.queue_snapshot()
+    group = snapshot.jobs[0]
+    assert group.chunks == []
+    assert group.unplanned_chars == len(job.source_text)
+
+    # Planning one chunk consumes part of the source text.
+    planned = _add_chunk(services, job, "planned prefix")
+    job.planner_cursor.offset = planned.char_end
+    snapshot = services.scheduler.queue_snapshot()
+    assert snapshot.jobs[0].unplanned_chars == len(job.source_text) - planned.char_end
+
+    # An exhausted cursor means nothing is left.
+    job.planner_cursor.offset = -1
+    snapshot = services.scheduler.queue_snapshot()
+    assert snapshot.jobs[0].unplanned_chars == 0
+
+
+def test_queue_snapshot_truncates_large_jobs_but_keeps_pending(services, monkeypatch):
+    from app.jobs.models import ChunkStatus
+    from app.scheduler import service as scheduler_service
+
+    monkeypatch.setattr(scheduler_service, "QUEUE_SNAPSHOT_CHUNK_LIMIT", 5)
+    job = _create_job(services, title="truncated")
+    for index in range(10):
+        chunk = _add_chunk(services, job, f"chunk {index}")
+        if index < 8:
+            chunk.status = ChunkStatus.WRITTEN
+
+    snapshot = services.scheduler.queue_snapshot()
+    group = snapshot.jobs[0]
+
+    assert group.total_chunks == 10
+    assert group.chunks_truncated is True
+    returned_indices = [chunk.index for chunk in group.chunks]
+    # The two pending chunks are always kept, plus the most recent history.
+    assert 8 in returned_indices and 9 in returned_indices
+    assert len(group.chunks) == 5
+    assert returned_indices == sorted(returned_indices)
+
+
+def test_inactive_job_ahead_window_controls_planning(services):
+    from app.jobs.models import ChunkStatus
+
+    job = services.job_manager.create_job(
+        source_text="A sufficiently long sentence for planning. " * 200,
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="ahead window",
+    )
+    services.settings.runtime.inactive_job_ahead_chunks = 3
+
+    services.scheduler._ensure_planned_chunks()
+
+    planned = [chunk for chunk in job.chunks if chunk.status == ChunkStatus.PLANNED]
+    assert len(planned) == 3
