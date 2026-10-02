@@ -1,5 +1,6 @@
 import type {
   AdminConfig,
+  AdminQueue,
   AdminState,
   JobDetail,
   JobManifest,
@@ -23,6 +24,23 @@ export class ApiError extends Error {
 }
 
 /**
+ * Pulls the human-readable `detail` out of a failed API response so the UI can
+ * show why a request failed (size limits, unsupported model, …) instead of a
+ * bare status code.
+ */
+async function readErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload?.detail === "string") {
+      return payload.detail;
+    }
+  } catch {
+    // Non-JSON error bodies fall back to the status-based message.
+  }
+  return null;
+}
+
+/**
  * Makes a fetch request to the API with proper error handling.
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -34,8 +52,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!response.ok) {
+    const detail = await readErrorDetail(response);
     throw new ApiError(
-      `Request failed: ${response.status}`,
+      detail ?? `Request failed: ${response.status}`,
       path,
       response.status,
     );
@@ -75,17 +94,18 @@ export const api = {
   /** Fetches the media manifest for a job. */
   getManifest: (jobId: string) => request<JobManifest>(apiPath(`/jobs/${jobId}/manifest`)),
 
-  /** Activates a job for listening. */
+  /** Activates a job for listening. Returns a summary: playback transitions
+   *  never change the document, so the reader keeps its loaded detail. */
   activateJob: (jobId: string) =>
-    request<JobDetail>(apiPath(`/jobs/${jobId}/activate`), { method: "POST" }),
+    request<JobSummary>(apiPath(`/jobs/${jobId}/activate`), { method: "POST" }),
 
   /** Pauses a job. */
   pauseJob: (jobId: string) =>
-    request<JobDetail>(apiPath(`/jobs/${jobId}/pause`), { method: "POST" }),
+    request<JobSummary>(apiPath(`/jobs/${jobId}/pause`), { method: "POST" }),
 
   /** Resumes a paused job. */
   resumeJob: (jobId: string) =>
-    request<JobDetail>(apiPath(`/jobs/${jobId}/resume`), { method: "POST" }),
+    request<JobSummary>(apiPath(`/jobs/${jobId}/resume`), { method: "POST" }),
 
   /** Updates the voice for future chunks of a job. */
   updateJobVoice: (jobId: string, voiceId: string) =>
@@ -125,16 +145,12 @@ export const api = {
   downloadJobAudio: async (jobId: string) => {
     const response = await fetch(apiPath(`/jobs/${jobId}/download`));
     if (!response.ok) {
-      let detail = `Request failed: ${response.status}`;
-      try {
-        const payload = (await response.json()) as { detail?: string };
-        if (payload.detail) {
-          detail = payload.detail;
-        }
-      } catch {
-        // Ignore non-JSON error bodies and keep the status-based fallback.
-      }
-      throw new ApiError(detail, apiPath(`/jobs/${jobId}/download`), response.status);
+      const detail = await readErrorDetail(response);
+      throw new ApiError(
+        detail ?? `Request failed: ${response.status}`,
+        apiPath(`/jobs/${jobId}/download`),
+        response.status,
+      );
     }
     return {
       blob: await response.blob(),
@@ -150,6 +166,9 @@ export const api = {
 
   /** Fetches admin state including config, scheduler info, and telemetry. */
   getAdminState: () => request<AdminState>(apiPath("/admin/state")),
+
+  /** Fetches the live synthesis queue for the admin inspector. */
+  getAdminQueue: () => request<AdminQueue>(apiPath("/admin/queue")),
 
   /** Updates admin configuration. */
   updateAdminConfig: (config: Partial<AdminConfig>) =>

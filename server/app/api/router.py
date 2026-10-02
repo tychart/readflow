@@ -4,9 +4,12 @@ import json
 import re
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from starlette.datastructures import FormData, UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
 from starlette.websockets import WebSocketDisconnect
 
 from app.core.services import AppServices
@@ -15,6 +18,7 @@ from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
     AdminMemoryStats,
+    AdminQueueResponse,
     AdminStateResponse,
     ChunkReprocessRequest,
     ChunkVersionRequest,
@@ -38,6 +42,119 @@ SUPPORTED_MODEL_IDS: set[str] = {
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
 }
 
+# Body schema for /jobs. These endpoints parse the form themselves (see
+# `read_job_form`) so the part-size limit can be raised above Starlette's 1 MiB
+# default; declaring the shape here keeps /docs useful.
+JOB_FORM_REQUEST_BODY: dict[str, object] = {
+    "content": {
+        "multipart/form-data": {
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Long-form text to narrate (normalized server-side).",
+                    },
+                    "title": {"type": "string"},
+                    "voice_id": {"type": "string"},
+                    "model_id": {"type": "string"},
+                    "language": {"type": "string"},
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "Optional .txt upload used instead of pasted text.",
+                    },
+                },
+            }
+        }
+    },
+    "required": True,
+}
+
+
+def _format_bytes(byte_count: int) -> str:
+    """Human-readable size for API error messages (limits are configurable)."""
+    if byte_count >= 1024 * 1024:
+        return f"{byte_count / 1024 / 1024:.1f} MB"
+    return f"{byte_count / 1024:.0f} KB"
+
+
+def _reject_oversized(byte_count: int, max_source_bytes: int, label: str) -> None:
+    if byte_count <= max_source_bytes:
+        return
+    raise HTTPException(
+        status_code=413,
+        detail=(
+            f"{label} is too large ({_format_bytes(byte_count)}, "
+            f"limit is {_format_bytes(max_source_bytes)})"
+        ),
+    )
+
+
+def _read_form_text(form: FormData, name: str) -> str | None:
+    """Return a non-empty string form field, ignoring missing/blank values."""
+    value = form.get(name)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+async def _read_job_form(request: Request, max_source_bytes: int) -> FormData:
+    """Parse a job creation form with a raised multipart part limit.
+
+    FastAPI's `Form(...)`/`File(...)` parameters always parse with Starlette's
+    1 MiB `max_part_size`, which made a long *paste* fail while an identical
+    *.txt upload succeeded. The job endpoint therefore parses its own form.
+    `max_part_size` only bounds individual non-file parts; uploads spool to disk
+    and are measured against the same limit in `_resolve_job_source_text`.
+    """
+    try:
+        return await request.form(max_part_size=max_source_bytes)
+    except MultiPartException as exc:
+        # Raised when a parser is driven outside an ASGI scope.
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text is too large (limit is {_format_bytes(max_source_bytes)})",
+        ) from exc
+    except StarletteHTTPException as exc:
+        # Inside an app Starlette turns its own part-size breach into a 400
+        # before the route ever sees the exception, which is why a long paste
+        # surfaced as "400 Part exceeded maximum size of 1024KB."
+        if exc.status_code != 400 or "exceeded maximum size" not in str(exc.detail):
+            raise
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text is too large (limit is {_format_bytes(max_source_bytes)})",
+        ) from exc
+
+
+def _read_form_file(form: FormData, name: str) -> UploadFile | None:
+    value = form.get(name)
+    return value if isinstance(value, UploadFile) else None
+
+
+async def _resolve_job_source_text(form: FormData, *, max_source_bytes: int) -> tuple[str, str]:
+    """Resolve (text, source_kind) from an uploaded .txt or the text field.
+
+    Starlette streams file parts to disk, so an upload can legitimately exceed
+    the per-part limit; both paths are measured against `max_source_bytes` here.
+    """
+    upload = _read_form_file(form, "file")
+    if upload is not None:
+        if not upload.filename or not upload.filename.endswith(".txt"):
+            raise HTTPException(status_code=400, detail="Only .txt uploads are supported")
+        raw = await upload.read()
+        _reject_oversized(len(raw), max_source_bytes, "Uploaded text")
+        try:
+            return raw.decode("utf-8"), "txt_file"
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=".txt uploads must be UTF-8 encoded"
+            ) from exc
+    text = _read_form_text(form, "text") or ""
+    _reject_oversized(len(text.encode("utf-8")), max_source_bytes, "Text")
+    return text, "text"
+
 
 def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     router = APIRouter(prefix="/api")
@@ -52,6 +169,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             idle_unload_seconds=runtime.idle_unload_seconds,
             max_prebuffer_seconds=runtime.max_prebuffer_seconds,
             target_buffer_seconds=runtime.target_buffer_seconds,
+            inactive_job_ahead_chunks=runtime.inactive_job_ahead_chunks,
             batch_candidates_small_model=runtime.batch_candidates_small_model,
             batch_candidates_large_model=runtime.batch_candidates_large_model,
             vram_soft_limit_mb=runtime.vram_soft_limit_mb,
@@ -77,46 +195,53 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def list_jobs(app_services: AppServices = Depends(services)) -> list[JobSummaryResponse]:
         return [job_to_summary(job) for job in app_services.job_manager.list_jobs()]
 
-    @router.post("/jobs", response_model=CreateJobResponse)
+    @router.post(
+        "/jobs",
+        response_model=CreateJobResponse,
+        openapi_extra={"requestBody": JOB_FORM_REQUEST_BODY},
+    )
     async def create_job(
-        text: str | None = Form(default=None),
-        title: str | None = Form(default=None),
-        voice_id: str | None = Form(default=None),
-        model_id: str | None = Form(default=None),
-        language: str | None = Form(default=None),
-        file: UploadFile | None = File(default=None),
+        request: Request,
         app_services: AppServices = Depends(services),
     ) -> CreateJobResponse:
-        if file is None and not text:
+        max_source_bytes = app_services.settings.max_source_bytes
+        form = await _read_job_form(request, max_source_bytes)
+        payload_text, source_kind = await _resolve_job_source_text(
+            form, max_source_bytes=max_source_bytes
+        )
+        if not payload_text:
             raise HTTPException(status_code=400, detail="Provide text or a .txt upload")
-        payload_text = text or ""
-        source_kind = "text"
-        if file is not None:
-            if not file.filename or not file.filename.endswith(".txt"):
-                raise HTTPException(status_code=400, detail="Only .txt uploads are supported")
-            payload_text = (await file.read()).decode("utf-8")
-            source_kind = "txt_file"
-        voice = voice_id or app_services.settings.runtime.default_voice_id
+        title = _read_form_text(form, "title")
+        voice = _read_form_text(form, "voice_id") or app_services.settings.runtime.default_voice_id
         try:
             app_services.voice_registry.get_voice(voice)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        selected_model = model_id or app_services.settings.runtime.default_model_id
+        selected_model = (
+            _read_form_text(form, "model_id") or app_services.settings.runtime.default_model_id
+        )
         if selected_model not in SUPPORTED_MODEL_IDS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported model '{selected_model}'. Supported models: {', '.join(sorted(SUPPORTED_MODEL_IDS))}",
+                detail=(
+                    f"Unsupported model '{selected_model}'. Supported models: "
+                    f"{', '.join(sorted(SUPPORTED_MODEL_IDS))}"
+                ),
             )
         job = app_services.job_manager.create_job(
             source_text=payload_text,
             source_kind=source_kind,
             model_id=selected_model,
             voice_id=voice,
-            language=language or app_services.settings.runtime.default_language,
+            language=_read_form_text(form, "language")
+            or app_services.settings.runtime.default_language,
             title=title,
         )
         detail = job_to_detail(job)
-        envelope = WsEnvelope(type="job_created", payload={"job": detail.model_dump()})
+        # Streamed job payloads carry the summary only. `source_text` is static
+        # per job and is fetched over HTTP, so broadcasting it (megabytes for a
+        # book) on every job event would be pure overhead.
+        envelope = WsEnvelope(type="job_created", payload={"job": job_to_summary(job).model_dump()})
         app_services.telemetry.record_event("job_created", {"job_id": job.id})
         await app_services.hub.broadcast(envelope.model_dump())
         return CreateJobResponse(job=detail)
@@ -244,6 +369,15 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             raise HTTPException(status_code=404, detail="Chunk not ready")
         return FileResponse(path, media_type=app_services.settings.chunk_mime_type)
 
+    @router.get("/jobs/{job_id}/chunks/{chunk_index}/peaks")
+    async def get_chunk_peaks(
+        job_id: str, chunk_index: int, app_services: AppServices = Depends(services)
+    ) -> FileResponse:
+        path = app_services.media_store.peaks_path(job_id, chunk_index)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Chunk peaks not ready")
+        return FileResponse(path, media_type="application/json")
+
     @router.get("/jobs/{job_id}/download")
     async def download_job_audio(
         job_id: str, app_services: AppServices = Depends(services)
@@ -270,47 +404,47 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             background=BackgroundTask(export_path.unlink, missing_ok=True),
         )
 
-    @router.post("/jobs/{job_id}/activate", response_model=JobDetailResponse)
+    @router.post("/jobs/{job_id}/activate", response_model=JobSummaryResponse)
     async def activate_job(
         job_id: str, app_services: AppServices = Depends(services)
-    ) -> JobDetailResponse:
+    ) -> JobSummaryResponse:
         try:
             job = app_services.job_manager.activate_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = job_to_detail(job)
+        summary = job_to_summary(job)
         await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
-        return detail
+        return summary
 
-    @router.post("/jobs/{job_id}/pause", response_model=JobDetailResponse)
+    @router.post("/jobs/{job_id}/pause", response_model=JobSummaryResponse)
     async def pause_job(
         job_id: str, app_services: AppServices = Depends(services)
-    ) -> JobDetailResponse:
+    ) -> JobSummaryResponse:
         try:
             job = app_services.job_manager.pause_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = job_to_detail(job)
+        summary = job_to_summary(job)
         await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
-        return detail
+        return summary
 
-    @router.post("/jobs/{job_id}/resume", response_model=JobDetailResponse)
+    @router.post("/jobs/{job_id}/resume", response_model=JobSummaryResponse)
     async def resume_job(
         job_id: str, app_services: AppServices = Depends(services)
-    ) -> JobDetailResponse:
+    ) -> JobSummaryResponse:
         try:
             job = app_services.job_manager.resume_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = job_to_detail(job)
+        summary = job_to_summary(job)
         await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
-        return detail
+        return summary
 
     @router.post("/jobs/{job_id}/voice", response_model=JobDetailResponse)
     async def update_voice(
@@ -381,6 +515,21 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             WsEnvelope(type="admin_config_updated", payload=config.model_dump()).model_dump()
         )
         return config
+
+    @router.get("/admin/queue", response_model=AdminQueueResponse)
+    async def get_admin_queue(
+        app_services: AppServices = Depends(services),
+    ) -> AdminQueueResponse:
+        """Return the live synthesis queue for the admin inspector.
+
+        Ordering, priority bands, and the predicted next batch come from the
+        scheduler itself, so this view mirrors the real dispatch order. The
+        snapshot is synchronous on purpose: it must not await provider calls
+        (which queue behind an in-flight synthesis) and must not yield the event
+        loop partway through, or the response could mix pre- and post-batch
+        state.
+        """
+        return app_services.scheduler.queue_snapshot()
 
     @router.get("/admin/state", response_model=AdminStateResponse)
     async def get_admin_state(app_services: AppServices = Depends(services)) -> AdminStateResponse:

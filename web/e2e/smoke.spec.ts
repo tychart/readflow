@@ -1,5 +1,30 @@
 import { expect, test } from "@playwright/test";
 
+/** A written chunk as the API returns it. `version` matters: the reader only
+ *  renders the active version of a chunk, so fixtures without it are dropped. */
+function buildChunk(
+  index: number,
+  status: "written" | "queued" | "rendering" = "written",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    index,
+    status,
+    duration_seconds: status === "written" ? 4 : 0,
+    start_seconds: index * 4,
+    plan_version: 1,
+    version: 0,
+    voice_id: "suzy",
+    segment_url: status === "written" ? `/api/jobs/job-1/chunks/${index}` : null,
+    peaks_url: null,
+    deprecated: false,
+    reprocessing: false,
+    char_start: index * 21,
+    char_end: index * 21 + 20,
+    ...overrides,
+  };
+}
+
 function buildJob(chunkCount: number, status: "queued" | "rendering" | "playing" = "queued") {
   return {
     id: "job-1",
@@ -15,15 +40,7 @@ function buildJob(chunkCount: number, status: "queued" | "rendering" | "playing"
     source_kind: "text",
     source_text: "Playwright text",
     plan_version: 1,
-    chunks: Array.from({ length: chunkCount }, (_, index) => ({
-      index,
-      status: "written",
-      duration_seconds: 4,
-      start_seconds: index * 4,
-      plan_version: 1,
-      voice_id: "suzy",
-      segment_url: `/api/jobs/job-1/chunks/${index}`,
-    })),
+    chunks: Array.from({ length: chunkCount }, (_, index) => buildChunk(index)),
     failed_reason: null,
   };
 }
@@ -32,15 +49,7 @@ function buildManifest(chunkCount: number) {
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
-    chunks: Array.from({ length: chunkCount }, (_, index) => ({
-      index,
-      status: "written",
-      duration_seconds: 4,
-      start_seconds: index * 4,
-      plan_version: 1,
-      voice_id: "suzy",
-      segment_url: `/api/jobs/job-1/chunks/${index}`,
-    })),
+    chunks: Array.from({ length: chunkCount }, (_, index) => buildChunk(index)),
   };
 }
 
@@ -53,60 +62,12 @@ function buildGapJob(status: "queued" | "rendering" | "playing" = "queued") {
     total_chunks_completed: 4,
     buffered_seconds: 16,
     chunks: [
-      {
-        index: 0,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/0",
-      },
-      {
-        index: 1,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 4,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/1",
-      },
-      {
-        index: 2,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 8,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/2",
-      },
-      {
-        index: 3,
-        status: "queued",
-        duration_seconds: 0,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: null,
-      },
-      {
-        index: 4,
-        status: "rendering",
-        duration_seconds: 0,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: null,
-      },
-      {
-        index: 5,
-        status: "written",
-        duration_seconds: 4,
-        start_seconds: 20,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/5",
-      },
+      buildChunk(0),
+      buildChunk(1),
+      buildChunk(2),
+      buildChunk(3, "queued"),
+      buildChunk(4, "rendering"),
+      buildChunk(5, "written", { start_seconds: 20 }),
     ],
   };
 }
@@ -325,8 +286,8 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByRole("heading", { name: "Chunk status" })).toBeVisible();
-  await expect(page.getByText(/1\/1 chunks rendered/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Playwright job" })).toBeVisible();
+  await expect(page.getByText(/1\/1 chunks/i)).toBeVisible();
 
   chunkCount = 2;
   await page.evaluate(() => {
@@ -338,6 +299,8 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
     const payload = {
       type: "chunk_ready",
       payload: {
+        // Per-chunk events carry the job summary plus the single chunk that
+        // changed; the client merges them into the detail it fetched over HTTP.
         job: {
           id: "job-1",
           title: "Playwright job",
@@ -349,30 +312,21 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
           total_chunks_completed: 2,
           buffered_seconds: 8,
           completed_seconds: 0,
-          source_kind: "text",
-          source_text: "Playwright text",
+        },
+        chunk: {
+          index: 1,
+          status: "written",
+          duration_seconds: 4,
+          start_seconds: 4,
           plan_version: 1,
-          chunks: [
-            {
-              index: 0,
-              status: "written",
-              duration_seconds: 4,
-              start_seconds: 0,
-              plan_version: 1,
-              voice_id: "suzy",
-              segment_url: "/api/jobs/job-1/chunks/0",
-            },
-            {
-              index: 1,
-              status: "written",
-              duration_seconds: 4,
-              start_seconds: 4,
-              plan_version: 1,
-              voice_id: "suzy",
-              segment_url: "/api/jobs/job-1/chunks/1",
-            },
-          ],
-          failed_reason: null,
+          version: 0,
+          voice_id: "suzy",
+          segment_url: "/api/jobs/job-1/chunks/1",
+          peaks_url: null,
+          deprecated: false,
+          reprocessing: false,
+          char_start: 0,
+          char_end: 0,
         },
         chunk_index: 1,
         mime_type: 'audio/mp4; codecs="mp4a.40.2"',
@@ -384,7 +338,7 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
     }
   });
 
-  await expect(page.getByText(/2\/2 chunks rendered/i)).toBeVisible();
+  await expect(page.getByText(/2\/2 chunks/i)).toBeVisible();
   await expect(page.getByText(/Chunk 2/).first()).toBeVisible();
 });
 
@@ -403,7 +357,7 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByRole("heading", { name: "Chunk status" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Playwright job" })).toBeVisible();
 
   await page.evaluate(() => {
     const mockWindow = globalThis as typeof globalThis & {
@@ -419,7 +373,7 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
   });
 
   await expect(page.getByText(/Live updates degraded, using fallback sync/i)).toBeVisible();
-  await expect(page.getByText(/Live reconnecting/i)).toBeVisible();
+  await expect(page.getByLabel(/Connection: reconnecting/)).toBeVisible();
 });
 
 test("reader renders missing gap slots and allows a manual jump to a later ready chunk", async ({
@@ -442,19 +396,200 @@ test("reader renders missing gap slots and allows a manual jump to a later ready
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByText(/4\/6 chunks rendered/i)).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Chunk 4 expected but not received" }),
-  ).toHaveAttribute("data-slot-state", "missing_expected");
-  await expect(
-    page.getByRole("button", { name: "Chunk 5 expected but not received" }),
-  ).toHaveAttribute("data-slot-state", "missing_expected");
-  await expect(page.getByRole("button", { name: "Chunk 6 ready after gap" })).toHaveAttribute(
+  await expect(page.getByText(/4\/6 chunks/i)).toBeVisible();
+  await expect(page.getByRole("slider", { name: "Chunk 4: missing_expected" })).toHaveAttribute(
+    "data-slot-state",
+    "missing_expected",
+  );
+  await expect(page.getByRole("slider", { name: "Chunk 5: missing_expected" })).toHaveAttribute(
+    "data-slot-state",
+    "missing_expected",
+  );
+  await expect(page.getByRole("slider", { name: "Chunk 6: ready_after_gap" })).toHaveAttribute(
     "data-slot-state",
     "ready_after_gap",
   );
 
-  await page.getByRole("button", { name: "Chunk 6 ready after gap" }).click();
+  await page.getByRole("slider", { name: "Chunk 6: ready_after_gap" }).click();
 
-  await expect(page.getByText(/Playback anchor: Chunk 6/i)).toBeVisible();
+  // Seeking to the later ready chunk anchors playback on it.
+  await expect(page.getByRole("slider", { name: "Chunk 6: playing" })).toBeVisible();
+});
+
+test("reader jumps playback to a chunk from the text", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(4, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(4) });
+  });
+  await page.route("**/api/jobs/job-1/activate", async (route) => {
+    await route.fulfill({ json: buildJob(4, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/playback", async (route) => {
+    await route.fulfill({ json: buildJob(4, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByText(/4\/4 chunks/i)).toBeVisible();
+
+  // Chunk 3 starts 8s into the document, so the jump control must move the
+  // playhead there without the user touching the (small) top playbar.
+  await page.getByTestId("chunk-2-jump").click();
+
+  // Both the playbar clock and the conveyor follow the jump.
+  await expect(page.getByTestId("conveyor-readout")).toHaveText("0:08");
+  // The anchored chunk becomes the one playback is sitting on.
+  await expect(page.getByRole("slider", { name: "Chunk 3: playing" })).toBeVisible();
+});
+
+test("the chunk conveyor seeks when dragged and keeps the strip under the playhead", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(6, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(6) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByTestId("chunk-conveyor")).toBeVisible();
+  await expect(page.getByTestId("conveyor-readout")).toHaveText("0:00");
+
+  // A slow, deliberate drag right reveals earlier audio — and the strip must
+  // not have moved on its own before the release commits the seek.
+  const strip = page.getByTestId("chunk-conveyor");
+  const box = await strip.boundingBox();
+  expect(box).not.toBeNull();
+  const centreY = (box?.y ?? 0) + (box?.height ?? 0) / 2;
+
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, centreY);
+  await page.mouse.down();
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 + 40, centreY, { steps: 12 });
+  await page.mouse.up();
+
+  // The drag starts at the live position, so dragging forward from 0 clamps to
+  // the start; the readout stays on a valid, playable position.
+  await expect(page.getByTestId("conveyor-readout")).toHaveText(/0:0\d/);
+
+  // Dragging left moves forward in time and commits a seek on release.
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, centreY);
+  await page.mouse.down();
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 - 120, centreY, { steps: 12 });
+  await page.mouse.up();
+
+  await expect(page.getByTestId("conveyor-readout")).not.toHaveText("0:00");
+});
+
+test("reader settings hide the per-chunk jump controls", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(2, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(2) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByTestId("chunk-1-jump")).toBeVisible();
+
+  await page.getByRole("button", { name: "Reader settings" }).click();
+  await expect(page.getByRole("dialog", { name: "Reader settings" })).toBeVisible();
+  await page.getByLabel("Show chunk jump buttons").uncheck();
+
+  await expect(page.getByTestId("chunk-1-jump")).toBeHidden();
+
+  // The shortcut guide lives in the same panel.
+  await expect(page.getByTestId("shortcut-guide")).toBeVisible();
+});
+
+test("phone widths get a bottom dock and keep the top bar as an overview", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(6, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(6) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+
+  const dock = page.getByTestId("reader-dock");
+  await expect(dock).toBeVisible();
+  await expect(dock.getByTestId("chunk-conveyor")).toBeVisible();
+
+  // Transport lives in the dock and nowhere else — the top bar is the overview.
+  // `exact` matters: Playwright's accessible-name match is substring based, and
+  // "Jump playback to chunk N" would otherwise count as a Play button.
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toHaveCount(1);
+  await expect(dock.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  // Secondary metadata is dropped on phone widths.
+  await expect(page.getByText(/6\/6 chunks/i)).toBeHidden();
+
+  // The floating sidebar toggle must not sit under the dock.
+  const dockBox = await dock.boundingBox();
+  const toggle = page.getByRole("button", { name: "Open sidebar" });
+  await expect(toggle).toBeVisible();
+  const toggleBox = await toggle.boundingBox();
+  expect(dockBox).not.toBeNull();
+  expect(toggleBox).not.toBeNull();
+  expect((toggleBox?.y ?? 0) + (toggleBox?.height ?? 0)).toBeLessThanOrEqual(dockBox?.y ?? 0);
+
+  // The dock controls stay reachable and still seek.
+  await dock.getByRole("button", { name: "Forward 10 seconds" }).click();
+  await expect(dock.getByTestId("conveyor-readout")).toBeVisible();
+});
+
+test("the now-playing marker only moves while audio is actually running", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(4, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(4) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+
+  // Chunk 1 sits under the playhead, so it carries the now-playing marker.
+  const marker = page.getByTestId("chunk-0-now-playing");
+  await expect(marker).toBeVisible();
+
+  /** Sample the marker over time; a moving equalizer produces differing frames. */
+  async function sampleFrames(): Promise<string[]> {
+    const frames: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      frames.push((await marker.screenshot()).toString("base64"));
+      await page.waitForTimeout(220);
+    }
+    return frames;
+  }
+
+  // Idle: audio is not running, so the marker must be perfectly still. This is
+  // what the player pauses every time a reader opens a job without pressing play.
+  const paused = await sampleFrames();
+  expect(new Set(paused).size).toBe(1);
+
+  // ...and it must actually animate once playback is reported as running, so the
+  // test cannot pass by the animation never being applied at all.
+  await marker.evaluate((element) => {
+    element.closest("[data-now-playing]")?.setAttribute("data-now-playing", "running");
+  });
+  const running = await sampleFrames();
+  expect(new Set(running).size).toBeGreaterThan(1);
 });

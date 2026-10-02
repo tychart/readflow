@@ -3,7 +3,9 @@
     "composite": true,
     "skipLibCheck": true,
     "target": "ES2022",
-    "lib": ["ES2022"],
+    // "DOM" is required for `page.evaluate` callbacks in the Playwright specs,
+    // which run inside the page and use DOM APIs.
+    "lib": ["ES2022", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowSyntheticDefaultImports": true,

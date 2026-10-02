@@ -5,7 +5,7 @@ import pytest
 from app.core.config import RuntimeConfig
 from app.jobs.models import ModelState
 from app.synthesis.model_manager import ModelManager
-from app.synthesis.provider import ModelVRAMError, SynthesisProvider
+from app.synthesis.provider import ModelVRAMError
 from app.telemetry.service import TelemetryService
 
 
@@ -101,7 +101,6 @@ def test_set_device_propagates_to_provider(manager):
 
 def test_set_device_leaves_warm_idle_state_unchanged(manager):
     """Changing device should not auto-evict a loaded model."""
-    config = manager._config
     # Simulate a loaded state
     manager._loaded_model_id = "test-model"
     manager._state = ModelState.WARM_IDLE
@@ -134,6 +133,7 @@ def test_ensure_loaded_sets_not_enough_vram_on_vram_error(oom_manager):
 
     with pytest.raises(ModelVRAMError):
         import asyncio
+
         asyncio.run(oom_manager.ensure_loaded(model_id))
 
     assert oom_manager.state == ModelState.NOT_ENOUGH_VRAM
@@ -151,6 +151,7 @@ def test_ensure_loaded_clears_not_enough_vram_before_retry(oom_manager):
     # First attempt: fails with VRAM error
     with pytest.raises(ModelVRAMError):
         import asyncio
+
         asyncio.run(oom_manager.ensure_loaded(model_id))
 
     assert oom_manager.state == ModelState.NOT_ENOUGH_VRAM
@@ -158,6 +159,7 @@ def test_ensure_loaded_clears_not_enough_vram_before_retry(oom_manager):
     # Second attempt: it should reset to LOADING before hitting the error again
     with pytest.raises(ModelVRAMError):
         import asyncio
+
         asyncio.run(oom_manager.ensure_loaded(model_id))
 
     # Should end up in NOT_ENOUGH_VRAM again, but the load was re-tried
@@ -178,6 +180,7 @@ def test_ensure_loaded_succeeds_after_vram_error_and_device_change(monkeypatch, 
 
     # Now load should succeed
     import asyncio
+
     asyncio.run(manager.ensure_loaded(model_id))
 
     assert manager.state == ModelState.WARM_IDLE
@@ -192,6 +195,7 @@ def test_ensure_loaded_changes_state_to_warm_idle(manager):
     model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 
     import asyncio
+
     asyncio.run(manager.ensure_loaded(model_id))
 
     assert manager.state == ModelState.WARM_IDLE
@@ -204,6 +208,7 @@ def test_ensure_loaded_skips_redundant_load(manager):
     model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 
     import asyncio
+
     asyncio.run(manager.ensure_loaded(model_id))
     asyncio.run(manager.ensure_loaded(model_id))
 
@@ -216,6 +221,7 @@ def test_unload_works_from_not_enough_vram_state(manager):
     manager._loaded_model_id = None
 
     import asyncio
+
     asyncio.run(manager.unload())
 
     assert manager.state == ModelState.UNLOADED

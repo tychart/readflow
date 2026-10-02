@@ -1,9 +1,10 @@
 """Tests for chunk versioning and reprocessing models."""
+
 from app.jobs.models import (
     ChunkRecord,
     ChunkStatus,
     Job,
-    JobStatus,
+    PlannerCursor,
 )
 
 
@@ -132,8 +133,9 @@ class TestChunkRecord:
 class TestJobVersioning:
     """Tests for Job versioning methods."""
 
-    def _create_job_with_chunk(self, chunk_index: int, version: int = 0,
-                                status: ChunkStatus = ChunkStatus.WRITTEN) -> Job:
+    def _create_job_with_chunk(
+        self, chunk_index: int, version: int = 0, status: ChunkStatus = ChunkStatus.WRITTEN
+    ) -> Job:
         chunk = ChunkRecord(
             job_id="test-job",
             index=chunk_index,
@@ -407,7 +409,7 @@ class TestJobCompletion:
             voice_id="suzy",
             chunks=chunks,
             active_chunk_version={0: 0, 1: 0},
-            planner_cursor=type('PlannerCursor', (), {'exhausted': True})(),
+            planner_cursor=PlannerCursor(offset=-1),
         )
         # Chunk 0 is written, chunk 1 is queued (pending)
         written = job.versioned_written_chunks()

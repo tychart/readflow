@@ -4,7 +4,8 @@ from collections.abc import Iterable
 from time import time
 from uuid import uuid4
 
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, ChunkStatus
+from app.chunking.normalize import normalize_source_text
+from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 
 
 class JobManager:
@@ -22,11 +23,12 @@ class JobManager:
         title: str | None = None,
     ) -> Job:
         now = time()
+        normalized_text = normalize_source_text(source_text)
         job = Job(
             id=str(uuid4()),
-            title=title or self._derive_title(source_text),
+            title=title or self._derive_title(normalized_text),
             source_kind=source_kind,
-            source_text=source_text,
+            source_text=normalized_text,
             model_id=model_id,
             voice_id=voice_id,
             language=language,
@@ -145,6 +147,18 @@ class JobManager:
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         job.status = JobStatus.RENDERING
+        job.updated_at = time()
+
+    def mark_chunk_planned(self, chunk: ChunkRecord) -> None:
+        """Return a chunk to the queue.
+
+        Used when a batch is only partially rendered (the worker retries an OOM
+        with fewer chunks), so the dropped chunks are retried on a later tick
+        instead of being left stuck in `RENDERING`.
+        """
+        chunk.status = ChunkStatus.PLANNED
+        chunk.updated_at = time()
+        job = self.get_job(chunk.job_id)
         job.updated_at = time()
 
     def mark_chunk_written(

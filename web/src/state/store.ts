@@ -1,18 +1,13 @@
 import { create } from "zustand";
 
-import type { Voice } from "../types/api";
-import type {
-  AdminState,
-  JobDetail,
-  JobSummary,
-  WsEnvelope,
-} from "../types/events";
+import type { JobSummary, Voice } from "../types/api";
+import type { AdminState, WebSocketStatus, WsEnvelope } from "../types/events";
 
 interface AppStore {
   jobs: Record<string, JobSummary>;
   voices: Voice[];
   adminState: AdminState | null;
-  websocketStatus: "connecting" | "open" | "reconnecting" | "closed" | "error";
+  websocketStatus: WebSocketStatus;
   lastSocketMessageAt: number | null;
   lastSocketError: string | null;
   reconnectAttempt: number;
@@ -68,7 +63,9 @@ function adminStateEqual(
   );
 }
 
-function toSummary(job: JobDetail): JobSummary {
+/** Narrow any job payload (summary, streamed patch, or full detail) down to
+ *  the list summary the jobs page needs. */
+function toSummary(job: JobSummary): JobSummary {
   return {
     id: job.id,
     title: job.title,
@@ -87,7 +84,7 @@ export const useAppStore = create<AppStore>((set) => ({
   jobs: {},
   voices: [],
   adminState: null,
-  websocketStatus: "connecting",
+  websocketStatus: "idle",
   lastSocketMessageAt: null,
   lastSocketError: null,
   reconnectAttempt: 0,

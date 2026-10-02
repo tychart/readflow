@@ -1,29 +1,42 @@
 SHELL := /bin/bash
 UV_CACHE_DIR := /tmp/readflow-uv-cache
 
-.PHONY: test-web test-server test-e2e test lint typecheck test-real-model \
+.PHONY: install dev test-web test-server test-e2e test lint typecheck test-real-model \
         cuda-install docker-build docker-run docker-clean
+
+# ── Setup ─────────────────────────────────────
+# Bun owns the frontend, uv owns the backend.
+
+install:
+	cd web && bun install
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv sync --extra dev --extra utils
+
+# ── Local development ─────────────────────────
+# scripts/dev.sh is the one-command local stack (uvicorn --reload + Vite).
+
+dev:
+	scripts/dev.sh start
 
 # ── Test / lint / typecheck ───────────────────
 
 test-web:
-	cd web && npm test -- --run
+	cd web && bun run test:run
 
 test-server:
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pytest
 
 test-e2e:
-	cd web && npm run test:e2e
+	cd web && bun run test:e2e
 
 test: test-web test-server
 
 lint:
-	cd web && npm run lint
+	cd web && bun run lint
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff check .
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff format --check .
 
 typecheck:
-	cd web && npm run typecheck
+	cd web && bun run typecheck
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pyright
 
 test-real-model:

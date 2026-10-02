@@ -16,28 +16,27 @@ class PlannedChunk:
 
 
 class ChunkPlanner:
+    """Splits a job's canonical source text into renderable chunks.
+
+    `Job.source_text` is already normalized (see
+    `app.chunking.normalize.normalize_source_text`), so this planner only reads
+    it. Re-normalizing here used to make planning a whole book O(n^2).
+    """
+
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
-
-    def normalize_text(self, text: str) -> str:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
 
     def plan_next(self, job: Job) -> PlannedChunk | None:
         if job.planner_cursor.exhausted:
             return None
-        normalized = self.normalize_text(job.source_text)
-        offset = job.planner_cursor.offset
-        if offset >= len(normalized):
+        text = job.source_text
+        start = job.planner_cursor.offset
+        if start >= len(text):
             job.planner_cursor.offset = -1
             return None
 
-        emitted = job.planner_cursor.chunks_emitted
         target_chars = self._target_chars(job)
-        start = offset
-        remaining = normalized[start:]
+        remaining = text[start:]
         if not remaining.strip():
             job.planner_cursor.offset = -1
             return None
@@ -49,10 +48,10 @@ class ChunkPlanner:
             return None
 
         absolute_end = start + char_end
-        while absolute_end < len(normalized) and normalized[absolute_end].isspace():
+        while absolute_end < len(text) and text[absolute_end].isspace():
             absolute_end += 1
 
-        if absolute_end >= len(normalized):
+        if absolute_end >= len(text):
             job.planner_cursor.offset = -1
         else:
             job.planner_cursor.offset = absolute_end

@@ -86,23 +86,23 @@ export function PlaybackSpeedControl({ value, onChange }: PlaybackSpeedControlPr
   return (
     <div className="flex items-center gap-2">
       <label
-        className="hidden whitespace-nowrap text-xs font-semibold uppercase tracking-[0.15em] text-stone-500 sm:block"
+        className="hidden whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--ink-secondary)] sm:block"
         htmlFor={sliderId}
       >
         Speed
       </label>
       <input
         aria-label="Playback speed slider"
-        className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-stone-300 accent-[var(--accent)] md:w-32"
+        className="h-1.5 w-20 cursor-pointer appearance-none rounded-full accent-[var(--amber)] md:w-28"
         id={sliderId}
         max={SLIDER_MAX}
         min={SLIDER_MIN}
         onChange={handleSliderChange}
         step={SLIDER_STEP}
         style={{
-          background: `linear-gradient(to right, var(--accent) ${
+          background: `linear-gradient(to right, var(--amber) ${
             ((sliderValue - SLIDER_MIN) / (SLIDER_MAX - SLIDER_MIN)) * 100
-          }%, rgb(214 211 209) ${((sliderValue - SLIDER_MIN) / (SLIDER_MAX - SLIDER_MIN)) * 100}%)`,
+          }%, var(--track) ${((sliderValue - SLIDER_MIN) / (SLIDER_MAX - SLIDER_MIN)) * 100}%)`,
         }}
         type="range"
         value={sliderValue}
@@ -110,7 +110,7 @@ export function PlaybackSpeedControl({ value, onChange }: PlaybackSpeedControlPr
       <div className="flex items-center gap-1">
         <input
           aria-label="Playback speed value"
-          className="w-14 rounded-lg border border-stone-300 bg-white/80 px-2 py-1 text-center text-xs font-semibold tabular-nums text-stone-800 focus:border-[var(--accent)] focus:outline-none"
+          className="w-12 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-1.5 py-1 text-center text-xs font-semibold tabular-nums text-[var(--ink-primary)] focus:border-[var(--amber)] focus:outline-none"
           id={inputId}
           onBlur={handleInputBlur}
           onChange={handleInputChange}
@@ -118,7 +118,7 @@ export function PlaybackSpeedControl({ value, onChange }: PlaybackSpeedControlPr
           type="text"
           value={inputText}
         />
-        <span className="text-xs text-stone-500">×</span>
+        <span className="text-xs text-[var(--ink-secondary)]">×</span>
       </div>
     </div>
   );

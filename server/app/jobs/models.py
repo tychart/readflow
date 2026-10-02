@@ -80,6 +80,10 @@ class Job:
     id: str
     title: str | None
     source_kind: str
+    # Canonical text: `JobManager.create_job` stores it already normalized via
+    # `app.chunking.normalize.normalize_source_text`. Every `char_start` /
+    # `char_end` offset in `chunks` indexes into this string, and the reader
+    # slices the same string, so it must never be normalized a second time.
     source_text: str
     model_id: str
     voice_id: str
@@ -135,7 +139,12 @@ class Job:
         for index, version in self.active_chunk_version.items():
             for chunk in self.chunks:
                 if chunk.index == index and chunk.version == version:
-                    if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING, ChunkStatus.REPROCESSING}:
+                    if chunk.status in {
+                        ChunkStatus.PLANNED,
+                        ChunkStatus.QUEUED,
+                        ChunkStatus.RENDERING,
+                        ChunkStatus.REPROCESSING,
+                    }:
                         result.append(chunk)
                     break
         return result

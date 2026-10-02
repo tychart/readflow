@@ -10,15 +10,19 @@ import { JobCreateForm } from "./JobCreateForm";
 
 function StatusBadge({ status }: { status: JobSummary["status"] }) {
   const colors: Record<JobSummary["status"], string> = {
-    queued: "bg-stone-200 text-stone-700",
-    rendering: "bg-amber-200 text-amber-800",
-    paused: "bg-slate-200 text-slate-700",
-    playing: "bg-emerald-200 text-emerald-800",
-    completed: "bg-teal-200 text-teal-800",
-    failed: "bg-rose-200 text-rose-800",
+    queued: "bg-[var(--hover-bg)] text-[var(--ink-secondary)] border border-[var(--line)]",
+    rendering: "bg-[var(--amber)]/10 text-[var(--amber)] border border-[var(--amber)]/20",
+    paused: "bg-[var(--hover-bg)] text-[var(--ink-secondary)] border border-[var(--line)]",
+    playing: "bg-[var(--emerald)]/10 text-[var(--emerald)] border border-[var(--emerald)]/20",
+    completed: "bg-[var(--emerald)]/10 text-[var(--emerald)] border border-[var(--emerald)]/20",
+    failed: "bg-[var(--rose)]/10 text-[var(--rose)] border border-[var(--rose)]/20",
   };
 
-  return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${colors[status]}`}>{status}</span>;
+  return (
+    <span className={`rounded-md px-2.5 py-1 text-xs font-medium uppercase tracking-wider ${colors[status]}`}>
+      {status}
+    </span>
+  );
 }
 
 export function JobsPage() {
@@ -74,40 +78,59 @@ export function JobsPage() {
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+      <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
       <div className="space-y-4">
+        {/* Page heading */}
         <div>
-          <p className="text-sm uppercase tracking-[0.3em] text-stone-600">Queue</p>
-          <h1 className="display-font text-5xl">ReadFlow jobs</h1>
-          <p className="mt-2 max-w-2xl text-stone-700">
-            Build a queue, let the scheduler keep buffers healthy, and jump into any reader when you
-            are ready to listen.
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
+            Queue
+          </p>
+          <h1 className="mt-1 text-3xl font-bold text-[var(--ink-primary)]">
+            ReadFlow jobs
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-secondary)]">
+            Build a queue, let the scheduler keep buffers healthy, and jump into any
+            reader when you are ready to listen.
           </p>
         </div>
-        {error ? <div className="rounded-2xl bg-rose-100 px-4 py-3 text-rose-800">{error}</div> : null}
-        <div className="panel rounded-[2rem] p-6">
+
+        {/* Error banner */}
+        {error ? (
+          <div className="rounded-lg border border-rose-900/30 bg-rose-950/30 px-4 py-3 text-sm text-rose-400">
+            {error}
+          </div>
+        ) : null}
+
+        {/* Job queue */}
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-semibold">Live jobs</h2>
-            <span className="text-sm text-stone-600">
+            <h2 className="text-base font-semibold text-[var(--ink-primary)]">
+              Live jobs
+            </h2>
+            <span className="text-xs text-[var(--ink-secondary)]">
               WebSocket: {hasLiveJobs ? websocketStatus : "idle"}
             </span>
           </div>
-          <div className="space-y-3">
+
+          <div className="space-y-2">
             {jobs.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-stone-300 px-4 py-8 text-center text-stone-600">
-                No jobs yet.
+              <div className="rounded-lg border border-dashed border-[var(--line)] px-4 py-10 text-center text-sm text-[var(--ink-secondary)]">
+                No jobs yet. Create one to get started.
               </div>
             ) : (
               jobs.map((job) => (
                 <Link
-                  className="block rounded-3xl border border-stone-200 bg-white/70 px-5 py-4 transition hover:-translate-y-0.5"
+                  className="block rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-3 transition hover:bg-[var(--surface-raised)] hover:border-white/10"
                   key={job.id}
                   to={`/jobs/${job.id}`}
                 >
                   <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="font-semibold">{job.title ?? "Untitled job"}</div>
-                      <div className="text-sm text-stone-600">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-[var(--ink-primary)]">
+                        {job.title ?? "Untitled job"}
+                      </div>
+                      <div className="mt-0.5 text-xs text-[var(--ink-secondary)]">
                         {job.total_chunks_completed}/{job.total_chunks_emitted} chunks ready
                       </div>
                     </div>
@@ -119,7 +142,10 @@ export function JobsPage() {
           </div>
         </div>
       </div>
+
+      {/* Create form */}
       <JobCreateForm onSubmit={handleCreateJob} />
+    </div>
     </div>
   );
 }

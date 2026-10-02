@@ -138,6 +138,7 @@ class _FakeQwenFactory:
 
 class _FakeQwenOomOnCudaFactory:
     """Factory that raises OOM when loading on CUDA, succeeds on CPU."""
+
     created_models: ClassVar[list[_FakeQwenModel]] = []
 
     @classmethod
@@ -156,6 +157,7 @@ async def _run_sync_in_place(callback, *args):
 
 def _make_provider_module_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.synthesis import provider as provider_module
+
     monkeypatch.setattr(
         provider_module,
         "_import_qwen_runtime",
@@ -165,6 +167,7 @@ def _make_provider_module_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _make_provider_module_no_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.synthesis import provider as provider_module
+
     monkeypatch.setattr(
         provider_module,
         "_import_qwen_runtime",
@@ -174,6 +177,7 @@ def _make_provider_module_no_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _make_provider_module_oom_on_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.synthesis import provider as provider_module
+
     monkeypatch.setattr(
         provider_module,
         "_import_qwen_runtime",

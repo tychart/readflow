@@ -6,6 +6,7 @@ coverage.xml
 htmlcov/
 playwright-report/
 test-results/
+.dev-logs/
 dist/
 build/
 __pycache__/
@@ -17,6 +18,8 @@ web/coverage/
 tmp/
 
 web/tsconfig.node.tsbuildinfo
+
+.vscode/
 
 plans/
 .pi-subagents/

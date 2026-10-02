@@ -14,15 +14,18 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      # Bun installs and drives the scripts; Vite/Vitest/Playwright binaries keep
+      # their `#!/usr/bin/env node` shebang, so a Node runtime must be on PATH.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test -- --run --coverage
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test:coverage
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -58,14 +61,15 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:

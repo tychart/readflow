@@ -33,18 +33,35 @@ The repo currently contains:
 - a fake provider for fast deterministic local tests
 - unit, integration, browser smoke, lint, and typecheck coverage
 
-The repo does **not** yet contain every production nicety. The biggest current operational caveat is that the frontend uses relative `/api` requests, but `web/vite.config.ts` does not yet define a dev proxy. That means browser-based full-stack local development currently needs either:
+The repo does **not** yet contain every production nicety — jobs live in memory, there is no auth and no persistence — but running it locally is one command:
 
-- a reverse proxy that serves the frontend and backend under one origin, or
-- a small Vite `/api` proxy addition
+```bash
+scripts/dev.sh
+```
 
-The backend and frontend test suites work today, but manual full-stack browser development is still a little rough until that same-origin gap is addressed.
+That starts the API (uvicorn `--reload`, real Qwen3-TTS by default) and the Vite dev server
+with HMR, waits until both are ready, then follows their logs. Ctrl-C stops both. Use
+`scripts/dev.sh --fake` for instant, GPU-free runs.
+
+`web/vite.config.ts` proxies `/api` and `/api/ws` to the backend, so the browser session is
+same-origin with no extra setup.
 
 ## Features
 
 - Create jobs from pasted text or `.txt` upload
 - Shared backend queue for all jobs
 - Reader view with chunk-by-chunk buffered playback
+- Reader navigation built for book-length jobs:
+  - a whole-document waveform playbar (the overview)
+  - a **chunk conveyor** below it — a fixed-playhead strip that you drag or flick
+    to scrub, with the chunk under the playhead named and timestamped
+  - a **jump control on every chunk** in the text, so you can jump straight to a
+    location without touching the playbar
+  - **−10s / +10s** skip buttons
+  - a **playback speed** slider and numeric input (0.5–3×)
+  - **page-wide keyboard shortcuts** (Space/K, arrows, J/L) with a shortcuts guide
+  - **reader settings** (motion, conveyor, jump buttons, chunk window), saved per device
+  - a **phone bottom dock** that puts the transport and conveyor in the thumb zone
 - WebSocket-driven live job and admin updates
 - Built-in server-side voices discovered from `server/voices/`
 - Voice switching for future chunks only
@@ -66,7 +83,6 @@ The backend and frontend test suites work today, but manual full-stack browser d
 - No cleanup daemon for temp media
 - The scheduler is single-process and single-model by design
 - Real-model tests require CUDA to be visible to PyTorch in the current shell
-- The dev frontend does not yet proxy `/api` automatically
 
 ## Architecture
 
@@ -146,6 +162,11 @@ Important frontend pieces:
 - [web/src/app/App.tsx](/home/tychart/projects/readflow/web/src/app/App.tsx): shell and routing
 - [web/src/features/jobs/JobsPage.tsx](/home/tychart/projects/readflow/web/src/features/jobs/JobsPage.tsx): job creation and live queue
 - [web/src/features/reader/ReaderPage.tsx](/home/tychart/projects/readflow/web/src/features/reader/ReaderPage.tsx): playback, future-voice selection, chunk status
+- [web/src/features/reader/reader-model.ts](/home/tychart/projects/readflow/web/src/features/reader/reader-model.ts): pure reader derivations (patch merging, playback model, timeline slots)
+- [web/src/features/reader/conveyor-physics.ts](/home/tychart/projects/readflow/web/src/features/reader/conveyor-physics.ts): pure conveyor gesture physics and layout
+- [web/src/features/reader/PlaybackSpeedControl.tsx](/home/tychart/projects/readflow/web/src/features/reader/PlaybackSpeedControl.tsx): playback speed slider and input
+- [web/src/components/ChunkConveyor.tsx](/home/tychart/projects/readflow/web/src/components/ChunkConveyor.tsx): the fixed-playhead scrub strip
+- [web/src/state/reader-settings.ts](/home/tychart/projects/readflow/web/src/state/reader-settings.ts): device-local reader preferences
 - [web/src/features/admin/AdminPage.tsx](/home/tychart/projects/readflow/web/src/features/admin/AdminPage.tsx): runtime tuning and model controls
 - [web/src/hooks/useAppBootstrap.ts](/home/tychart/projects/readflow/web/src/hooks/useAppBootstrap.ts): initial data load and WebSocket wiring
 - [web/src/lib/media-source.ts](/home/tychart/projects/readflow/web/src/lib/media-source.ts): `MediaSource`/`SourceBuffer` append logic
@@ -225,7 +246,7 @@ This architecture is simple on purpose, but that simplicity has consequences.
 - One synthesis loop means no horizontal scaling inside one process
 - Jobs disappear when the process restarts
 - Runtime config changes are in memory, not persisted
-- Browser manual dev is not yet one-command smooth because there is no dev proxy
+- Browser work needs both dev servers; `scripts/dev.sh` starts them together
 
 ### Setup implication: `flash-attn`
 
@@ -247,8 +268,8 @@ If you change `flash-attn`, `torch`, or the CUDA base image, the container build
 
 - Python 3.12+
 - `uv`
-- Node 22+
-- `npm`
+- `bun` — package manager and script runner for everything JS/TS
+- Node 22+ — runtime for the Vite/Vitest/Playwright binaries that bun drives
 - `ffmpeg`
 
 ### For the real Qwen runtime (native install)
@@ -305,31 +326,53 @@ podman run --rm --security-opt=label=disable --device nvidia.com/gpu=all \
 
 | Activity | Command |
 |---|---|
-| Day-to-day dev (no GPU) | `uv sync --extra dev && uv run uvicorn main:app --reload` |
+| Day-to-day dev (whole app) | `scripts/dev.sh` |
+| Day-to-day dev (backend only) | `uv sync --extra dev && uv run uvicorn main:app --reload` |
 | Real-model test (native) | `uv sync --extra cuda` then `uv run pytest` |
 | Build production image | `make docker-build && make docker-run` |
 
 ## Installation
 
+Both halves at once:
+
+```bash
+make install
+```
+
+Or separately:
+
 ### Backend
 
 ```bash
 cd server
-uv sync --extra dev
+uv sync --extra dev --extra utils
 ```
 
 ### Frontend
 
 ```bash
 cd web
-npm ci
+bun install
 ```
+
+Bun owns everything JavaScript/TypeScript: `bun install`, `bun run`, `bunx`, and
+`web/bun.lock`. uv owns everything Python: `uv sync`, `uv run`. There is no `package-lock.json`
+and no root `node_modules` — the JS project lives entirely in `web/`.
 
 ## Running the Backend
 
+The normal way to run the app locally is `scripts/dev.sh`:
+
+```bash
+scripts/dev.sh            # real Qwen3-TTS provider (default)
+scripts/dev.sh --fake     # instant, no GPU, deterministic audio
+```
+
+To run the API on its own:
+
 ```bash
 cd server
-uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn main:app --reload --port 8000
 ```
 
 Notes:
@@ -342,29 +385,23 @@ Example:
 
 ```bash
 cd server
-READFLOW_TTS_PROVIDER=fake uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+READFLOW_TTS_PROVIDER=fake uv run uvicorn main:app --reload --port 8000
 ```
 
 ## Running the Frontend
 
 ```bash
 cd web
-npm run dev -- --host 0.0.0.0 --port 5173
+bun run dev
 ```
 
-### Important dev caveat
+On its own this only serves the UI; `/api` requests need the backend on port 8000. For a
+working browser session use `scripts/dev.sh`, which runs both halves and keeps the proxy
+pointing at the API it started.
 
-The frontend currently calls relative `/api/...` URLs and opens `/api/ws`, but the Vite config does not yet proxy those paths to the FastAPI backend. That means:
-
-- `npm run dev` is fine for isolated frontend work and tests
-- `uvicorn` is fine for isolated backend work and API checks
-- a real browser end-to-end local session currently needs a same-origin setup
-
-Practical options:
-
-1. add a Vite dev proxy in `web/vite.config.ts`
-2. run both behind nginx/Caddy/another local reverse proxy
-3. temporarily patch the frontend client for a different backend origin during development
+Ports are fixed at 8000 (api) and 5173 (web) because `web/vite.config.ts` compiles the
+proxy target against 8000. `scripts/dev.sh` reports (and leaves alone) any process already
+holding either port instead of guessing.
 
 ## Testing
 
@@ -390,8 +427,9 @@ make test-real-model
 
 ```bash
 cd web
-npm test -- --run
-npm run test:e2e
+bun run test:run        # vitest, one shot
+bun run test:coverage   # vitest + v8 coverage
+bun run test:e2e        # Playwright
 ```
 
 ### Server tests
@@ -449,6 +487,23 @@ These changes are in memory only. They are not persisted across restarts.
 - `READFLOW_SCHEDULER_AUTOSTART=true|false`
 - `READFLOW_TEMP_DIR_NAME=<name>`
 - `READFLOW_VOICES_DIR=<relative path>`
+- `READFLOW_MAX_SOURCE_BYTES=<bytes>` (default `67108864`, i.e. 64 MB per job)
+
+### Long documents
+
+Paste or upload a whole chapter, or a whole book. The source text is
+canonicalized once when the job is created (whitespace/newline cleanup) and that
+single canonical string is what chunk offsets and the reader index into.
+
+- `READFLOW_MAX_SOURCE_BYTES` caps one job's source text. Both the pasted-text
+  field and a `.txt` upload are measured against it; going over returns HTTP 413
+  with the configured limit in the message. Starlette's 1 MiB per-field multipart
+  default does **not** apply here.
+- Chunk planning stays lazy and buffer-aware, so a long document is planned as
+  it renders — the reader shows the not-yet-planned tail as dimmed "Upcoming
+  text" (whole tail for chapter-sized sources, a bounded preview for books).
+- Live events carry a job summary plus, for chunk events, the single chunk that
+  changed. Full detail (including `source_text`) is fetched over HTTP.
 
 For many other runtime defaults, the current source of truth is [server/app/core/config.py](/home/tychart/projects/readflow/server/app/core/config.py).
 
@@ -456,15 +511,15 @@ For many other runtime defaults, the current source of truth is [server/app/core
 
 Key HTTP endpoints:
 
-- `POST /api/jobs`
+- `POST /api/jobs` (multipart: `text` or `.txt` `file`, up to `READFLOW_MAX_SOURCE_BYTES`)
 - `GET /api/jobs`
-- `GET /api/jobs/{job_id}`
+- `GET /api/jobs/{job_id}` (full detail, including `source_text`)
 - `GET /api/jobs/{job_id}/manifest`
 - `GET /api/jobs/{job_id}/chunks/init`
 - `GET /api/jobs/{job_id}/chunks/{chunk_index}`
-- `POST /api/jobs/{job_id}/activate`
-- `POST /api/jobs/{job_id}/pause`
-- `POST /api/jobs/{job_id}/resume`
+- `POST /api/jobs/{job_id}/activate` (returns a job summary)
+- `POST /api/jobs/{job_id}/pause` (returns a job summary)
+- `POST /api/jobs/{job_id}/resume` (returns a job summary)
 - `POST /api/jobs/{job_id}/voice`
 - `POST /api/jobs/{job_id}/playback`
 - `GET /api/voices`
@@ -493,14 +548,14 @@ WebSocket endpoint:
 
 Reasonable next steps for the project are:
 
-1. Add a proper Vite dev proxy or unified same-origin local dev setup.
-2. Persist jobs and chunk metadata so restarts do not wipe state.
-3. Add cleanup and retention policies for temp media.
-4. Expand admin telemetry with per-job batch history and richer scheduler visibility.
-5. Add better reader UX, including chunk highlighting and stronger playback recovery after pauses.
-6. Support broader model/runtime tuning once the base 0.6B path is stable.
-7. Add a production deployment story for single-host installation.
-8. Add optional real-GPU CI or a documented validation checklist for target hardware.
+1. Persist jobs and chunk metadata so restarts do not wipe state.
+2. Add cleanup and retention policies for temp media.
+3. Expand admin telemetry with per-job batch history and richer scheduler visibility.
+4. Keep hardening the newest reader surfaces (the conveyor gestures and the
+   phone dock layouts).
+5. Support broader model/runtime tuning once the base 0.6B path is stable.
+6. Add a production deployment story for single-host installation.
+7. Add optional real-GPU CI or a documented validation checklist for target hardware.
 
 ## Short Practical Summary
 

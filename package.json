@@ -1,19 +1,16 @@
 {
   "name": "readflow",
   "private": true,
-  "workspaces": [
-    "web"
-  ],
+  "packageManager": "bun@1.4.2",
   "scripts": {
+    "dev": "scripts/dev.sh start",
+    "stop": "scripts/dev.sh stop",
+    "status": "scripts/dev.sh status",
+    "logs": "scripts/dev.sh logs",
     "test": "make test",
+    "test:e2e": "make test-e2e",
     "lint": "make lint",
     "typecheck": "make typecheck",
-    "dev": "concurrently --kill-others-on-fail --names server,web --prefix-colors auto \"npm run dev:server\" \"npm run dev:web\"",
-    "dev:server": "cd server && uv run uvicorn main:app --reload",
-    "dev:web": "wait-on http://localhost:8000/docs && cd web && npm run dev"
-  },
-  "devDependencies": {
-    "concurrently": "^10.0.3",
-    "wait-on": "^9.0.10"
+    "setup": "make install"
   }
 }

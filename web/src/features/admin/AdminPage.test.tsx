@@ -1,4 +1,4 @@
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { AdminPage } from "./AdminPage";
@@ -7,9 +7,11 @@ import { useAppStore } from "../../state/store";
 /** AdminState fixture with VRAM data */
 const GPU_ADMIN_STATE = {
   config: {
+    device: "auto",
     idle_unload_seconds: 300,
     max_prebuffer_seconds: 300,
     target_buffer_seconds: 45,
+    inactive_job_ahead_chunks: 1,
     batch_candidates_small_model: [8, 7, 6, 5],
     batch_candidates_large_model: [6, 5, 4, 3],
     vram_soft_limit_mb: 9000,
@@ -76,12 +78,25 @@ function mockFetch() {
         json: async () => useAppStore.getState().adminState,
       };
     }
+    if (url.endsWith("/api/admin/queue")) {
+      return {
+        ok: true,
+        json: async () => ({
+          generated_at: 0,
+          queue_depth: 0,
+          active_batch: null,
+          next_batch: null,
+          items: [],
+        }),
+      };
+    }
     if (url.endsWith("/api/admin/config")) {
       return {
         ok: true,
         json: async () => ({
           idle_unload_seconds: 120,
           max_prebuffer_seconds: 300,
+          inactive_job_ahead_chunks: 1,
           target_buffer_seconds: 45,
           batch_candidates_small_model: [8, 7, 6, 5],
           batch_candidates_large_model: [6, 5, 4, 3],
@@ -132,7 +147,7 @@ test("renders memory section with VRAM stats", () => {
   // Reserved (matches nvidia-smi) is the big number
   expect(screen.getByText("8,000 MB")).toBeInTheDocument();
   expect(screen.getByText(/24,000 MB total/)).toBeInTheDocument();
-  expect(screen.getByText(/18,000 MB free/)).toBeInTheDocument();
+  expect(screen.getByText(/Headroom 2,000 MB/)).toBeInTheDocument();
   expect(screen.getByText(/cuda/)).toBeInTheDocument();
   // Allocated appears in the legend
   expect(screen.getByText(/Allocated 6,000 MB/)).toBeInTheDocument();
@@ -144,7 +159,7 @@ test("renders memory section with CPU fallback", () => {
   render(<AdminPage />);
 
   // CPU mode shows a dash and explanatory text instead of "N/A"
-  expect(screen.getByText(/CPU — no GPU memory to report/)).toBeInTheDocument();
+  expect(screen.getByText(/Running on CPU — no GPU memory/)).toBeInTheDocument();
   expect(screen.getByText(/cpu/)).toBeInTheDocument();
 });
 
@@ -154,7 +169,7 @@ test("renders 'unavailable' when memory is null", () => {
   render(<AdminPage />);
 
   expect(
-    screen.getByLabelText(/memory stats unavailable/i),
+    screen.getByText("Memory stats unavailable."),
   ).toBeInTheDocument();
 });
 
@@ -165,8 +180,8 @@ test("renders admin telemetry and saves config", async () => {
 
   render(<AdminPage />);
 
-  await user.clear(screen.getByLabelText(/idle unload seconds/i));
-  await user.type(screen.getByLabelText(/idle unload seconds/i), "120");
+  await user.clear(screen.getByLabelText(/Idle unload/i));
+  await user.type(screen.getByLabelText(/Idle unload/i), "120");
   await user.click(screen.getByRole("button", { name: /save config/i }));
 
   // Batch info now appears in the Synthesis card
@@ -182,7 +197,7 @@ test("form does not reset when adminState changes via WebSocket", () => {
   render(<AdminPage />);
 
   // Verify idle_unload default value is loaded into the form
-  const input = screen.getByLabelText(/idle unload seconds/i) as HTMLInputElement;
+  const input = screen.getByLabelText(/Idle unload/i) as HTMLInputElement;
   expect(input.value).toBe("300");
 
   // Simulate a WebSocket telemetry update (new adminState reference, same config)
@@ -210,9 +225,9 @@ test("form initializes from adminState.config once", () => {
   mockFetch();
   setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
 
-  const { rerender } = render(<AdminPage />);
+  render(<AdminPage />);
 
-  const input = screen.getByLabelText(/idle unload seconds/i) as HTMLInputElement;
+  const input = screen.getByLabelText(/Idle unload/i) as HTMLInputElement;
   expect(input.value).toBe("300");
 
   // Simulate a WebSocket admin_config_updated event
@@ -234,4 +249,86 @@ test("form initializes from adminState.config once", () => {
 
   // The form should NOT have reset to 600 because hasInitialized guard
   expect(input.value).toBe("300");
+});
+
+test("defaults to the Overview tab", () => {
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(screen.getByRole("tab", { name: "Queue" })).toHaveAttribute(
+    "aria-selected",
+    "false",
+  );
+  expect(screen.getByLabelText(/Idle unload/i)).toBeInTheDocument();
+});
+
+test("switches to the Queue tab and back to Overview", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  await user.click(screen.getByRole("tab", { name: "Queue" }));
+
+  expect(screen.getByRole("tab", { name: "Queue" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(await screen.findByText(/Nothing queued/i)).toBeInTheDocument();
+  expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "admin-panel-queue");
+
+  await user.click(screen.getByRole("tab", { name: "Overview" }));
+
+  expect(screen.getByLabelText(/Idle unload/i)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing queued/i)).not.toBeInTheDocument();
+});
+
+test("tabs expose tablist semantics and support arrow-key navigation", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  expect(screen.getByRole("tablist", { name: /admin sections/i })).toBeInTheDocument();
+
+  const overviewTab = screen.getByRole("tab", { name: "Overview" });
+  overviewTab.focus();
+  await user.keyboard("{ArrowRight}");
+
+  expect(screen.getByRole("tab", { name: "Queue" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+test("edits and saves the inactive job lookahead setting", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  const input = screen.getByLabelText(/Inactive job lookahead/i) as HTMLInputElement;
+  expect(input.value).toBe("1");
+
+  await user.clear(input);
+  await user.type(input, "4");
+  expect(input.value).toBe("4");
+
+  await user.click(screen.getByRole("button", { name: /Save config/i }));
+
+  await waitFor(() =>
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/admin/config",
+      expect.objectContaining({ method: "POST" }),
+    ),
+  );
 });
