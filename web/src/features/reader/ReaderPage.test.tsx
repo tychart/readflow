@@ -1,9 +1,13 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
 
 import { ReaderPage } from "./ReaderPage";
+import {
+  invalidateReaderSettingsCache,
+  resetReaderSettings,
+} from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
 import type { Chunk } from "../../types/api";
 
@@ -145,6 +149,10 @@ function seedStore(overrides?: Partial<ReturnType<typeof useAppStore.getState>>)
 }
 
 beforeEach(() => {
+  // Reader preferences persist to localStorage, so a test that flips a toggle
+  // would otherwise leak that layout into every later test in the file.
+  resetReaderSettings();
+  invalidateReaderSettingsCache();
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
   HTMLMediaElement.prototype.load = vi.fn();
@@ -1112,8 +1120,9 @@ describe("chunk versioning & reprocessing", () => {
       expect(fills[1]?.style.width).toBe("100%");
       expect(fills[2]?.style.width).toBe("25%");
     });
-    // The clock shows the seeked position, not the anchor start (0:08).
-    expect(screen.getByText("0:09")).toBeInTheDocument();
+    // The clock shows the seeked position, not the anchor start (0:08). The
+    // conveyor readout is driven by the same coordinate and must agree.
+    expect(screen.getByTestId("conveyor-readout")).toHaveTextContent("0:09");
   });
 
   test("seeking while playing keeps playing and re-activates the job", async () => {
@@ -1306,4 +1315,66 @@ test("merges a streamed chunk delta without losing the document text", async () 
   expect(
     screen.getByText("Second chunk sentence the planner has not reached yet."),
   ).toBeInTheDocument();
+});
+
+/* ── Phone layout ─────────────────────────────────────────── */
+
+/**
+ * Phone widths move the transport and the conveyor into a fixed bottom dock,
+ * because the sticky top playbar is out of thumb reach and its whole-document
+ * waveform has no resolution to seek with. The first render derives the
+ * breakpoint from `window.innerWidth` (jsdom reports every media query as
+ * non-matching), so pinning it is enough to exercise that layout.
+ */
+describe("phone layout", () => {
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  });
+
+  test("puts the transport and the conveyor in a bottom dock", async () => {
+    seedStore();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    mockReaderFetch(buildTextChunks(4));
+
+    renderReader();
+    await screen.findByText("Reader job");
+
+    const dock = screen.getByTestId("reader-dock");
+    expect(dock).toBeInTheDocument();
+
+    // Exactly one transport, and it lives in the dock.
+    expect(within(dock).getByRole("button", { name: "Play" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Play" })).toHaveLength(1);
+    expect(within(dock).getByTestId("chunk-conveyor")).toBeInTheDocument();
+    expect(screen.getAllByTestId("chunk-conveyor")).toHaveLength(1);
+  });
+
+  test("uses on-screen sizes for the dock controls", async () => {
+    seedStore();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    mockReaderFetch(buildTextChunks(4));
+
+    renderReader();
+    await screen.findByText("Reader job");
+
+    // Larger tap targets than the compact desktop playbar.
+    const play = within(screen.getByTestId("reader-dock")).getByRole("button", { name: "Play" });
+    expect(play.style.width).toBe("52px");
+  });
+
+  test("phone dock follows the show-conveyor setting", async () => {
+    const user = userEvent.setup();
+    seedStore();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    mockReaderFetch(buildTextChunks(4));
+
+    renderReader();
+    await screen.findByText("Reader job");
+    expect(screen.getByTestId("reader-dock")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Reader settings" }));
+    await user.click(screen.getByLabelText("Show chunk conveyor"));
+
+    expect(screen.queryByTestId("reader-dock")).toBeNull();
+  });
 });

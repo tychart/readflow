@@ -69,6 +69,12 @@ export interface ReaderSidebarProps {
   onToggle: () => void;
   /** True when rendered as an overlay drawer (<lg breakpoint) */
   isOverlay: boolean;
+  /**
+   * Position classes for the floating sidebar toggle in overlay mode. Callers
+   * raise it when something else occupies the bottom of the screen (the phone
+   * reader dock), so the two controls cannot overlap.
+   */
+  overlayTogglePositionClassName?: string;
 }
 
 /* ── Component ────────────────────────────────────────────── */
@@ -109,6 +115,7 @@ export function ReaderSidebar({
   isOpen,
   onToggle,
   isOverlay,
+  overlayTogglePositionClassName,
 }: ReaderSidebarProps) {
   // Store-sourced state
   const { voices, websocketStatus, lastSocketMessageAt, lastSocketError, isSocketStale } =
@@ -440,7 +447,7 @@ export function ReaderSidebar({
         {/* Toggle button — floating */}
         <button
           aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
-          className={`fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition-all hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)] ${
+          className={`fixed ${overlayTogglePositionClassName ?? "bottom-6"} right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition-all hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)] ${
             isOpen ? "scale-90 opacity-0 pointer-events-none" : "scale-100 opacity-100"
           }`}
           onClick={onToggle}

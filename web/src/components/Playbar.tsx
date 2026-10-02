@@ -1,10 +1,12 @@
 import { useCallback, useMemo } from "react";
 
-import type { TimelineSlotData } from "../types/timeline";
-import { PlayButton, SkipButton } from "./PlaybackButtons";
 import {
-  SKIP_STEP_SECONDS,
-} from "../hooks/usePlaybackShortcuts";
+  resolvePlayButtonLabel,
+  resolvePlayerStateLabel,
+  resolveShowSpinner,
+} from "../features/reader/transport";
+import type { TimelineSlotData } from "../types/timeline";
+import { TransportControls } from "./TransportControls";
 import { WaveformTimeline } from "./WaveformTimeline";
 
 /* ── Types ────────────────────────────────────────────────── */
@@ -70,6 +72,11 @@ export interface PlaybarProps {
    * stays reachable after the playbar compacts.
    */
   settingsSlot?: React.ReactNode;
+  /**
+   * Whether this bar renders the −10s / play-pause / +10s controls. Phones move
+   * them into the bottom dock and keep this bar as the whole-document overview.
+   */
+  showTransport?: boolean;
 }
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -115,21 +122,40 @@ export function Playbar({
   writtenChunks,
   scrollProgress,
   settingsSlot,
+  showTransport = true,
 }: PlaybarProps) {
   // ── Player state for display ──────────────────────────────
-  const playerStateLabel = useMemo(() => {
-    if (isAutoplayBlocked) return "Playback blocked by browser";
-    if (isJobTerminal && renderedDurationSeconds > 0 && displayTimeSeconds >= displayDurationSeconds) {
-      return "Playback complete";
-    }
-    if (isPlaying) return "Playing";
-    if (playIntent && isWaitingForData) return "Buffering…";
-    if (playIntent && !isPlaying && renderedDurationSeconds <= 0) return "Preparing stream…";
-    if (playIntent) return "Starting…";
-    return "Ready";
-  }, [isAutoplayBlocked, isJobTerminal, renderedDurationSeconds, displayTimeSeconds, displayDurationSeconds, isPlaying, playIntent, isWaitingForData]);
+  const playerStateLabel = useMemo(
+    () =>
+      resolvePlayerStateLabel({
+        displayDurationSeconds,
+        displayTimeSeconds,
+        isAutoplayBlocked,
+        isJobTerminal,
+        isPlaying,
+        isWaitingForData,
+        playIntent,
+        renderedDurationSeconds,
+      }),
+    [
+      displayDurationSeconds,
+      displayTimeSeconds,
+      isAutoplayBlocked,
+      isJobTerminal,
+      isPlaying,
+      isWaitingForData,
+      playIntent,
+      renderedDurationSeconds,
+    ],
+  );
 
-  const showSpinner = (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
+  const playButtonLabel = resolvePlayButtonLabel({ isAutoplayBlocked, playIntent });
+  const showSpinner = resolveShowSpinner({
+    isAutoplayBlocked,
+    isPlaying,
+    isWaitingForData,
+    playIntent,
+  });
 
   // ── Seek handler for timeline clicks ──────────────────────
   const handleTimelineSeek = useCallback(
@@ -152,9 +178,9 @@ export function Playbar({
   );
 
   // ── Render ────────────────────────────────────────────────
-  // When playIntent is true (user requested play), show "Pause" even if audio hasn't started.
-  // When autoplay is blocked, show "Resume" to encourage a click.
-  const playButtonLabel = isAutoplayBlocked ? "Resume" : playIntent ? "Pause" : "Play";
+  // "Pause" while playIntent is set (even before audio starts), "Resume" when
+  // the browser blocked autoplay — both come from `resolvePlayButtonLabel` so
+  // the top bar and the phone dock cannot disagree.
 
   // ── Smooth interpolated values ────────────────────────────
   // All animate linearly as scrollProgress goes 0 → 1
@@ -191,34 +217,23 @@ export function Playbar({
         className="relative z-20 flex items-center gap-3"
         style={{ padding: `${containerPad}px` }}
       >
-        {/* Transport: −10s / play-pause / +10s */}
-        <div className="flex shrink-0 items-center" style={{ gap: transportGap }}>
-          <SkipButton
-            direction="back"
-            iconSizePx={skipIconSize}
-            onClick={() => onSkip(-SKIP_STEP_SECONDS)}
-            seconds={SKIP_STEP_SECONDS}
-            shortcut="←"
-            sizePx={skipSize}
-          />
-          <PlayButton
-            iconSizePx={iconSize}
-            label={playButtonLabel}
-            onClick={() => (isPlaying ? onPause() : onPlay())}
+        {/* Transport: −10s / play-pause / +10s. Phones render these in the
+            bottom dock instead, so this bar stays the overview. */}
+        {showTransport ? (
+          <TransportControls
+            gapPx={transportGap}
+            onPause={onPause}
+            onPlay={onPlay}
+            onSkip={onSkip}
+            playButtonSizePx={btnSize}
+            playIconSizePx={iconSize}
+            playLabel={playButtonLabel}
             showPauseIcon={isPlaying || playIntent}
             showSpinner={showSpinner}
-            sizePx={btnSize}
-            title={`${playButtonLabel} (Space or K)`}
+            skipButtonSizePx={skipSize}
+            skipIconSizePx={skipIconSize}
           />
-          <SkipButton
-            direction="forward"
-            iconSizePx={skipIconSize}
-            onClick={() => onSkip(SKIP_STEP_SECONDS)}
-            seconds={SKIP_STEP_SECONDS}
-            shortcut="→"
-            sizePx={skipSize}
-          />
-        </div>
+        ) : null}
 
         {/* Waveform Timeline */}
         <div className="min-w-0 flex-1">
@@ -240,7 +255,7 @@ export function Playbar({
 
       {/* Bottom row: metadata + controls — fades out progressively */}
       <div
-        className="relative z-10 flex items-center justify-between gap-4 text-xs text-[var(--ink-secondary)]"
+        className="relative z-10 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-[var(--ink-secondary)]"
         style={{
           opacity: metaOpacity,
           maxHeight: metaOpacity > 0 ? '50px' : '0px',
@@ -277,8 +292,8 @@ export function Playbar({
 
           {/* Right: chunk counter + download */}
           <div className="flex items-center gap-4">
-            {/* Chunk counter */}
-            <span className="tabular-nums">
+            {/* Chunk counter — secondary detail, dropped on phone widths */}
+            <span className="hidden tabular-nums sm:inline">
               <span className="text-[var(--ink-primary)]">{writtenChunks}</span>
               <span className="opacity-40">/{totalChunks}</span>
               <span> chunks</span>

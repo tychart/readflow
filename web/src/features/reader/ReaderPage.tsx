@@ -4,9 +4,11 @@ import { useShallow } from "zustand/shallow";
 
 import { ChunkConveyor } from "../../components/ChunkConveyor";
 import { Playbar } from "../../components/Playbar";
+import { ReaderDock } from "../../components/ReaderDock";
 import { ReaderSettingsMenu } from "../../components/ReaderSettingsMenu";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
 import { useReaderSettings, useReaderMotion } from "../../hooks/useReaderSettings";
 import { api } from "../../lib/api";
@@ -85,24 +87,29 @@ export function ReaderPage() {
   const [reprocessError, setReprocessError] = useState<string | null>(null);
   const [seekOverride, setSeekOverride] = useState<number | null>(null);
 
-  // ── Sidebar state ────────────────────────────────────────
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [isLargeScreen, setIsLargeScreen] = useState(
-    typeof window !== "undefined" ? window.innerWidth >= 1024 : true,
+  // ── Responsive chrome ───────────────────────────────────
+  // The first render derives from `window.innerWidth` because jsdom reports
+  // every media query as non-matching; the live query takes over after mount.
+  const hasWindow = typeof window !== "undefined";
+  const isLargeScreen = useMediaQuery(
+    "(min-width: 1024px)",
+    hasWindow ? window.innerWidth >= 1024 : true,
+  );
+  const isPhoneViewport = useMediaQuery(
+    "(max-width: 767px)",
+    hasWindow ? window.innerWidth < 768 : false,
   );
 
+  const [sidebarOpen, setSidebarOpen] = useState(isLargeScreen);
+
+  // The sidebar is inline on large screens and an overlay below them. Only an
+  // actual breakpoint change moves it, so a manual toggle survives re-renders.
+  const previousIsLargeScreenRef = useRef(isLargeScreen);
   useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const handler = (e: MediaQueryListEvent) => {
-      setIsLargeScreen(e.matches);
-      // Auto-open sidebar when going to large, auto-close when going to small
-      if (e.matches) setSidebarOpen(true);
-      else setSidebarOpen(false);
-    };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
+    if (previousIsLargeScreenRef.current === isLargeScreen) return;
+    previousIsLargeScreenRef.current = isLargeScreen;
+    setSidebarOpen(isLargeScreen);
+  }, [isLargeScreen]);
 
   const toggleSidebar = useCallback(() => setSidebarOpen((prev) => !prev), []);
 
@@ -788,6 +795,7 @@ export function ReaderPage() {
             onSeekToChunk={handleSeekToChunkWithScroll}
             onSkip={handleSkip}
             renderedDurationSeconds={renderedDurationSeconds}
+            showTransport={!isPhoneViewport}
             settingsSlot={
               <ReaderSettingsMenu
                 isOverlay={!isLargeScreen}
@@ -805,8 +813,9 @@ export function ReaderPage() {
 
           {/* Chunk conveyor — the zoomed, thumb-sized scrub strip. Shares the
               sticky wrapper with the main playbar so it stays reachable while
-              reading deep into a long document. */}
-          {settings.showConveyor ? (
+              reading deep into a long document. Phones move it into the bottom
+              dock instead, where a thumb can actually reach it. */}
+          {settings.showConveyor && !isPhoneViewport ? (
             <div className="mt-2">
               <ChunkConveyor
                 maxSeekSeconds={displayRenderedDurationSeconds}
@@ -848,8 +857,13 @@ export function ReaderPage() {
         </div>
       </div>
 
-      {/* Main content area — reader text + sidebar */}
-      <div className="mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6">
+      {/* Main content area — reader text + sidebar. The extra bottom padding
+          keeps the phone dock from covering the last block. */}
+      <div
+        className={`mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6 ${
+          isPhoneViewport && settings.showConveyor ? "pb-40" : ""
+        }`}
+      >
         {isLargeScreen && !sidebarOpen ? (
           /* ── Sidebar closed: reader centered ── */
           <div className="mx-auto flex w-full max-w-4xl flex-col">
@@ -914,10 +928,35 @@ export function ReaderPage() {
               isOpen={sidebarOpen}
               onToggle={toggleSidebar}
               isOverlay={!isLargeScreen}
+              overlayTogglePositionClassName={
+                // The phone dock owns the bottom strip; lift the floating sidebar
+                // toggle above it so the two controls never overlap.
+                isPhoneViewport && settings.showConveyor ? "bottom-[10rem]" : undefined
+              }
             />
           </div>
         )}
       </div>
+
+      {/* Phone bottom dock — transport plus the conveyor, in the thumb zone. */}
+      {isPhoneViewport && settings.showConveyor ? (
+        <ReaderDock
+          isAutoplayBlocked={isAutoplayBlocked}
+          isPlaying={isActuallyPlaying}
+          isWaitingForData={isWaitingForData}
+          maxSeekSeconds={displayRenderedDurationSeconds}
+          motion={motion}
+          onPause={handlePause}
+          onPlay={handlePlay}
+          onSeek={handleSeekToChunkWithScroll}
+          onSkip={handleSkip}
+          playIntent={playIntent}
+          playheadSeconds={displayTimeSeconds}
+          slots={timelineSlots}
+          waveforms={waveforms}
+          windowSizeSetting={settings.conveyorWindowSize}
+        />
+      ) : null}
       </>
     );
   }

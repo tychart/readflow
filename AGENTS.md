@@ -250,17 +250,26 @@ This became one of the most iterated parts of the codebase. Future agents should
 
 Key files:
 
-- `web/src/features/reader/ReaderPage.tsx`
-- `web/src/lib/media-source.ts`
-- `web/src/features/reader/timeline.ts`
-- `web/src/components/WaveformTimeline.tsx`
-- `web/src/components/Playbar.tsx`
-- `web/src/hooks/useChunkWaveforms.ts`
+- `web/src/features/reader/ReaderPage.tsx` (orchestration: state, user intent, server sync)
+- `web/src/features/reader/reader-model.ts` (pure: patch merging, version resolution, gap-aware playback model, slot states)
+- `web/src/features/reader/reader-text.ts` + `ReaderText.tsx` (canonical-text layout + reader blocks)
+- `web/src/features/reader/chunk-utils.ts` (chunk/version/status/text helpers, shared with the sidebar)
+- `web/src/features/reader/transport.ts` (play-button label, spinner and status-pill rules)
+- `web/src/features/reader/conveyor-physics.ts` (pure: conveyor gesture physics + layout)
+- `web/src/lib/media-source.ts` (player hook: `<audio>`, `MediaSource`, append queue)
+- `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
+- `web/src/components/WaveformSlot.tsx` (the shared waveform look, used by both bars)
+- `web/src/components/WaveformTimeline.tsx` (whole-document overview bar)
+- `web/src/components/ChunkConveyor.tsx` + `ReaderDock.tsx` (zoomed scrub strip; phone dock)
+- `web/src/components/Playbar.tsx` + `TransportControls.tsx` + `PlaybackButtons.tsx`
+- `web/src/components/ReaderSettingsMenu.tsx` + `web/src/state/reader-settings.ts`
+- `web/src/hooks/useChunkWaveforms.ts`, `useElementWidth.ts`, `useMediaQuery.ts`, `usePlaybackShortcuts.ts`, `useReaderSettings.ts`
 - `server/app/media/peaks.py`
 
 Current architecture:
 
 - `ReaderPage` owns reader-level state, user intent, timeline interactions, and server synchronization
+- `reader-model.ts` holds the pure derivations so the tricky rules (patch merging, the contiguous rendered run, gap classification, slot states) are directly unit-testable instead of only through a mounted page
 - `useMediaSourcePlayer` owns the hidden `<audio>` element, `MediaSource`, `SourceBuffer`, append queue, and low-level playback state
 - the visible player is fully custom; the native audio controls are hidden
 
@@ -270,6 +279,7 @@ Important design rules:
 - the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
 - `playIntent` is user intent, not identical to "the browser is currently making sound"
 - real playback state comes from the hook and must stay synchronized with the custom controls
+- **the `<audio>` element is rendered in one stable wrapper for every reader state** (loading, error, loaded). `useMediaSourcePlayer` attaches its media event listeners from an effect guarded on the element existing, so a remount after loading silently drops `progress`/`seeking`/`playing` events for the rest of the session. This was a real bug: the element used to live only in the loaded branch, in a different tree shape, and got remounted once.
 
 ### Static waveform playbar (replaces the old live analyser)
 
@@ -353,6 +363,126 @@ currentTimeSeconds + anchorOffset`). Do not "simplify" that back to always
 `currentTimeSeconds + anchorOffset` — it makes the fill snap to the start of
 the anchored chunk on release and then jump to the seeked position once the
 seek applies.
+
+### Chunk jump controls, skip buttons and keyboard shortcuts
+
+Navigating a book-sized job needs controls that do not depend on the top
+playbar's resolution, so the reader adds three:
+
+- **per-chunk jump button** in each block's header row (`ReaderText.tsx`). It is
+always rendered for every chunk (low emphasis, brightening on hover/focus) and
+replaced by a non-interactive now-playing marker on the chunk currently playing.
+Clicking routes through the same `handleSeekToChunk` path as a timeline click, so
+play/pause state is preserved and a paused reader is never activated.
+- **−10s / +10s** flanking play/pause, from `usePlaybackShortcuts`'
+`SKIP_STEP_SECONDS`. Skips clamp to `renderedDurationSeconds` via the pure
+`skipTargetSeconds`, so skipping past the end lands on the last playable position
+and lets the player enter its waiting state instead of seeking into silence.
+- **page-wide keyboard shortcuts** (`usePlaybackShortcuts`), attached to `window`
+by design: the reader should never require clicking the controls first. The map is
+`Space`/`K` toggle, `←/→` ±10s, `Shift+←/→` ±5s, `↑/↓` ±30s, `J`/`L` ±10s.
+
+Rules that are easy to break:
+
+- `resolvePlaybackShortcut` is a pure function so the whole map is tested without
+a DOM. Handlers are held in a ref and the listener attaches once — the reader
+re-renders ~20x/s during playback and resubscribing per render would add/remove a
+window listener at that rate.
+- Keys are ignored inside text entry, form widgets and any `[role="dialog"]` layer
+(the settings panel owns the keyboard while it is open). Nothing else is ignored.
+- Space and the arrows are therefore captured page-wide, so **Space no longer
+scrolls the text**. That was a deliberate trade: shortcuts are consistent
+regardless of focus.
+- `PlayButton`/`SkipButton` (`PlaybackButtons.tsx`) and `TransportControls` are
+shared by the top playbar and the phone dock. The play button's action follows its
+**label** (`showPauseIcon ? onPause : onPlay`), so clicking a buffering play button
+cancels the pending play rather than firing another activate request.
+
+### Reader settings
+
+`web/src/state/reader-settings.ts` is a tiny external store (`useSyncExternalStore`)
+persisted to `localStorage` under `readflow.reader-settings.v1`, consumed through
+`web/src/hooks/useReaderSettings.ts`.
+
+- These are device-local UI preferences, not job state, so they deliberately do
+NOT live in the workspace `zustand` store or the backend (no database, no
+accounts).
+- `sanitizeReaderSettings` validates **field by field**, so one corrupt or
+outdated value cannot reset everything else, and unreadable storage falls back to
+defaults rather than breaking the reader.
+- `resolveAnimatedMotion(mode, prefersReducedMotion)` is the single decision point
+combining the user's override with the OS preference; `useReaderMotion()` is its
+hook. Do not re-derive motion in a component.
+- The panel is an anchored popover on desktop and a bottom sheet on phones, both
+rendering one shared body. It uses native `input`s on purpose: the page-wide
+shortcut handler leaves form controls alone, so radios/checkboxes keep their own
+keyboard behaviour with no custom ARIA. Keep the label and the description
+separate (`htmlFor` + `aria-describedby`) — wrapping both in one `<label>` made the
+accessible name swallow the description.
+- The gear lives in the playbar's top row, not the metadata row: the metadata row
+fades out as the playbar compacts, and settings must stay reachable.
+
+### Chunk conveyor (the sub playbar)
+
+`web/src/components/ChunkConveyor.tsx` + `web/src/features/reader/conveyor-physics.ts`.
+
+A **conveyor, not another timeline**: a fixed playhead marker sits at the
+horizontal centre and the chunk track slides under it, so the strip's position IS
+the timeline value being edited. This exists because the whole-document playbar
+has no resolution on a phone.
+
+Gesture contract (all of it pure and unit-tested in `conveyor-physics.ts`):
+
+- drag the track 1:1 with the finger (**drag right = earlier audio**)
+- a **tap** is not a drag: it moves the strip so the tapped point lands under the
+playhead (`alignmentOffsetSeconds`, gated by `TAP_SLOP_PX`)
+- a **flick** coasts with exponential friction, then an underdamped spring settles
+it with a small overshoot. Touching during the glide cancels it and resumes the
+drag.
+- **playback is committed only when the strip is at rest and no pointer is down,
+and only once per gesture.** Audio keeps playing throughout the scrub; only the
+commit jumps. This is the whole point: audio never chases the finger and never
+lands on a moving strip.
+- `advanceConveyor` returns `restSeconds` exactly once, guarded by
+`SettlingGesture.hasReportedRest`. Two bugs already came from getting this wrong:
+the spring used to pull its *displacement* toward zero instead of pulling the
+strip toward the commit target (so it settled at the drag position), and a settled
+gesture re-reported rest on every subsequent frame.
+- A fling stops at the **end of rendered audio**, not at the end of the document,
+so it never overshoots into silence or needs a long snap-back. A deliberate *drag*
+may be taken further and settles back.
+- Reduced motion drops the sliding, the inertia and the jiggle and advances one
+chunk at a time instead.
+
+Rendering rules:
+
+- The track is one `translate3d` on a single element and the **only** thing that
+animates: no layout changes per frame. The idle slide is smoothed by a 60ms linear
+transform transition because the playhead prop only updates at ~20Hz; the
+transition is switched off during a gesture so the track tracks the finger exactly.
+- `touch-action: pan-y` so vertical page scrolling still works over the strip.
+- The conveyor passes `interactive={false}` to `WaveformSlot`: gestures are handled
+at strip level (it needs the tap position, not the slot), and nesting ARIA sliders
+inside a slider is invalid. The chunk states are already exposed as real sliders by
+the main timeline.
+- Scale is duration-proportional at one global px/second from the average chunk
+duration, so scroll speed is constant and a 30s chunk draws wider than a 3s one.
+Do not re-derive priority or state in the conveyor; it consumes the same
+`TimelineSlotData[]` as the main bar.
+
+### Phone bottom dock
+
+On phone widths (`(max-width: 767px)`) the transport and the conveyor move into
+`ReaderDock.tsx`, fixed to the bottom in the thumb zone, and the top playbar keeps
+the overview waveform, the clock and the settings gear (`showTransport={false}`).
+
+- `useMediaQuery` takes an explicit `initiallyMatches` derived from
+`window.innerWidth`, because jsdom reports every query as non-matching and the
+first render would otherwise disagree with the CSS breakpoints.
+- The dock adds `padding-bottom: env(safe-area-inset-bottom)` and the reader adds
+bottom padding so the dock cannot cover the last text block.
+- `ReaderSidebar` takes `overlayTogglePositionClassName` to lift its floating toggle
+above the dock. Without it the two controls overlap on a phone.
 
 ### Two historical bugs worth protecting against
 
@@ -441,6 +571,16 @@ multi-megabyte DOM).
 
 Keep the chunk blocks' `content-visibility: auto` — a book accumulates thousands
 of blocks and offscreen layout is what makes them expensive.
+
+`ReaderChunkBlock` is **memoized**, because playback re-renders the reader ~20x/s
+while at most a couple of blocks change state per tick. This only works while its
+props stay stable: `onRegisterChunkRef` and `onJump` must be `useCallback`s in
+`ReaderPage`. `ReaderText.test.tsx` pins the DOM-node-identity contract, and
+`ReaderPage.test.tsx` pins it end to end during playback.
+
+Each block exposes `data-chunk-block={index}` and
+`data-chunk-state="active|played|idle"`, which tests and e2e use instead of
+matching Tailwind class strings.
 
 ## How the system works
 
@@ -966,6 +1106,34 @@ Before assuming ffmpeg/MSE packaging is broken, inspect the interaction between:
 - `currentTimeSeconds`
 - terminal/completed-job transitions
 
+### 9. Reader settings persist, so tests must reset them
+
+`reader-settings.ts` keeps a module-level cache and writes to `localStorage`. A
+test that flips a toggle therefore leaks that layout into every later test in the
+same file. `ReaderPage.test.tsx` calls `resetReaderSettings()` +
+`invalidateReaderSettingsCache()` in `beforeEach` for exactly this reason. Add the
+same reset to any new suite that mounts `ReaderPage`.
+
+### 10. Playwright's `name` matching is substring-based
+
+`getByRole("button", { name: "Play" })` also matches "Jump **play**back to chunk
+3". Use `{ name: "Play", exact: true }` whenever a substring could collide — the
+phone-dock test asserts a button count and would otherwise see six Play buttons.
+
+### 11. Sibling stacking contexts hide the settings popover
+
+The playbar's top row and metadata row are siblings. With both at `z-10` the
+metadata row (later in the DOM) painted over the anchored settings popover, and
+the Download button intercepted clicks on it. The top row is `z-20` for this
+reason; a Playwright test caught it.
+
+### 12. Do not nest ARIA sliders
+
+The main timeline exposes each chunk as `role="slider"`. The conveyor handles
+gestures at strip level and passes `interactive={false}` to `WaveformSlot`, which
+drops the role, tab stop and pointer handlers. A second interactive slider list
+inside the strip would be invalid ARIA and duplicate announcements.
+
 ## Current User-Facing Pages
 
 Jobs page:
@@ -978,12 +1146,17 @@ Jobs page:
 Reader page:
 
 - view source text
-- play/pause
+- play/pause, with −10s / +10s skip either side
+- jump playback to any chunk straight from its block in the text
+- a chunk conveyor (sub playbar) for thumb-sized scrubbing, draggable and flickable
 - monitor buffer progress
 - switch future voice
 - inspect chunk statuses
-- use a custom segmented timeline
+- use a custom segmented timeline (the whole-document overview)
 - support gap-aware playback and manual jump-to-later-ready chunks
+- keyboard control anywhere on the page (see the shortcuts guide in reader settings)
+- reader settings (motion, conveyor, jump buttons, window size) persisted per device
+- a phone bottom dock with the transport and conveyor in the thumb zone
 - allow download of rendered contiguous audio
 
 Admin page:
@@ -1105,6 +1278,31 @@ Future agents should know that the following were created or materially changed 
 - `@vitest/coverage-v8` added as a devDependency — `vitest run --coverage` (and therefore
   CI's coverage step) previously failed with `Cannot find dependency '@vitest/coverage-v8'`
 
+Newest round — reader navigation (four commits):
+
+1. **Behavior-preserving refactor.** `ReaderPage.tsx` (1204 lines) split into
+   `reader-model.ts` / `reader-text.ts` / `ReaderText.tsx` / `chunk-utils.ts`;
+   `WaveformTimeline` split so the waveform look, the timeline geometry and the
+   element-width measurement are reusable (`WaveformSlot.tsx`,
+   `lib/waveform-timeline.ts`, `types/timeline.ts`, `hooks/useElementWidth.ts`).
+   Test-integrity fixes: `versioning.test.ts` re-implemented ReaderPage's helpers
+   in the test file and asserted three functions that existed nowhere in `src`;
+   it was replaced with tests against the real modules. `timeline.ts` (dead since
+   the timeline stopped seeking per chunk) was deleted. Two real bugs fixed: the
+   version fallback picked the *first* chunk seen for an index instead of the
+   highest, and the hook's media listeners never attached because `<audio>` was
+   mounted only after the loading early-returns and got remounted.
+2. **Chunk jump buttons, ±10s skip, page-wide shortcuts, reader settings.**
+   Includes the settings store/popover, the shortcuts guide, and the shared
+   `TransportControls`/`PlaybackButtons`.
+3. **The chunk conveyor** — fixed-centre playhead strip with drag/tap/flick
+   physics, commit-on-rest only, reduced-motion snapping.
+4. **Phone bottom dock** plus the `useMediaQuery` hook, `transport.ts` state
+   helpers and this documentation pass.
+
+Test count over that round: 122 → 341 web unit/component tests, 4 → 8 Playwright
+tests.
+
 ## Agent Workflow Checklist
 
 When making changes, use this checklist.
@@ -1147,7 +1345,9 @@ Likely next steps, unless the user changes direction:
 1. persist jobs and chunk metadata
 2. add temp media cleanup/retention
 3. improve admin telemetry depth
-4. continue hardening reader/player edge cases
+4. continue hardening reader/player edge cases (the conveyor and phone dock are
+   the newest surfaces; gesture feel and small-screen layouts are the likeliest
+   places for the next bug)
 5. expand deployment story for a single-host install (Docker is now in place)
 6. add a better documented GPU validation workflow
 

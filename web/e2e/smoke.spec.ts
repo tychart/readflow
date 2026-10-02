@@ -511,3 +511,44 @@ test("reader settings hide the per-chunk jump controls", async ({ page }) => {
   // The shortcut guide lives in the same panel.
   await expect(page.getByTestId("shortcut-guide")).toBeVisible();
 });
+
+test("phone widths get a bottom dock and keep the top bar as an overview", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(6, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(6) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+
+  const dock = page.getByTestId("reader-dock");
+  await expect(dock).toBeVisible();
+  await expect(dock.getByTestId("chunk-conveyor")).toBeVisible();
+
+  // Transport lives in the dock and nowhere else — the top bar is the overview.
+  // `exact` matters: Playwright's accessible-name match is substring based, and
+  // "Jump playback to chunk N" would otherwise count as a Play button.
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toHaveCount(1);
+  await expect(dock.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  // Secondary metadata is dropped on phone widths.
+  await expect(page.getByText(/6\/6 chunks/i)).toBeHidden();
+
+  // The floating sidebar toggle must not sit under the dock.
+  const dockBox = await dock.boundingBox();
+  const toggle = page.getByRole("button", { name: "Open sidebar" });
+  await expect(toggle).toBeVisible();
+  const toggleBox = await toggle.boundingBox();
+  expect(dockBox).not.toBeNull();
+  expect(toggleBox).not.toBeNull();
+  expect((toggleBox?.y ?? 0) + (toggleBox?.height ?? 0)).toBeLessThanOrEqual(dockBox?.y ?? 0);
+
+  // The dock controls stay reachable and still seek.
+  await dock.getByRole("button", { name: "Forward 10 seconds" }).click();
+  await expect(dock.getByTestId("conveyor-readout")).toBeVisible();
+});

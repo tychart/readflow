@@ -51,6 +51,16 @@ same-origin with no extra setup.
 - Create jobs from pasted text or `.txt` upload
 - Shared backend queue for all jobs
 - Reader view with chunk-by-chunk buffered playback
+- Reader navigation built for book-length jobs:
+  - a whole-document waveform playbar (the overview)
+  - a **chunk conveyor** below it — a fixed-playhead strip that you drag or flick
+    to scrub, with the chunk under the playhead named and timestamped
+  - a **jump control on every chunk** in the text, so you can jump straight to a
+    location without touching the playbar
+  - **−10s / +10s** skip buttons
+  - **page-wide keyboard shortcuts** (Space/K, arrows, J/L) with a shortcuts guide
+  - **reader settings** (motion, conveyor, jump buttons, chunk window), saved per device
+  - a **phone bottom dock** that puts the transport and conveyor in the thumb zone
 - WebSocket-driven live job and admin updates
 - Built-in server-side voices discovered from `server/voices/`
 - Voice switching for future chunks only
@@ -151,6 +161,10 @@ Important frontend pieces:
 - [web/src/app/App.tsx](/home/tychart/projects/readflow/web/src/app/App.tsx): shell and routing
 - [web/src/features/jobs/JobsPage.tsx](/home/tychart/projects/readflow/web/src/features/jobs/JobsPage.tsx): job creation and live queue
 - [web/src/features/reader/ReaderPage.tsx](/home/tychart/projects/readflow/web/src/features/reader/ReaderPage.tsx): playback, future-voice selection, chunk status
+- [web/src/features/reader/reader-model.ts](/home/tychart/projects/readflow/web/src/features/reader/reader-model.ts): pure reader derivations (patch merging, playback model, timeline slots)
+- [web/src/features/reader/conveyor-physics.ts](/home/tychart/projects/readflow/web/src/features/reader/conveyor-physics.ts): pure conveyor gesture physics and layout
+- [web/src/components/ChunkConveyor.tsx](/home/tychart/projects/readflow/web/src/components/ChunkConveyor.tsx): the fixed-playhead scrub strip
+- [web/src/state/reader-settings.ts](/home/tychart/projects/readflow/web/src/state/reader-settings.ts): device-local reader preferences
 - [web/src/features/admin/AdminPage.tsx](/home/tychart/projects/readflow/web/src/features/admin/AdminPage.tsx): runtime tuning and model controls
 - [web/src/hooks/useAppBootstrap.ts](/home/tychart/projects/readflow/web/src/hooks/useAppBootstrap.ts): initial data load and WebSocket wiring
 - [web/src/lib/media-source.ts](/home/tychart/projects/readflow/web/src/lib/media-source.ts): `MediaSource`/`SourceBuffer` append logic
@@ -535,7 +549,8 @@ Reasonable next steps for the project are:
 1. Persist jobs and chunk metadata so restarts do not wipe state.
 2. Add cleanup and retention policies for temp media.
 3. Expand admin telemetry with per-job batch history and richer scheduler visibility.
-4. Add better reader UX, including chunk highlighting and stronger playback recovery after pauses.
+4. Keep hardening the newest reader surfaces (the conveyor gestures and the
+   phone dock layouts).
 5. Support broader model/runtime tuning once the base 0.6B path is stable.
 6. Add a production deployment story for single-host installation.
 7. Add optional real-GPU CI or a documented validation checklist for target hardware.
