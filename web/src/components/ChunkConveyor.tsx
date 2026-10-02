@@ -9,8 +9,10 @@ import {
   endDrag,
   gestureCenterSeconds,
   isMovingGesture,
+  isRenderedState,
   isTap,
   resolveConveyorWindowSize,
+  slotAtSeconds,
   slotIndexAtSeconds,
   updateDrag,
   visibleSlotIndexes,
@@ -142,20 +144,28 @@ export function ChunkConveyor({
   const pxPerSecondRef = useRef(pxPerSecond);
   const motionRef = useRef(motion);
   const cumulativeStartTimesRef = useRef(cumulativeStartTimes);
+  const slotsRef = useRef(slots);
   const onSeekRef = useRef(onSeek);
   useEffect(() => {
     boundsRef.current = bounds;
     pxPerSecondRef.current = pxPerSecond;
     motionRef.current = motion;
     cumulativeStartTimesRef.current = cumulativeStartTimes;
+    slotsRef.current = slots;
     onSeekRef.current = onSeek;
   });
 
-  /** The single place a gesture turns into playback. */
+  /**
+   * The single place a gesture turns into playback.
+   *
+   * The physics has already resolved the final target, including whether an
+   * explicit tap may land past the contiguous rendered run, so this only bounds
+   * the value to the document.
+   */
   const commitSeek = useCallback((seconds: number) => {
     gestureRef.current = null;
     setGesture(null);
-    const clamped = Math.min(Math.max(0, seconds), boundsRef.current.maxSeekSeconds);
+    const clamped = Math.min(Math.max(0, seconds), boundsRef.current.maxVisualSeconds);
     const index = slotIndexAtSeconds(cumulativeStartTimesRef.current, clamped);
     onSeekRef.current(index, clamped);
   }, []);
@@ -224,11 +234,22 @@ export function ChunkConveyor({
 
     const pxPerSecond = pxPerSecondRef.current;
     // A tap means "put this point under the playhead"; a drag already moved the
-    // track with the finger.
+    // track with the finger. A tap that lands on a chunk which already has audio
+    // is an explicit request to go there, like a click on the main timeline, so
+    // it may commit past the contiguous rendered run.
     const alignmentOffsetSeconds =
       isTap(current.pointerStartX, event.clientX) && pxPerSecond > 0
         ? (event.clientX - stripCenterClientXRef.current) / pxPerSecond
         : null;
+    const allowsUnrenderedTarget =
+      alignmentOffsetSeconds !== null &&
+      isRenderedState(
+        slotAtSeconds(
+          slotsRef.current,
+          cumulativeStartTimesRef.current,
+          current.baseSeconds + alignmentOffsetSeconds,
+        )?.state ?? "missing_expected",
+      );
 
     const next = endDrag(
       current,
@@ -236,7 +257,7 @@ export function ChunkConveyor({
       pxPerSecond,
       motionRef.current,
       boundsRef.current,
-      alignmentOffsetSeconds,
+      { alignmentOffsetSeconds, allowsUnrenderedTarget },
     );
     gestureRef.current = next;
     setGesture(next);

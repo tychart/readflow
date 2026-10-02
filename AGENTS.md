@@ -451,6 +451,13 @@ gesture re-reported rest on every subsequent frame.
 - A fling stops at the **end of rendered audio**, not at the end of the document,
 so it never overshoots into silence or needs a long snap-back. A deliberate *drag*
 may be taken further and settles back.
+- A **tap on a chunk that already has audio** may commit past the contiguous
+rendered run (`allowsUnrenderedTarget`, set from the tapped slot's state via
+`isRenderedState`), because that is an explicit request to go there — the same
+thing a click on the main timeline does. Momentum never gets that allowance, and
+a tap on a chunk with no audio clamps. `commitSeek` deliberately does NOT re-clamp
+to rendered audio: the physics has already resolved the target, and clamping twice
+is how the allowance got lost.
 - Reduced motion drops the sliding, the inertia and the jiggle and advances one
 chunk at a time instead.
 

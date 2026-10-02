@@ -24,6 +24,9 @@ Object.defineProperty(window, "PointerEvent", {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  // The deterministic-frame harness stubs requestAnimationFrame; without this
+  // the stub leaks and every later tap test waits forever for a frame.
+  vi.unstubAllGlobals();
 });
 
 /* ── Fixtures ─────────────────────────────────────────────── */
@@ -179,19 +182,6 @@ describe("ChunkConveyor tapping", () => {
 
     await waitFor(() => expect(onSeek).toHaveBeenCalledTimes(1));
     expect(onSeek).toHaveBeenCalledWith(1, 4);
-  });
-
-  test("a tap can never commit past the rendered audio", async () => {
-    mockLayout();
-    const onSeek = vi.fn();
-    render(<ChunkConveyor {...buildProps({ maxSeekSeconds: 8, onSeek, playheadSeconds: 6 })} />);
-
-    // Tapping far right would target 20s, but only 8s is playable.
-    tap(780);
-
-    await waitFor(() => expect(onSeek).toHaveBeenCalledTimes(1));
-    // Clamped to the last playable second, which is the start of chunk 3.
-    expect(onSeek).toHaveBeenCalledWith(2, 8);
   });
 });
 
@@ -364,5 +354,45 @@ describe("ChunkConveyor dragging", () => {
     fireEvent.pointerUp(strip(), { clientX: 500, pointerId: 2 });
 
     expect(onSeek).not.toHaveBeenCalled();
+  });
+});
+
+/* ── Tapping past a gap ───────────────────────────────────── */
+
+describe("ChunkConveyor tapping beyond gaps", () => {
+  /** Chunk 1 has no audio, chunk 2 does: the contiguous run ends at 4s. */
+  const GAP_SLOTS: TimelineSlotData[] = [
+    { chunkIndex: 0, state: "ready", durationSeconds: 4 },
+    { chunkIndex: 1, state: "missing_expected", durationSeconds: 4 },
+    { chunkIndex: 2, state: "ready", durationSeconds: 4 },
+  ];
+
+  function buildGapProps(overrides: Partial<Parameters<typeof ChunkConveyor>[0]> = {}) {
+    return buildProps({ maxSeekSeconds: 4, playheadSeconds: 0, slots: GAP_SLOTS, ...overrides });
+  }
+
+  test("a tap on a rendered chunk past a gap commits exactly there", async () => {
+    mockLayout();
+    const onSeek = vi.fn();
+    render(<ChunkConveyor {...buildGapProps({ onSeek })} />);
+
+    // 8s is the start of chunk 3, which already has audio beyond the gap.
+    // Scale is 50px/s, so x=800 is 8s right of the centred playhead.
+    tap(800);
+
+    await waitFor(() => expect(onSeek).toHaveBeenCalledTimes(1));
+    expect(onSeek).toHaveBeenCalledWith(2, 8);
+  });
+
+  test("a tap on a chunk with no audio still clamps to rendered audio", async () => {
+    mockLayout();
+    const onSeek = vi.fn();
+    render(<ChunkConveyor {...buildGapProps({ onSeek })} />);
+
+    // 5s is inside the unrendered chunk, so the commit holds at 4s.
+    tap(650);
+
+    await waitFor(() => expect(onSeek).toHaveBeenCalledTimes(1));
+    expect(onSeek).toHaveBeenCalledWith(1, 4);
   });
 });

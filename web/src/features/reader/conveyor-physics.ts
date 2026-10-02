@@ -83,6 +83,12 @@ export interface SettlingGesture {
   targetOffsetSeconds: number;
   speedSecondsPerSecond: number;
   /**
+   * Allows the commit to land past the contiguous rendered run. Only an explicit
+   * tap on a chunk that already has audio gets this (the same thing a click on
+   * the main timeline does); momentum never does.
+   */
+  allowsUnrenderedTarget: boolean;
+  /**
    * Set once the strip has reported rest, so rest is delivered exactly once.
    * Without it a settled gesture would report rest on every subsequent frame
    * (and a gesture that starts at rest would never report it at all).
@@ -183,28 +189,40 @@ export function updateDrag(
 /**
  * Resolve a release.
  *
- * - A **tap** (`alignmentOffsetSeconds` provided) moves the strip so the tapped
- *   point ends up under the fixed playhead, then settles.
+ * - A **tap** (`options.alignmentOffsetSeconds`) moves the strip so the tapped
+ *   point ends up under the fixed playhead, then settles. A tap that lands on a
+ *   chunk which already has audio may commit past the contiguous rendered run,
+ *   because that is an explicit request to go there.
  * - A **flick** coasts under its own momentum — motion only, audio is not
- *   touched.
+ *   touched, and it always stops at the end of rendered audio.
  * - A **drop** goes straight to the settle spring, which also animates the strip
  *   back if it was left past the end of rendered audio.
  */
+export interface EndDragOptions {
+  /** How far the strip must move to centre the tapped point, or null for a drag. */
+  alignmentOffsetSeconds?: number | null;
+  /** Whether an explicit tap landed on a chunk that already has audio. */
+  allowsUnrenderedTarget?: boolean;
+}
+
 export function endDrag(
   gesture: DraggingGesture,
   atMs: number,
   pxPerSecond: number,
   motion: "animated" | "reduced",
   bounds: ConveyorBounds,
-  alignmentOffsetSeconds: number | null = null,
+  options: EndDragOptions = {},
 ): ConveyorGesture {
+  const alignmentOffsetSeconds = options.alignmentOffsetSeconds ?? null;
+  const allowsUnrenderedTarget = alignmentOffsetSeconds !== null && options.allowsUnrenderedTarget === true;
   const offsetSeconds =
     alignmentOffsetSeconds === null
       ? gesture.offsetSeconds
       : clampSeconds(gesture.baseSeconds + alignmentOffsetSeconds, bounds.maxVisualSeconds) -
         gesture.baseSeconds;
+  const targetLimit = allowsUnrenderedTarget ? bounds.maxVisualSeconds : bounds.maxSeekSeconds;
   const targetOffsetSeconds =
-    clampSeconds(gesture.baseSeconds + offsetSeconds, bounds.maxSeekSeconds) - gesture.baseSeconds;
+    clampSeconds(gesture.baseSeconds + offsetSeconds, targetLimit) - gesture.baseSeconds;
 
   if (motion === "reduced") {
     // No inertia and no jiggle: land on the target and commit on the next tick.
@@ -214,6 +232,7 @@ export function endDrag(
       offsetSeconds: targetOffsetSeconds,
       targetOffsetSeconds,
       speedSecondsPerSecond: 0,
+      allowsUnrenderedTarget,
       hasReportedRest: false,
     };
   }
@@ -234,6 +253,7 @@ export function endDrag(
     offsetSeconds,
     targetOffsetSeconds,
     speedSecondsPerSecond: 0,
+    allowsUnrenderedTarget,
     hasReportedRest: false,
   };
 }
@@ -309,7 +329,7 @@ export function advanceConveyor(
     }
 
     // Hand the leftover motion to the spring so the strip eases in with a small
-    // overshoot instead of stopping dead.
+    // overshoot instead of stopping dead. Momentum always stops at rendered audio.
     return {
       gesture: {
         phase: "settling",
@@ -317,6 +337,7 @@ export function advanceConveyor(
         offsetSeconds,
         targetOffsetSeconds,
         speedSecondsPerSecond,
+        allowsUnrenderedTarget: false,
         hasReportedRest: false,
       },
       restSeconds: null,
@@ -345,7 +366,7 @@ export function advanceConveyor(
     },
     restSeconds: clampSeconds(
       gesture.baseSeconds + gesture.targetOffsetSeconds,
-      bounds.maxSeekSeconds,
+      gesture.allowsUnrenderedTarget ? bounds.maxVisualSeconds : bounds.maxSeekSeconds,
     ),
   };
 }
@@ -441,4 +462,24 @@ export function slotIndexAtSeconds(
     else break;
   }
   return index;
+}
+
+/**
+ * Slot states with audio behind them. A tap on one of these is an explicit
+ * request to go there, so it may commit past the contiguous rendered run.
+ */
+export function isRenderedState(state: TimelineSlotData["state"]): boolean {
+  return (
+    state === "played" || state === "playing" || state === "ready" || state === "ready_after_gap"
+  );
+}
+
+/** Slot containing a timeline position, or null when there are no slots. */
+export function slotAtSeconds(
+  slots: readonly TimelineSlotData[],
+  cumulativeStartTimes: readonly number[],
+  seconds: number,
+): TimelineSlotData | null {
+  if (slots.length === 0) return null;
+  return slots[slotIndexAtSeconds(cumulativeStartTimes, seconds)] ?? null;
 }

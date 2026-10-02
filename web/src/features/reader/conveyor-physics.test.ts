@@ -15,10 +15,12 @@ import {
   gestureCenterSeconds,
   isFlick,
   isMovingGesture,
+  isRenderedState,
   isSettleAtRest,
   isTap,
   pxPerMsToStripSpeed,
   resolveConveyorWindowSize,
+  slotAtSeconds,
   slotIndexAtSeconds,
   stepSettleSpring,
   updateDrag,
@@ -224,7 +226,9 @@ describe("endDrag", () => {
     // Tapped 50px right of centre: that point shows 0.5s later content, so the
     // strip must scroll 0.5s forward to bring it under the playhead.
     const dragging = beginDrag(10, 150, 0);
-    const released = endDrag(dragging, 20, PX_PER_SECOND, "animated", BOUNDS, 0.5);
+    const released = endDrag(dragging, 20, PX_PER_SECOND, "animated", BOUNDS, {
+      alignmentOffsetSeconds: 0.5,
+    });
     expect(released.phase).toBe("settling");
 
     const { restSeconds } = runToRest(released);
@@ -232,16 +236,41 @@ describe("endDrag", () => {
   });
 
   test("a tap in the centre is a no-op seek to the current position", () => {
-    const released = endDrag(beginDrag(10, 150, 0), 20, PX_PER_SECOND, "animated", BOUNDS, 0);
+    const released = endDrag(beginDrag(10, 150, 0), 20, PX_PER_SECOND, "animated", BOUNDS, {
+      alignmentOffsetSeconds: 0,
+    });
     const { restSeconds } = runToRest(released);
     expect(restSeconds).toBeCloseTo(10, 6);
   });
 
   test("a tap can never target unrendered audio", () => {
     // Tapped 500px right of centre = +5s, but only 12s is rendered.
-    const released = endDrag(beginDrag(10, 0, 0), 20, PX_PER_SECOND, "animated", BOUNDS, 5);
+    const released = endDrag(beginDrag(10, 0, 0), 20, PX_PER_SECOND, "animated", BOUNDS, {
+      alignmentOffsetSeconds: 5,
+    });
     const { restSeconds } = runToRest(released);
     expect(restSeconds).toBeCloseTo(BOUNDS.maxSeekSeconds, 6);
+  });
+
+  test("a tap on an already-rendered chunk may commit past the contiguous run", () => {
+    // Commits normally clamp to the end of contiguous rendered audio (12s here),
+    // but a chunk at 14s already has audio, so tapping it is an explicit request
+    // to go there — the same thing a click on the main timeline does.
+    const released = endDrag(beginDrag(0, 0, 0), 20, PX_PER_SECOND, "animated", BOUNDS, {
+      alignmentOffsetSeconds: 14,
+      allowsUnrenderedTarget: true,
+    });
+
+    expect(runToRest(released).restSeconds).toBeCloseTo(14, 6);
+  });
+
+  test("momentum never gets to land past rendered audio", () => {
+    const { restSeconds, center } = runToRest(
+      { phase: "coasting", baseSeconds: 0, offsetSeconds: 0, speedSecondsPerSecond: 500 },
+      BOUNDS,
+    );
+    expect(restSeconds).toBeCloseTo(BOUNDS.maxSeekSeconds, 6);
+    expect(center).toBeCloseTo(BOUNDS.maxSeekSeconds, 6);
   });
 
   test("settles back to the rendered boundary when the drag is released past it", () => {
@@ -512,5 +541,28 @@ describe("slotIndexAtSeconds", () => {
     expect(slotIndexAtSeconds(starts, 5)).toBe(1);
     expect(slotIndexAtSeconds(starts, 99)).toBe(2);
     expect(slotIndexAtSeconds([], 5)).toBe(0);
+  });
+});
+
+describe("isRenderedState", () => {
+  test("only states with audio behind them count as rendered", () => {
+    expect(isRenderedState("ready")).toBe(true);
+    expect(isRenderedState("ready_after_gap")).toBe(true);
+    expect(isRenderedState("playing")).toBe(true);
+    expect(isRenderedState("played")).toBe(true);
+    expect(isRenderedState("missing_expected")).toBe(false);
+    expect(isRenderedState("failed")).toBe(false);
+  });
+});
+
+describe("slotAtSeconds", () => {
+  const list = slots([4, 4, 4]);
+
+  test("finds the slot under a position", () => {
+    expect(slotAtSeconds(list, cumulative([4, 4, 4]), 5)?.chunkIndex).toBe(1);
+  });
+
+  test("is null without slots", () => {
+    expect(slotAtSeconds([], [], 5)).toBeNull();
   });
 });
