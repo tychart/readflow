@@ -763,6 +763,38 @@ test("the chunk jump button moves the playhead without starting playback", async
   expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything());
 });
 
+test("the now-playing equalizer only runs while audio is actually playing", async () => {
+  const user = userEvent.setup();
+  seedStore();
+  mockReaderFetch(buildTextChunks(3));
+
+  const { container } = renderReader();
+  await screen.findByText("Reader job");
+
+  // Idle: the marker exists but the stylesheet keeps the bars paused, so it can
+  // never claim audio is playing when it is not.
+  expect(container.querySelector("[data-now-playing]")).toHaveAttribute(
+    "data-now-playing",
+    "paused",
+  );
+
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Play" }));
+
+  // jsdom's mocked `play()` resolves without ever clearing `paused`, and the
+  // player correctly re-derives its state from that flag — so a test that wants
+  // "audio is running" has to say so on the element, as a browser would.
+  act(() => {
+    Object.defineProperty(audio, "paused", { configurable: true, value: false });
+    audio!.dispatchEvent(new Event("playing"));
+  });
+  expect(container.querySelector("[data-now-playing]")).toHaveAttribute(
+    "data-now-playing",
+    "running",
+  );
+});
+
 test("reader settings can remove the per-chunk jump controls", async () => {
   const user = userEvent.setup();
   seedStore();

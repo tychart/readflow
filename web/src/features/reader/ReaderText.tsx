@@ -13,6 +13,13 @@ export interface ReaderContentProps {
   isLargeScreen: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  /**
+   * Whether audio is actually running. Drives the now-playing equalizer's
+   * paused state through a single attribute on the text container, so a
+   * play/pause flip costs one attribute change instead of re-rendering every
+   * memoized chunk block.
+   */
+  isPlaying: boolean;
 }
 
 /**
@@ -32,6 +39,7 @@ export function ReaderContent({
   isLargeScreen,
   sidebarOpen,
   onToggleSidebar,
+  isPlaying,
 }: ReaderContentProps) {
   return (
     <>
@@ -90,6 +98,7 @@ export function ReaderContent({
       {/* Source text — no inner scroll, flows with page */}
       <div
         className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
+        data-now-playing={isPlaying ? "running" : "paused"}
         ref={contentRef}
       >
         <div className="space-y-2">{lines}</div>
@@ -99,6 +108,12 @@ export function ReaderContent({
 }
 
 /* ── Chunk blocks ─────────────────────────────────────────── */
+
+/**
+ * Bar heights for the now-playing equalizer, as a percentage of the icon box.
+ * Deliberately uneven so the bars read as a live signal rather than a chart.
+ */
+const NOW_PLAYING_BAR_HEIGHTS = [58, 100, 74, 90];
 
 export interface ReaderChunkBlockProps {
   chunkIndex: number;
@@ -110,6 +125,12 @@ export interface ReaderChunkBlockProps {
   onRegisterRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
   /** Renders the jump control (reader setting; hiding it hides no status). */
   showJumpButton: boolean;
+  /**
+   * Whether the now-playing marker may animate. Comes from the reader's motion
+   * setting only (not from the play state), so it changes at most when a setting
+   * changes rather than on every play/pause — playback pauses it through CSS.
+   */
+  animateNowPlaying: boolean;
   /** Jumps playback to this chunk. Must be stable or memoization is defeated. */
   onJump: (chunkIndex: number) => void;
 }
@@ -132,6 +153,7 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
   isPlayed,
   onRegisterRef,
   showJumpButton,
+  animateNowPlaying,
   onJump,
 }: ReaderChunkBlockProps) {
   return (
@@ -168,9 +190,28 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
               role="img"
               title="Currently playing"
             >
-              <svg aria-hidden="true" className="h-3 w-3" fill="currentColor" viewBox="0 0 16 16">
-                <path d="M3 1.5v13l11-6.5L3 1.5z" />
-              </svg>
+              {/* Equalizer bars — the standard "this is what's playing" marker.
+                  Applied only when reader motion allows it; paused by CSS while
+                  audio is not actually running. */}
+              <span aria-hidden="true" className="flex h-3.5 items-end justify-center gap-[1.5px]">
+                {NOW_PLAYING_BAR_HEIGHTS.map((heightPercent, barIndex) => (
+                  <span
+                    className="w-[2px] origin-bottom rounded-full bg-current"
+                    data-now-playing-bar
+                    key={barIndex}
+                    style={
+                      animateNowPlaying
+                        ? {
+                            animation: `readflow-equalizer ${800 + barIndex * 170}ms ease-in-out ${
+                              barIndex * 130
+                            }ms infinite alternate`,
+                            height: `${heightPercent}%`,
+                          }
+                        : { height: `${heightPercent}%` }
+                    }
+                  />
+                ))}
+              </span>
             </span>
           ) : (
             <button
@@ -181,7 +222,8 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
               title="Jump playback here"
               type="button"
             >
-              {/* Arrow down to a line: "jump to this location" */}
+              {/* Curved return arrow: "bring playback back to here". The previous
+                  arrow-down-to-a-line glyph read as a download icon. */}
               <svg
                 aria-hidden="true"
                 className="h-3.5 w-3.5"
@@ -192,9 +234,8 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
                 strokeWidth="2"
                 viewBox="0 0 24 24"
               >
-                <path d="M12 3v11" />
-                <polyline points="7 9 12 14 17 9" />
-                <line x1="5" x2="19" y1="20" y2="20" />
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
               </svg>
             </button>
           )
@@ -238,6 +279,8 @@ export interface ReaderTextBodyProps {
   onRegisterChunkRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
   /** Reader setting: show the per-chunk jump control. */
   showJumpButtons: boolean;
+  /** Reader motion: whether the now-playing marker may animate. */
+  animateNowPlaying: boolean;
   onJumpToChunk: (chunkIndex: number) => void;
 }
 
@@ -251,6 +294,7 @@ export function ReaderTextBody({
   playedIndexes,
   onRegisterChunkRef,
   showJumpButtons,
+  animateNowPlaying,
   onJumpToChunk,
 }: ReaderTextBodyProps) {
   if (segments.length === 0) {
@@ -268,6 +312,7 @@ export function ReaderTextBody({
           <ReaderUpcomingBlock hiddenChars={segment.hiddenChars} key={segment.key} text={segment.text} />
         ) : (
           <ReaderChunkBlock
+            animateNowPlaying={animateNowPlaying}
             chunkIndex={segment.chunkIndex ?? 0}
             isActive={segment.chunkIndex === activeChunkIndex}
             isPlayed={segment.chunkIndex !== null && playedIndexes.has(segment.chunkIndex)}

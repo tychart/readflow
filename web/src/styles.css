@@ -122,5 +122,33 @@ body {
   outline-offset: 2px;
 }
 
+/* ── Now-playing equalizer ───────────────────────────────── */
+/*
+ * Marks the chunk under the playhead with animated bars — the convention every
+ * audio app uses for "this is what's playing".
+ *
+ * The animation squeezes the bars *down from* their full heights rather than up
+ * from nothing: a paused animation renders at its first keyframe, and playback
+ * pauses this one, so the resting state has to already look like an equalizer.
+ *
+ * It is only *applied* when the reader's motion setting allows it, and it is
+ * *paused* whenever audio is not actually running, so the marker never claims
+ * audio is playing while it is not. The global reduced-motion guard above stays
+ * as the OS-level backstop.
+ */
+@keyframes readflow-equalizer {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.4);
+  }
+}
+
+[data-now-playing="paused"] [data-now-playing-bar] {
+  animation-play-state: paused;
+}
+
 /* ── Tailwind dark variant ────────────────────────────────── */
 @custom-variant dark (&:where(.dark, .dark *));

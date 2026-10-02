@@ -372,6 +372,10 @@ playbar's resolution, so the reader adds three:
 - **per-chunk jump button** in each block's header row (`ReaderText.tsx`). It is
 always rendered for every chunk (low emphasis, brightening on hover/focus) and
 replaced by a non-interactive now-playing marker on the chunk currently playing.
+The icon is a **curved return arrow** — the first version was an arrow pointing
+down at a baseline, which the user read as a download button. The marker is
+**four uneven equalizer bars** (`NOW_PLAYING_BAR_HEIGHTS`), not a play triangle,
+because a triangle reads as "press play" rather than "this is what is playing".
 Clicking routes through the same `handleSeekToChunk` path as a timeline click, so
 play/pause state is preserved and a paused reader is never activated.
 - **−10s / +10s** flanking play/pause, from `usePlaybackShortcuts`'
