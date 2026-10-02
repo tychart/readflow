@@ -3,6 +3,16 @@ import type { AdminConfig, Chunk, JobDetail, JobSummary, SchedulerState } from "
 export type { AdminConfig, JobDetail, JobSummary, SchedulerState } from "./api";
 
 /**
+ * Live-connection state.
+ *
+ * `idle` is the honest default: the socket is only opened when something needs
+ * it (the jobs page watches live jobs, the reader watches non-terminal jobs),
+ * so "no connection and none wanted" is a real state — not `connecting`, which
+ * would claim an attempt that never happened.
+ */
+export type WebSocketStatus = "idle" | "connecting" | "open" | "reconnecting" | "error";
+
+/**
  * Job fields carried by live events and by mutations that cannot change the
  * document (play / pause / resume).
  *

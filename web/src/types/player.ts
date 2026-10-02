@@ -8,8 +8,6 @@ export type PlayerState =
   | "ended"
   | "error";
 
-export type WebSocketStatus = "connecting" | "open" | "reconnecting" | "closed" | "error";
-
 export interface AudioDiagnostics {
   paused: boolean;
   readyState: number;

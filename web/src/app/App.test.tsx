@@ -90,7 +90,7 @@ function seedStore() {
         recent_events: [],
       },
     },
-    websocketStatus: "connecting",
+    websocketStatus: "idle",
     lastSocketMessageAt: null,
     lastSocketError: null,
     reconnectAttempt: 0,
@@ -193,6 +193,30 @@ test("socket reconnects and surfaces reconnecting state", async () => {
   await waitFor(() => expect(screen.getByText(/just now/i)).toBeInTheDocument(), {
     timeout: 2_500,
   });
+});
+
+test("shows idle rather than connecting when nothing needs the live socket", async () => {
+  // No live jobs → the jobs page never starts the client, so no connection is
+  // attempted and the badge must not claim one is in flight.
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (url.endsWith("/api/voices")) {
+      return { ok: true, json: async () => [] };
+    }
+    return { ok: true, json: async () => ({}) };
+  }) as unknown as typeof fetch;
+
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  expect(await screen.findByText("idle")).toBeInTheDocument();
+  expect(screen.queryByText("connecting")).not.toBeInTheDocument();
+  expect(MockWebSocket.instances).toHaveLength(0);
 });
 
 test("unknown routes redirect to the jobs page", async () => {

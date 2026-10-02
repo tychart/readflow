@@ -563,6 +563,46 @@ If you see bugs where the hidden audio plays but the button still says `Play`, o
 - `playIntent`
 - explicit timeline seek handlers
 
+### Missing job ids redirect home (and stale jobs are revalidated)
+
+Unknown *paths* are handled by the catch-all route in `App.tsx`. A real route
+(`/jobs/:jobId`) pointing at a job the backend no longer has is handled inside
+`ReaderPage`:
+
+- a `404` (`ApiError.status === 404`) sets `missingJobId`, and the render turns
+  that into `<Navigate replace to="/" />`. `replace` keeps the dead URL out of
+  history so Back does not bounce through it again.
+- `missingJobId` stores the **id**, not a boolean, so navigating to a different
+  job clears it during render instead of needing a reset effect.
+- **never** redirect on a network error or a 5xx. "The job is gone" and "the
+  server is unreachable" are different states: only the former is terminal. A
+  transient failure must stay on the page and retry.
+
+Revalidation, in priority order:
+
+1. **On WebSocket reconnect.** The live client only returns through
+   `reconnecting` after a real drop, so a first connect (`connecting` → `open`)
+   is ignored (the initial load already fetched). A genuine reconnect means the
+   server restarted, and since jobs are in-memory the one we hold may be gone,
+   so `refreshReaderState("reconnect")` runs. This is the only thing that catches
+   a job which vanished while the tab stayed open: a completed job has polling
+   off and will never receive another event.
+2. **Bounded fallback retry.** The initial load can still race a backend restart
+   (the page reloads while the API is down), so the request fails with a network
+   `TypeError` — no status at all. The reader retries up to
+   `INITIAL_LOAD_MAX_RETRIES` times; a reconnect resets the budget. While inside
+   that budget the UI shows a neutral "Reconnecting to the server…" state, not a
+   red error, because a restart is the common cause; when the budget is spent it
+   surfaces the real error instead of polling a dead backend forever.
+
+Do not collapse the retry back into the job-loaded polling condition, and do not
+replace it with a status check: the whole point is that the first response can
+have no status. Keep the 404-vs-network split intact.
+
+This redirect is only correct because jobs are ephemeral. If/when jobs are
+persisted (roadmap), a stale job URL becomes a real, durable not-found and should
+get an explicit not-found page instead of a silent redirect.
+
 ### Reader text rendering (canonical text + upcoming tail)
 
 The reader renders blocks derived from the canonical text, never from the raw
@@ -1049,6 +1089,15 @@ Important lessons:
 - let Vite or the eventual reverse proxy own upstream routing
 - avoid hardcoded backend-origin fallbacks in frontend runtime code
 - keep WebSocket connection ownership centralized rather than scattering socket lifecycles across components
+- the socket is **lazily started**: `useAppBootstrap(enabled)` only connects when
+  something needs live events (the jobs page watches live jobs; the reader
+  watches non-terminal jobs). So "not connected and none wanted" is a real
+  state. It is `idle` (`WebSocketStatus` lives in `types/events.ts`), and it is
+  the store's default — never default to `connecting`, which claims an attempt
+  that may never happen. `stop()` returns to `idle`. The navbar `ConnectionBadge`
+  and the jobs panel both read this one status; do not let one of them translate
+  it differently (the panel used to hard-code "idle" while the badge showed the
+  raw `connecting`).
 
 If debugging WS issues, inspect:
 

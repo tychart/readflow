@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Navigate, useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
 import { ChunkConveyor } from "../../components/ChunkConveyor";
@@ -11,7 +11,7 @@ import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
 import { useReaderSettings, useReaderMotion } from "../../hooks/useReaderSettings";
-import { api } from "../../lib/api";
+import { ApiError, api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { resetReaderSettings, setReaderSettings } from "../../state/reader-settings";
@@ -44,6 +44,9 @@ import { ReaderSidebar } from "./ReaderSidebar";
 /* ── Constants ────────────────────────────────────────────── */
 
 const READER_POLL_INTERVAL_MS = 2_000;
+/** How many times the reader retries a failed initial load before surfacing the
+ *  error. A WebSocket reconnect resets the budget (see the reconnect effect). */
+const INITIAL_LOAD_MAX_RETRIES = 5;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
 
@@ -73,6 +76,14 @@ export function ReaderPage() {
   const [manifest, setManifest] = useState<JobManifest | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The id of a job the backend confirmed is gone (404). Stored as the id — not
+  // a boolean — so navigating to a different job id clears it during render
+  // instead of needing an effect.
+  const [missingJobId, setMissingJobId] = useState<string | null>(null);
+  const isMissingJob = missingJobId === jobId;
+  // Counts fallback retries of a failed initial load; bounded so a genuinely
+  // dead backend surfaces an error instead of being polled forever.
+  const [loadRetryAttempt, setLoadRetryAttempt] = useState(0);
   const [playIntent, setPlayIntent] = useState(false);
   const [playbackAnchorIndex, setPlaybackAnchorIndex] = useState(0);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
@@ -119,6 +130,7 @@ export function ReaderPage() {
   const queuedRefreshReasonRef = useRef<string | null>(null);
   const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
+  const previousSocketStatusRef = useRef(websocketStatus);
 
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
@@ -252,6 +264,10 @@ export function ReaderPage() {
           setLastRefreshReason(reason);
         })
         .catch((loadError) => {
+          if (loadError instanceof ApiError && loadError.status === 404) {
+            setMissingJobId(jobId);
+            return;
+          }
           setError(
             loadError instanceof Error ? loadError.message : "Unable to refresh reader state",
           );
@@ -314,6 +330,36 @@ export function ReaderPage() {
   useEffect(() => {
     void refreshReaderState("initial", true);
   }, [refreshReaderState]);
+
+  // The live link only returns through "reconnecting" after a real drop, so a
+  // first connect ("connecting" → "open") is ignored — the initial load already
+  // fetched. A genuine reconnect means the server restarted, and because jobs
+  // are in-memory the one we are holding may be gone. Revalidate it: this is
+  // what catches a job that vanished while the tab stayed open (a completed job
+  // has polling off and will never receive another event).
+  useEffect(() => {
+    const previous = previousSocketStatusRef.current;
+    previousSocketStatusRef.current = websocketStatus;
+    if (websocketStatus !== "open" || previous === "open" || previous === "connecting") {
+      return;
+    }
+    setLoadRetryAttempt(0);
+    void refreshReaderState("reconnect");
+  }, [refreshReaderState, websocketStatus]);
+
+  // Fallback for a failed initial load: retry a bounded number of times. This
+  // exists because the API and the page can restart together, so the first
+  // request fails with a network error (no status) before the reconnect effect
+  // above ever gets a socket. Bounded so a dead backend is not polled forever.
+  useEffect(() => {
+    if (job || isMissingJob) return;
+    if (loadRetryAttempt >= INITIAL_LOAD_MAX_RETRIES) return;
+    const timer = window.setTimeout(() => {
+      setLoadRetryAttempt((attempt) => attempt + 1);
+      void refreshReaderState("retry");
+    }, READER_POLL_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [isMissingJob, job, loadRetryAttempt, refreshReaderState]);
 
   useEffect(() => {
     const payload = lastEvent?.payload as StreamEventPayload | undefined;
@@ -721,6 +767,11 @@ export function ReaderPage() {
     />
   );
 
+  // Still inside the bounded initial-load retry budget: a restart is the common
+  // cause, so show a calm reconnect state instead of a red failure.
+  const isRetryingInitialLoad =
+    !job && !isMissingJob && loadRetryAttempt < INITIAL_LOAD_MAX_RETRIES;
+
   let content: React.ReactNode;
 
   if (loading) {
@@ -732,8 +783,19 @@ export function ReaderPage() {
         </div>
       </div>
     );
+  } else if (isMissingJob) {
+    // Unknown job id — send the user back to the jobs page. `replace` keeps the
+    // dead URL out of history so Back does not bounce through it again.
+    content = <Navigate replace to="/" />;
   } else if (!job) {
-    content = (
+    content = isRetryingInitialLoad ? (
+      <div className="flex items-center justify-center py-20">
+        <div className="flex items-center gap-3 text-sm text-[var(--ink-secondary)]">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--amber)] border-t-transparent" />
+          Reconnecting to the server…
+        </div>
+      </div>
+    ) : (
       <div className="rounded-xl border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-5 py-8 text-center text-sm text-[var(--rose)]">
         {error ?? "Job not found"}
       </div>

@@ -8,6 +8,7 @@ import { ReaderPage } from "../features/reader/ReaderPage";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useAppStore } from "../state/store";
 import { useTheme } from "../hooks/useTheme";
+import type { WebSocketStatus } from "../types/events";
 import readflowIcon from "../assets/brand/readflow-icon.svg";
 import readflowLockupDark from "../assets/brand/readflow-lockup-dark.svg";
 import readflowLockupLight from "../assets/brand/readflow-lockup-light.svg";
@@ -15,7 +16,7 @@ import readflowLockupLight from "../assets/brand/readflow-lockup-light.svg";
 /* ── Connection Badge ─────────────────────────────────────── */
 
 interface ConnectionBadgeState {
-  websocketStatus: string;
+  websocketStatus: WebSocketStatus;
   lastSocketMessageAt: number | null;
   lastSocketError: string | null;
   reconnectAttempt: number;
@@ -50,16 +51,13 @@ function ConnectionBadge() {
   // Derive visual state
   const isHealthy = websocketStatus === "open" && !isSocketStale;
   const isConnecting = websocketStatus === "connecting" || websocketStatus === "reconnecting";
-  const isError = websocketStatus === "closed" && !!lastSocketError;
+  const isError = websocketStatus === "error";
 
-  const label =
-    websocketStatus === "closed" && !lastSocketError
-      ? "idle"
-      : isSocketStale
-        ? "stale"
-        : websocketStatus === "reconnecting"
-          ? `reconnecting${reconnectAttempt ? ` #${reconnectAttempt}` : ""}`
-          : websocketStatus;
+  const label = isSocketStale
+    ? "stale"
+    : websocketStatus === "reconnecting"
+      ? `reconnecting${reconnectAttempt ? ` #${reconnectAttempt}` : ""}`
+      : websocketStatus;
 
   return (
     <div

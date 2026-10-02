@@ -223,6 +223,136 @@ test("loads a job and sends play plus voice actions", async () => {
   expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/voice", expect.any(Object));
 });
 
+test("redirects to the jobs page when the job id does not exist", async () => {
+  seedStore();
+
+  global.fetch = vi.fn(async () => ({
+    ok: false,
+    status: 404,
+    json: async () => ({ detail: "Job not found" }),
+  })) as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/missing-job"]}>
+      <Routes>
+        <Route element={<div>Jobs page</div>} path="/" />
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  // The reader resolves the 404 into a home redirect rather than an error panel.
+  expect(await screen.findByText("Jobs page")).toBeInTheDocument();
+  expect(screen.queryByText(/Job not found/)).not.toBeInTheDocument();
+});
+
+test("retries a transient load failure, then redirects home once the backend reports 404", async () => {
+  seedStore();
+  vi.useFakeTimers();
+
+  let calls = 0;
+  global.fetch = vi.fn(async () => {
+    calls += 1;
+    // First attempt: the API is still restarting, so fetch rejects. Later
+    // attempts reach the restarted backend, which no longer knows the job.
+    if (calls === 1) {
+      throw new TypeError("Failed to fetch");
+    }
+    return { ok: false, status: 404, json: async () => ({ detail: "Job not found" }) };
+  }) as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/missing-job"]}>
+      <Routes>
+        <Route element={<div>Jobs page</div>} path="/" />
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_100);
+  });
+
+  expect(calls).toBeGreaterThan(1);
+  expect(screen.getByText("Jobs page")).toBeInTheDocument();
+});
+
+test("revalidates the loaded job and redirects when the live link reconnects to a restarted backend", async () => {
+  seedStore(); // websocketStatus starts "open"
+
+  let jobGone = false;
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (jobGone) {
+      return { ok: false, status: 404, json: async () => ({ detail: "Job not found" }) };
+    }
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(1) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(1) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<div>Jobs page</div>} path="/" />
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("Reader job");
+
+  // The server restarts: the socket drops, the job is gone, the socket returns.
+  jobGone = true;
+  act(() => {
+    useAppStore.setState({ websocketStatus: "reconnecting" });
+  });
+  act(() => {
+    useAppStore.setState({ websocketStatus: "open" });
+  });
+
+  expect(await screen.findByText("Jobs page")).toBeInTheDocument();
+});
+
+test("shows a calm reconnect state while retrying, then the error once retries are exhausted", async () => {
+  seedStore();
+  vi.useFakeTimers();
+
+  global.fetch = vi.fn(async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  // First failure flips us into the bounded retry window: neutral copy, no error.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_100);
+  });
+  expect(screen.getByText(/Reconnecting to the server/i)).toBeInTheDocument();
+  expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+
+  // Past the retry budget the reader stops retrying and surfaces the failure.
+  // Advance one interval per commit so React re-renders (and schedules the next
+  // retry) between ticks.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+  }
+  expect(screen.getByText(/Failed to fetch/)).toBeInTheDocument();
+});
+
 test("shows waiting copy when play is armed before the first chunk exists", async () => {
   const user = userEvent.setup();
   seedStore();

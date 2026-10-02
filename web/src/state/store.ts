@@ -1,13 +1,13 @@
 import { create } from "zustand";
 
 import type { JobSummary, Voice } from "../types/api";
-import type { AdminState, WsEnvelope } from "../types/events";
+import type { AdminState, WebSocketStatus, WsEnvelope } from "../types/events";
 
 interface AppStore {
   jobs: Record<string, JobSummary>;
   voices: Voice[];
   adminState: AdminState | null;
-  websocketStatus: "connecting" | "open" | "reconnecting" | "closed" | "error";
+  websocketStatus: WebSocketStatus;
   lastSocketMessageAt: number | null;
   lastSocketError: string | null;
   reconnectAttempt: number;
@@ -84,7 +84,7 @@ export const useAppStore = create<AppStore>((set) => ({
   jobs: {},
   voices: [],
   adminState: null,
-  websocketStatus: "connecting",
+  websocketStatus: "idle",
   lastSocketMessageAt: null,
   lastSocketError: null,
   reconnectAttempt: 0,

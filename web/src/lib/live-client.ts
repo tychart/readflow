@@ -1,6 +1,7 @@
 import { api } from "./api";
 import { websocketUrl } from "./transport";
 import { useAppStore } from "../state/store";
+import type { WebSocketStatus } from "../types/events";
 import type { JobSummary, WsEnvelope } from "../types/api";
 
 const HEARTBEAT_MS = 15_000;
@@ -20,7 +21,7 @@ function mergeSnapshotJobs(
 }
 
 interface SocketStatePatch {
-  status?: "connecting" | "open" | "reconnecting" | "closed" | "error";
+  status?: WebSocketStatus;
   lastMessageAt?: number | null;
   error?: string | null;
   reconnectAttempt?: number;
@@ -298,7 +299,7 @@ class LiveClient {
     }
     this.socket = null;
     this.setSocketState({
-      status: "closed",
+      status: "idle",
       error: null,
       lastMessageAt: null,
       reconnectAttempt: 0,
