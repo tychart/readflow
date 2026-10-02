@@ -4,6 +4,11 @@ import type { JobManifest } from "../types/api";
 
 const PLAYABLE_EPSILON_SECONDS = 0.05;
 /**
+ * Playback speed a session starts at. The user's slider moves this; 1x is the
+ * only sane default (an earlier hardcoded 3x was a debugging leftover).
+ */
+const DEFAULT_PLAYBACK_RATE = 1;
+/**
  * How close to the end of the buffered stream a terminal job's playhead must
  * be before we treat it as finished. Mirrors the reader's end-detection.
  */
@@ -51,6 +56,31 @@ interface AudioDiagnostics {
 interface PlaybackSnapshot extends AudioDiagnostics {
   bufferedUntilSeconds: number;
   currentTimeSeconds: number;
+}
+
+/**
+ * Set the element's playback rate. Both properties are always written together:
+ * `playbackRate` drives playback and `defaultPlaybackRate` keeps the rate across
+ * `load()`/`src` changes, and letting them drift was a source of bugs.
+ */
+function applyPlaybackRate(audio: HTMLAudioElement, rate: number): void {
+  audio.playbackRate = rate;
+  audio.defaultPlaybackRate = rate;
+}
+
+/**
+ * Re-assert the desired rate.
+ *
+ * Firefox's MSE pipeline asynchronously resets `playbackRate` to 1 while it
+ * appends segments, so the rate is re-applied on every animation tick rather
+ * than only when it changes. A targeted workaround for Firefox bug 1517199 /
+ * 1660534, not normal application logic — hence the cheap early exit at 1x.
+ */
+function enforcePlaybackRate(audio: HTMLAudioElement, rate: number): void {
+  if (rate === 1) return;
+  if (audio.playbackRate !== rate || audio.defaultPlaybackRate !== rate) {
+    applyPlaybackRate(audio, rate);
+  }
 }
 
 async function fetchBuffer(url: string): Promise<ArrayBuffer> {
@@ -194,7 +224,7 @@ export function useMediaSourcePlayer({
   const isTerminalRef = useRef(isTerminal);
   const pendingSeekSecondsRef = useRef<number | null>(pendingSeekTargetSeconds);
   const renderedDurationRef = useRef(0);
-  const playbackRateRef = useRef(3);
+  const playbackRateRef = useRef(DEFAULT_PLAYBACK_RATE);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaElementSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   // Latest stream-primed / buffered state, updated *synchronously* wherever
@@ -210,7 +240,7 @@ export function useMediaSourcePlayer({
 
   const [bufferedUntilSeconds, setBufferedUntilSeconds] = useState(0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
-  const [playbackRate, setPlaybackRateState] = useState(3);
+  const [playbackRate, setPlaybackRateState] = useState(DEFAULT_PLAYBACK_RATE);
   const [isReady, setIsReady] = useState(false);
   const [isStreamPrimed, setIsStreamPrimed] = useState(false);
   const [isActuallyPlaying, setIsActuallyPlaying] = useState(false);
@@ -266,18 +296,8 @@ export function useMediaSourcePlayer({
 
   const updatePlaybackState = useCallback((force = false) => {
     const audio = audioRef.current;
-    // HACK (Firefox MSE): Firefox appears to asynchronously reset playbackRate
-    // to 1.0 during MSE segment processing. Re-apply the desired rate on every
-    // tick (~60fps) to override this. This is a targeted workaround for a
-    // browser bug, not normal application logic.
-    if (audio && playbackRateRef.current !== 1) {
-      if (audio.playbackRate !== playbackRateRef.current) {
-        audio.playbackRate = playbackRateRef.current;
-      }
-      if (audio.defaultPlaybackRate !== playbackRateRef.current) {
-        audio.defaultPlaybackRate = playbackRateRef.current;
-      }
-    }
+    // Firefox resets the rate while appending; re-assert it every tick.
+    if (audio) enforcePlaybackRate(audio, playbackRateRef.current);
     const nextSnapshot = {
       bufferedUntilSeconds: getBufferedEnd(audio),
       currentTimeSeconds: audio?.currentTime ?? 0,
@@ -391,12 +411,11 @@ export function useMediaSourcePlayer({
         return false;
       }
 
-      // Route the audio element through the Web Audio API so that
-      // playbackRate is respected by Firefox's MSE implementation.
-      // Firefox's MSE audio pipeline ignores playbackRate unless the
-      // element is connected to an AudioContext (via createMediaElementSource).
-      // This is a targeted workaround for Firefox bug 1517199 / 1660534.
-      // createMediaElementSource can only be called once per element.
+      // Firefox's MSE audio pipeline ignores `playbackRate` unless the element is
+      // connected to an AudioContext, so route it through the Web Audio API.
+      // Targeted workaround for Firefox bug 1517199 / 1660534.
+      // `createMediaElementSource` may only be called once per element, hence the
+      // ref guard.
       if (!mediaElementSourceRef.current) {
         try {
           const AudioContextClass =
@@ -426,8 +445,7 @@ export function useMediaSourcePlayer({
       try {
         await audio.play();
         // Re-apply playback rate immediately after play succeeds
-        audio.playbackRate = playbackRateRef.current;
-        audio.defaultPlaybackRate = playbackRateRef.current;
+        applyPlaybackRate(audio, playbackRateRef.current);
         setIsAutoplayBlocked(false);
         setLastPlayerError(null);
         return true;
@@ -536,8 +554,7 @@ export function useMediaSourcePlayer({
     safePause(audio);
     audio.src = objectUrl;
     // Apply playback rate immediately after src is set
-    audio.playbackRate = playbackRateRef.current;
-    audio.defaultPlaybackRate = playbackRateRef.current;
+    applyPlaybackRate(audio, playbackRateRef.current);
 
     const handleSourceOpen = async () => {
       try {
@@ -552,8 +569,7 @@ export function useMediaSourcePlayer({
           setLastPlayerError(null);
           // Re-apply playback rate after source buffer is created
           if (audioRef.current) {
-            audioRef.current.playbackRate = playbackRateRef.current;
-            audioRef.current.defaultPlaybackRate = playbackRateRef.current;
+            applyPlaybackRate(audioRef.current, playbackRateRef.current);
           }
           updatePlaybackState(true);
         }
@@ -709,8 +725,7 @@ export function useMediaSourcePlayer({
       setLastPlayerError(null);
       // Re-apply playback rate when playback actually starts
       if (audio && playbackRateRef.current !== 1) {
-        audio.playbackRate = playbackRateRef.current;
-        audio.defaultPlaybackRate = playbackRateRef.current;
+        applyPlaybackRate(audio, playbackRateRef.current);
       }
       updatePlaybackState(true);
     };
@@ -896,10 +911,7 @@ export function useMediaSourcePlayer({
   const setPlaybackRate = useCallback((rate: number) => {
     const clampedRate = Math.max(0.05, rate);
     const audio = audioRef.current;
-    if (audio) {
-      audio.playbackRate = clampedRate;
-      audio.defaultPlaybackRate = clampedRate;
-    }
+    if (audio) applyPlaybackRate(audio, clampedRate);
     playbackRateRef.current = clampedRate;
     setPlaybackRateState(clampedRate);
   }, []);
@@ -913,8 +925,7 @@ export function useMediaSourcePlayer({
     if (!audio) {
       return;
     }
-    audio.playbackRate = playbackRate;
-    audio.defaultPlaybackRate = playbackRate;
+    applyPlaybackRate(audio, playbackRate);
   });
 
   // Clean up the AudioContext when the hook unmounts.

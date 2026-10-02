@@ -298,15 +298,20 @@ explicitly commented as a targeted browser workaround, not normal logic.
 because Firefox otherwise ignores `playbackRate` on MSE audio. `AudioContext`
 resumes lazily on the user gesture that starts playback.
 
-Two things to know about the state this arrived in, both inherited from `main`:
+Rules that are easy to break:
 
-- the default rate is **3×** (`playbackRateRef = useRef(3)`), committed while
-hardcoding to test the Firefox bug;
-- `SpeedSyncedAudio.tsx` is **dead code** — nothing but its own test imports it.
-The hook already re-applies the rate, so the wrapper's inline-callback-ref
-approach is redundant, and it still contains `console.log` calls.
-
-Both are flagged for a follow-up cleanup rather than silently changed.
+- Both properties are always written together through `applyPlaybackRate`
+(`playbackRate` *and* `defaultPlaybackRate`); letting them drift was already a
+source of bugs, so do not set one without the other.
+- The rate starts at `DEFAULT_PLAYBACK_RATE` (1×). An earlier hardcoded 3× was a
+debugging leftover from chasing the Firefox bug — do not reintroduce a non-1×
+default.
+- The Firefox re-application is per tick and kept behind `enforcePlaybackRate`,
+which exits immediately at 1× so the common case costs nothing. It looks like
+redundant code and is not: deleting it breaks Firefox MSE playback speed.
+- `SpeedSyncedAudio.tsx` was deleted: it duplicated the hook's rate application
+with an inline callback ref (which also re-ran on every render) and nothing but
+its own test imported it.
 
 ### Static waveform playbar (replaces the old live analyser)
 

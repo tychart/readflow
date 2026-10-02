@@ -537,7 +537,7 @@ test("keeps the custom player clock in sync while audio time advances live", asy
 
 describe("playbackRate", () => {
 
-  test("starts at 3.0 (hardcoded for Firefox MSE test)", async () => {
+  test("starts at 1.0x", async () => {
     let bufferedEnd = 0;
     installBufferedAudioState(() => bufferedEnd);
     installRecordingMediaSource([], () => bufferedEnd);
@@ -569,7 +569,7 @@ describe("playbackRate", () => {
 
     const { container } = render(<Harness />);
     await waitFor(() =>
-      expect(container.firstChild).toHaveAttribute("data-playback-rate", "3"),
+      expect(container.firstChild).toHaveAttribute("data-playback-rate", "1"),
     );
   });
 
