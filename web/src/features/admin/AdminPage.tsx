@@ -1,9 +1,10 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useAppStore } from "../../state/store";
 import type { AdminConfig } from "../../types/api";
+import { QueueInspector } from "./QueueInspector";
 
 /* ── Styles ───────────────────────────────────────────────── */
 
@@ -52,9 +53,7 @@ function StatCard({ label, children }: { label: string; children: React.ReactNod
 
 /* ── Component ────────────────────────────────────────────── */
 
-export function AdminPage() {
-  useAppBootstrap(true);
-
+function AdminOverview() {
   const adminState = useAppStore((state) => state.adminState);
   const setAdminState = useAppStore((state) => state.setAdminState);
   const [formState, setFormState] = useState<AdminConfig | null>(null);
@@ -154,8 +153,7 @@ export function AdminPage() {
     adminState.memory.device !== "evicting";
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
-      <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+    <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
       {/* ── Config Form ──────────────────────────────────── */}
       <form
         className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"
@@ -462,6 +460,87 @@ export function AdminPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── Tabs ─────────────────────────────────────────────────── */
+
+type AdminTab = "overview" | "queue";
+
+const ADMIN_TABS: Array<{ id: AdminTab; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "queue", label: "Queue" },
+];
+
+function AdminTabs({
+  active,
+  onChange,
+}: {
+  active: AdminTab;
+  onChange: (tab: AdminTab) => void;
+}) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    const index = ADMIN_TABS.findIndex((tab) => tab.id === active);
+    const delta = event.key === "ArrowRight" ? 1 : -1;
+    const next = ADMIN_TABS[(index + delta + ADMIN_TABS.length) % ADMIN_TABS.length];
+    onChange(next.id);
+  };
+
+  return (
+    <div
+      aria-label="Admin sections"
+      className="mb-6 flex items-center gap-1 border-b border-[var(--line)]"
+      role="tablist"
+    >
+      {ADMIN_TABS.map((tab) => {
+        const isActive = tab.id === active;
+        return (
+          <button
+            aria-controls={`admin-panel-${tab.id}`}
+            aria-selected={isActive}
+            className={`-mb-px rounded-t-lg border-b-2 px-4 py-2 text-sm font-medium transition ${
+              isActive
+                ? "border-[var(--amber)] text-[var(--amber)]"
+                : "border-transparent text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+            }`}
+            id={`admin-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => onChange(tab.id)}
+            onKeyDown={handleKeyDown}
+            role="tab"
+            tabIndex={isActive ? 0 : -1}
+            type="button"
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Page ─────────────────────────────────────────────────── */
+
+export function AdminPage() {
+  useAppBootstrap(true);
+  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+
+  return (
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+      <AdminTabs active={activeTab} onChange={setActiveTab} />
+      {activeTab === "overview" ? (
+        <div aria-labelledby="admin-tab-overview" id="admin-panel-overview" role="tabpanel">
+          <AdminOverview />
+        </div>
+      ) : (
+        <div aria-labelledby="admin-tab-queue" id="admin-panel-queue" role="tabpanel">
+          <QueueInspector />
+        </div>
+      )}
     </div>
   );
 }

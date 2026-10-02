@@ -149,6 +149,18 @@ class JobManager:
         job.status = JobStatus.RENDERING
         job.updated_at = time()
 
+    def mark_chunk_planned(self, chunk: ChunkRecord) -> None:
+        """Return a chunk to the queue.
+
+        Used when a batch is only partially rendered (the worker retries an OOM
+        with fewer chunks), so the dropped chunks are retried on a later tick
+        instead of being left stuck in `RENDERING`.
+        """
+        chunk.status = ChunkStatus.PLANNED
+        chunk.updated_at = time()
+        job = self.get_job(chunk.job_id)
+        job.updated_at = time()
+
     def mark_chunk_written(
         self,
         chunk: ChunkRecord,

@@ -1,5 +1,6 @@
 import type {
   AdminConfig,
+  AdminQueue,
   AdminState,
   JobDetail,
   JobManifest,
@@ -165,6 +166,9 @@ export const api = {
 
   /** Fetches admin state including config, scheduler info, and telemetry. */
   getAdminState: () => request<AdminState>(apiPath("/admin/state")),
+
+  /** Fetches the live synthesis queue for the admin inspector. */
+  getAdminQueue: () => request<AdminQueue>(apiPath("/admin/queue")),
 
   /** Updates admin configuration. */
   updateAdminConfig: (config: Partial<AdminConfig>) =>

@@ -18,6 +18,7 @@ from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
     AdminMemoryStats,
+    AdminQueueResponse,
     AdminStateResponse,
     ChunkReprocessRequest,
     ChunkVersionRequest,
@@ -513,6 +514,17 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             WsEnvelope(type="admin_config_updated", payload=config.model_dump()).model_dump()
         )
         return config
+
+    @router.get("/admin/queue", response_model=AdminQueueResponse)
+    async def get_admin_queue(
+        app_services: AppServices = Depends(services),
+    ) -> AdminQueueResponse:
+        """Return the live synthesis queue for the admin inspector.
+
+        Ordering, priority bands, and the predicted next batch come from the
+        scheduler itself, so this view mirrors the real dispatch order.
+        """
+        return await app_services.scheduler.queue_snapshot()
 
     @router.get("/admin/state", response_model=AdminStateResponse)
     async def get_admin_state(app_services: AppServices = Depends(services)) -> AdminStateResponse:

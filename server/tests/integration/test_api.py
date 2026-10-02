@@ -3,6 +3,8 @@ import json
 import wave
 from typing import Any, cast
 
+from app.synthesis.worker import RenderedChunkResult
+
 
 class _FakeWebSocket:
     def __init__(self) -> None:
@@ -525,3 +527,186 @@ async def test_activation_endpoints_return_summaries(client):
     resumed = await client.post(f"/api/jobs/{job_id}/resume")
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "queued"
+
+
+# ─── Admin queue inspection tests ─────────────────────────────────────
+
+
+async def test_admin_queue_empty(client):
+    response = await client.get("/api/admin/queue")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"] == []
+    assert payload["active_batch"] is None
+    assert payload["next_batch"] is None
+    assert payload["queue_depth"] == 0
+
+
+async def test_admin_queue_reports_pending_chunks_after_dispatch(client, services):
+    long_text = "A sentence that is long enough to plan a chunk. " * 120
+    created = await client.post(
+        "/api/jobs", data={"text": long_text, "voice_id": "suzy", "title": "Queued book"}
+    )
+    job_id = created.json()["job"]["id"]
+    await client.post(f"/api/jobs/{job_id}/activate")
+
+    await services.scheduler.run_once()
+
+    response = await client.get("/api/admin/queue")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"], "active job should keep chunks planned ahead"
+    first = payload["items"][0]
+    assert first["job_id"] == job_id
+    assert first["job_title"] == "Queued book"
+    assert first["text"]
+    assert first["rank"] == 1
+    assert first["priority_band"] == 0
+    assert first["priority_label"] == "Urgent"
+    assert first["char_count"] == len(first["text"])
+    assert [item["rank"] for item in payload["items"]] == list(range(1, len(payload["items"]) + 1))
+
+
+async def test_admin_queue_marks_paused_job_chunks(client, services):
+    created = await client.post(
+        "/api/jobs", data={"text": "Paused text. " * 20, "voice_id": "suzy", "title": "Paused"}
+    )
+    job_id = created.json()["job"]["id"]
+    job = services.job_manager.get_job(job_id)
+    services.job_manager.add_planned_chunk(
+        job_id,
+        text="A planned chunk on a paused job.",
+        char_start=0,
+        char_end=31,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+    await client.post(f"/api/jobs/{job_id}/pause")
+
+    response = await client.get("/api/admin/queue")
+    payload = response.json()
+    assert payload["items"]
+    assert all(item["priority_band"] == 99 for item in payload["items"])
+    assert all(item["priority_label"] == "Paused" for item in payload["items"])
+
+
+async def test_admin_queue_reports_active_batch_while_rendering(client, services):
+    import asyncio
+
+    created = await client.post(
+        "/api/jobs", data={"text": "Render me. " * 60, "voice_id": "suzy", "title": "Rendering"}
+    )
+    job_id = created.json()["job"]["id"]
+    await client.post(f"/api/jobs/{job_id}/activate")
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_render(model_id, chunks):
+        del model_id
+        started.set()
+        await release.wait()
+        return [
+            RenderedChunkResult(
+                chunk_index=chunk.index,
+                segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
+                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
+                wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
+                duration_seconds=1.0,
+                reserved_vram_mb=0,
+                allocated_vram_mb=0,
+            )
+            for chunk in chunks
+        ]
+
+    services.worker.render_batch = blocking_render
+    task = asyncio.create_task(services.scheduler.run_once())
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    response = await client.get("/api/admin/queue")
+    payload = response.json()
+    assert payload["active_batch"] is not None
+    assert payload["active_batch"]["chunk_count"] >= 1
+    assert payload["active_batch"]["voice_id"] == "suzy"
+    assert payload["active_batch"]["started_at"] is not None
+    assert any(item["is_rendering"] for item in payload["items"])
+
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+
+async def test_scheduler_state_broadcast_carries_active_batch(client, services):
+    import asyncio
+
+    created = await client.post(
+        "/api/jobs", data={"text": "Broadcast me. " * 60, "voice_id": "suzy", "title": "Cast"}
+    )
+    job_id = created.json()["job"]["id"]
+    await client.post(f"/api/jobs/{job_id}/activate")
+
+    ws = _FakeWebSocket()
+    await services.hub.connect(ws)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_render(model_id, chunks):
+        del model_id
+        started.set()
+        await release.wait()
+        return [
+            RenderedChunkResult(
+                chunk_index=chunk.index,
+                segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
+                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
+                wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
+                duration_seconds=1.0,
+                reserved_vram_mb=0,
+                allocated_vram_mb=0,
+            )
+            for chunk in chunks
+        ]
+
+    services.worker.render_batch = blocking_render
+    task = asyncio.create_task(services.scheduler.run_once())
+    await asyncio.wait_for(started.wait(), timeout=5)
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+    await services.hub.disconnect(ws)
+
+    scheduler_states = [m for m in ws.messages if m.get("type") == "scheduler_state"]
+    in_flight = [
+        m for m in scheduler_states if cast(dict[str, Any], m["payload"]).get("active_batch")
+    ]
+    assert in_flight, "batch-start broadcast must include the active batch"
+    active = cast(dict[str, Any], in_flight[0]["payload"])["active_batch"]
+    assert active["chunk_count"] >= 1
+    assert active["started_at"] is not None
+
+
+async def test_admin_queue_reflects_reprocessed_chunk(client, services):
+    created = await client.post(
+        "/api/jobs", data={"text": "Reprocess me. " * 20, "voice_id": "suzy", "title": "Repro"}
+    )
+    job_id = created.json()["job"]["id"]
+    job = services.job_manager.get_job(job_id)
+    services.job_manager.add_planned_chunk(
+        job_id,
+        text="Original chunk text.",
+        char_start=0,
+        char_end=21,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+
+    reprocess = await client.post(f"/api/jobs/{job_id}/chunks/0/reprocess", json={})
+    assert reprocess.status_code == 200
+
+    response = await client.get("/api/admin/queue")
+    payload = response.json()
+    items = [item for item in payload["items"] if item["index"] == 0]
+    assert len(items) == 1
+    item = items[0]
+    assert item["version"] == 1
+    assert [version["version"] for version in item["versions"]] == [0, 1]

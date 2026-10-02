@@ -143,6 +143,25 @@ describe("applyEvent — memory_stats", () => {
     expect(state.adminState?.scheduler.queue_depth).toBe(5);
   });
 
+  it("stores the active batch from a scheduler_state event", () => {
+    setAdminState(MEMORY);
+
+    const activeBatch = {
+      chunk_count: 2,
+      model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+      language: "English",
+      voice_id: "suzy",
+      started_at: 123.0,
+    };
+
+    useAppStore.getState().applyEvent({
+      type: "scheduler_state",
+      payload: { queue_depth: 3, batch_candidates: [8, 7], active_batch: activeBatch },
+    });
+
+    expect(useAppStore.getState().adminState?.scheduler.active_batch).toEqual(activeBatch);
+  });
+
   it("preserves adminState.memory on admin_config_updated event", () => {
     setAdminState(MEMORY);
 

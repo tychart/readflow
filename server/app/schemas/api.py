@@ -100,9 +100,78 @@ class AdminConfigUpdateRequest(BaseModel):
     vram_hard_limit_mb: int | None = None
 
 
+class QueueBatch(BaseModel):
+    """One synthesis batch: chunks that share a model/language/voice group.
+
+    `started_at` is only set for the batch currently being rendered; the
+    predicted next batch leaves it `None`.
+    """
+
+    chunk_count: int
+    model_id: str | None = None
+    language: str | None = None
+    voice_id: str | None = None
+    started_at: float | None = None
+
+
 class SchedulerStateResponse(BaseModel):
     queue_depth: int
     batch_candidates: list[int]
+    # Present while a batch is rendering so the admin queue view can go live
+    # without polling. The full queue detail is fetched over HTTP.
+    active_batch: QueueBatch | None = None
+
+
+class QueueChunkVersionResponse(BaseModel):
+    version: int
+    status: str
+    deprecated: bool
+
+
+class QueueChunkResponse(BaseModel):
+    """A pending chunk plus the derived scheduling facts an operator needs.
+
+    This is an admin-only debugging view: it includes the chunk text and the
+    exact inputs behind the scheduler's ordering (priority band, job buffer
+    state, rank) so the operator can see *why* work is ordered the way it is.
+    """
+
+    job_id: str
+    job_title: str | None
+    job_status: str
+    job_is_active_listening: bool
+    job_buffered_seconds: float
+    job_target_buffer_seconds: int
+    index: int
+    version: int
+    status: str
+    plan_version: int
+    voice_id: str
+    language: str
+    model_id: str
+    text: str
+    char_start: int
+    char_end: int
+    char_count: int
+    estimated_duration_seconds: float
+    priority_band: int
+    priority_label: str
+    priority_reason: str
+    rank: int
+    is_rendering: bool
+    in_next_batch: bool
+    created_at: float
+    updated_at: float
+    error: str | None = None
+    versions: list[QueueChunkVersionResponse] = Field(default_factory=list)
+
+
+class AdminQueueResponse(BaseModel):
+    generated_at: float
+    queue_depth: int
+    active_batch: QueueBatch | None = None
+    next_batch: QueueBatch | None = None
+    items: list[QueueChunkResponse] = Field(default_factory=list)
 
 
 class AdminMemoryStats(BaseModel):

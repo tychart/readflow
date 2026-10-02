@@ -904,12 +904,52 @@ Reader page:
 
 Admin page:
 
+- two tabs: **Overview** (config knobs, model warm/evict, telemetry, memory) and
+  **Queue** (the live synthesis queue inspector)
 - change runtime knobs
 - warm model
 - evict model
 - inspect queue depth and model state
 - view recent batch telemetry
 - view model lifecycle state
+
+### Admin Queue tab (`web/src/features/admin/QueueInspector.tsx`)
+
+A read-only-plus-actions inspector over the scheduler's work queue, built to make
+scheduler behavior debuggable, not just pretty.
+
+- `GET /api/admin/queue` (`SchedulerService.queue_snapshot()`) returns every
+  pending chunk (`planned`/`queued`/`rendering`, matching plan version, not
+  deprecated) ranked by the **same** `_chunk_priority` key the scheduler
+  dispatches with — band, then chunk index, then text length. Never re-derive
+  priority in the frontend.
+- The response carries `active_batch` (currently `RENDERING` chunks, grouped by
+  `(model_id, language, voice_id)`, `started_at = min(updated_at)`) and
+  `next_batch` (the real next dispatch, computed by the shared
+  `_select_next_batch` helper), plus per-chunk `priority_band/label/reason`,
+  job buffer figures, char range, estimated duration, and version history.
+- The tab is flat and priority-ranked; rendering rows are marked, the active
+  batch shows as a "Rendering now" strip with elapsed time, and upcoming rows
+  get a "Next" tag. Selecting a chunk opens a detail panel with its text,
+  priority reason, metadata, version switcher, pause/resume, and chunk
+  reprocess (edit text + voice). All actions reuse existing endpoints.
+- Live refresh is **push-driven, not polled**: the scheduler broadcasts a
+  lightweight `scheduler_state` tick that includes `active_batch`, and the tab
+  refetches the full queue only when that signature (`queue_depth` + active
+  batch identity) changes. Full chunk text is never sent over the WebSocket.
+  The scheduler emits one `scheduler_state` at batch start (in
+  `_render_next_batch`) in addition to the end-of-tick one, so "rendering now"
+  is observable while the batch is in flight.
+
+### Scheduler: partial batches are requeued (do not regress)
+
+The worker retries an OOM with a smaller batch and returns fewer results than
+the scheduler dispatched. `_render_next_batch` therefore zips
+`batch`/`results` with `strict=False` and calls
+`JobManager.mark_chunk_planned` on the leftovers. Previously a `strict=True`
+zip raised inside `run_once` and could kill the scheduler loop, leaving the
+dropped chunks stuck in `RENDERING`. The queue inspector surfaces this state, so
+keep the requeue behavior intact.
 
 ## What Was Added During This Conversation
 
@@ -927,6 +967,11 @@ Future agents should know that the following were created or materially changed 
 - Vite HTTP/WS proxy for same-origin local dev
 - custom streaming reader/player with gap-aware playback
 - static backend-computed waveform playbar (replaces the live Web Audio analyser)
+- admin **Queue tab**: `GET /api/admin/queue` + `SchedulerService.queue_snapshot()`,
+  priority-ranked pending-chunk inspector with active/next batch, priority
+  reasons, version switching, and pause/resume/reprocess actions
+- scheduler partial-batch requeue fix (`mark_chunk_planned`, `zip(strict=False)`)
+  so OOM-retry leftovers are retried instead of stuck in `RENDERING`
 - server-side `.m4a` export for contiguous rendered audio
 - completed-job local-only playback behavior
 - long-document support: `READFLOW_MAX_SOURCE_BYTES` (64 MiB default) replaces

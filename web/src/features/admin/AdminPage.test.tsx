@@ -76,6 +76,18 @@ function mockFetch() {
         json: async () => useAppStore.getState().adminState,
       };
     }
+    if (url.endsWith("/api/admin/queue")) {
+      return {
+        ok: true,
+        json: async () => ({
+          generated_at: 0,
+          queue_depth: 0,
+          active_batch: null,
+          next_batch: null,
+          items: [],
+        }),
+      };
+    }
     if (url.endsWith("/api/admin/config")) {
       return {
         ok: true,
@@ -234,4 +246,62 @@ test("form initializes from adminState.config once", () => {
 
   // The form should NOT have reset to 600 because hasInitialized guard
   expect(input.value).toBe("300");
+});
+
+test("defaults to the Overview tab", () => {
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(screen.getByRole("tab", { name: "Queue" })).toHaveAttribute(
+    "aria-selected",
+    "false",
+  );
+  expect(screen.getByLabelText(/Idle unload/i)).toBeInTheDocument();
+});
+
+test("switches to the Queue tab and back to Overview", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  await user.click(screen.getByRole("tab", { name: "Queue" }));
+
+  expect(screen.getByRole("tab", { name: "Queue" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(await screen.findByText(/Nothing queued/i)).toBeInTheDocument();
+  expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "admin-panel-queue");
+
+  await user.click(screen.getByRole("tab", { name: "Overview" }));
+
+  expect(screen.getByLabelText(/Idle unload/i)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing queued/i)).not.toBeInTheDocument();
+});
+
+test("tabs expose tablist semantics and support arrow-key navigation", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  expect(screen.getByRole("tablist", { name: /admin sections/i })).toBeInTheDocument();
+
+  const overviewTab = screen.getByRole("tab", { name: "Overview" });
+  overviewTab.focus();
+  await user.keyboard("{ArrowRight}");
+
+  expect(screen.getByRole("tab", { name: "Queue" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
 });

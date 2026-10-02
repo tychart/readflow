@@ -43,3 +43,22 @@ test("attaches the request path and status to the error", async () => {
   expect((error as ApiError).path).toBe("/api/jobs/job-1/activate");
   expect((error as ApiError).status).toBe(413);
 });
+
+test("getAdminQueue requests the admin queue endpoint", async () => {
+  const payload = {
+    generated_at: 0,
+    queue_depth: 0,
+    active_batch: null,
+    next_batch: null,
+    items: [],
+  };
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => payload,
+  }));
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  await expect(api.getAdminQueue()).resolves.toEqual(payload);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/queue");
+});
