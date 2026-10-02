@@ -6,6 +6,7 @@ coverage.xml
 htmlcov/
 playwright-report/
 test-results/
+.dev-logs/
 dist/
 build/
 __pycache__/

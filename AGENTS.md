@@ -154,13 +154,29 @@ repo/
       state/
       types/
     e2e/
+    bun.lock
     package.json
     vite.config.ts
+    vitest.config.ts
+  scripts/
+    dev.sh
   .github/workflows/ci.yml
   Makefile
+  package.json
   README.md
   AGENTS.md
 ```
+
+Toolchain split — do not mix these up:
+
+- **bun** owns every JS/TS task: `bun install`, `bun run <script>`, `bunx`, `web/bun.lock`.
+  There is no `package-lock.json` and no root `node_modules`; the JS project is entirely in
+  `web/`. The root `package.json` is a dependency-free alias file (`bun run dev` → `scripts/dev.sh`).
+- **uv** owns every Python task: `uv sync`, `uv run`.
+- Node is still required on PATH because the Vite/Vitest/Playwright binaries keep their
+  `#!/usr/bin/env node` shebang, and `bun run` executes `node_modules/.bin/*` shims with Node
+  by default (that is bun's documented behavior; `bun --bun run` forces bun's runtime instead).
+  Playwright in particular requires Node. Do not "fix" this by adding `--bun` everywhere.
 
 ## Backend architecture
 
@@ -213,6 +229,20 @@ Frontend stack:
 - Vite
 - Tailwind CSS v4
 - Zustand
+- bun as the package manager / script runner (Node runs the binaries; see the toolchain note above)
+
+Test-config ownership (do not duplicate this):
+
+- `web/vitest.config.ts` is the **only** place test config lives (`globals`, `setupFiles`,
+  `css`, `include`/`exclude`, v8 coverage). Vitest prefers it over `vite.config.ts`.
+- `web/vite.config.ts` must **not** contain a `test:` block. It used to, and it only
+  typechecked under npm's hoisted layout because vitest's `declare module "vite"`
+  augmentation happened to be in the program; under bun's layout the same file fails with
+  `TS2769: 'test' does not exist in type 'UserConfigExport'`. `npm run typecheck` was green
+  by accident, not by design.
+- `web/package.json` scripts: `test` = vitest watch, `test:run` = one shot, `test:coverage`
+  = `vitest run --coverage`. `@vitest/coverage-v8` is a devDependency because the coverage
+  step could not run without it (it was missing, so `--coverage` errored).
 
 ## Reader / Player Architecture
 
@@ -613,17 +643,57 @@ Frontend uses relative API URLs:
 
 Transport layer: `web/src/lib/transport.ts` (HTTP client), `web/src/lib/live-client.ts` (WebSocket).
 
-Current dev-server behavior:
+Dev-server behavior (this is the setup `scripts/dev.sh` relies on):
 
 - `web/vite.config.ts` defines an HTTP proxy for `/api`
 - `web/vite.config.ts` defines a WebSocket proxy for `/api/ws`
-- local dev is intended to work as a same-origin frontend talking to the backend through Vite
+- both proxy to `http://127.0.0.1:8000`, so the ports are effectively fixed
+- local dev is a same-origin frontend talking to the backend through Vite
 
 Important caveat:
 
 - if proxy behavior changes, remember that HTTP and WS proxying are both required
 - do not "fix" WS problems by hardcoding backend URLs into the frontend runtime unless the user explicitly wants that
 - the preferred architecture is relative frontend paths with proxy/reverse-proxy ownership of upstream routing
+
+## Local dev entry point: `scripts/dev.sh`
+
+The user asked for one command that runs the app locally during development, so this script —
+not `uvicorn` by hand, not `bun run dev` — is the canonical local run path. Keep it that way
+in docs and in any new tooling.
+
+Shape: `start` (default) · `restart` · `stop` · `status` · `logs` · `test` · `test-e2e` ·
+`lint` · `typecheck` · `help`, plus `--fake`/`--real`, `--no-server`, `--no-web`,
+`--no-follow`, `--access-log`.
+
+Design rules that are deliberate and easy to break:
+
+- **Provider defaults to `qwen` (real).** `--fake` (or `DEV_PROVIDER=fake`) is the opt-in for
+  fast, GPU-free runs; the env var is exported to the child process explicitly, so an
+  inherited value cannot leak the other way.
+- **Ports are hardcoded 8000/5173** and are *not* configurable on purpose: Vite's proxy
+  target is compiled against 8000, so an `--api-port` flag would silently desynchronize the
+  two halves. A busy port is reported (with `ss`-derived owner pid) and left alone.
+- **Never kill by pattern.** Only pids this script recorded are signalled, and each child is
+  started with `setsid` so `kill -TERM -<pid>` reaches `uv run` *and* the `uvicorn --reload`
+  child. Process groups are why `stop` cannot take out an unrelated dev server.
+- **`uv run` is used without `--no-sync` only when the venv has no flash-attn.** A sync prunes
+  undeclared packages; if the user has a locally built `flash-attn` (≈1h rebuild) the script
+  switches to `uv run --no-sync`. It also never syncs an existing `server/.venv` — only a
+  missing one, with `--extra dev --extra utils`.
+- **Signal handling is split.** `startup_signal` (installed before the first child) stops
+  everything if the user interrupts during startup; `cleanup` (installed before `follow`)
+  also removes the state file. `follow` backgrounds `tail -F` and `wait`s on it, because a
+  foreground pipeline defers the trap until tail exits on its own — which never happens.
+  An earlier version used a bare `wait` in cleanup, which hung forever once `tail` outlived
+  the script's own signal.
+- **Port probing uses `ss -ltnH "sport = :PORT"`,** not bash `/dev/tcp`: `/dev/tcp/::1/...`
+  is not parseable and Vite happily binds IPv6-only (`[::1]`), which made a real listener look
+  like a free port.
+- Status output distinguishes "ours" (recorded pid) from "up but not started here" — the
+  latter must never be presented as managed by the script.
+- Logs live in `.dev-logs/` (gitignored) and are tailed with coloured `[api]`/`[web]`
+  prefixes; `NO_COLOR=1` and non-TTY runs get plain output.
 
 ## Testing Strategy and Expectations
 
@@ -719,32 +789,46 @@ That is intentional.
 ### Install
 
 ```bash
-cd server
-uv sync --extra dev
-
-cd web
-npm ci
+make install        # bun install (web) + uv sync --extra dev --extra utils (server)
 ```
 
-### Run backend
+or per half:
+
+```bash
+cd web
+bun install
+
+cd server
+uv sync --extra dev --extra utils
+```
+
+### Run the whole app (the normal path)
+
+```bash
+scripts/dev.sh              # api + web, real Qwen3-TTS provider
+scripts/dev.sh --fake       # api + web, no model load, no GPU
+scripts/dev.sh status|logs|restart|stop
+```
+
+### Run backend alone
 
 ```bash
 cd server
-uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn main:app --reload --port 8000
 ```
 
 ### Run backend in fake mode
 
 ```bash
 cd server
-READFLOW_TTS_PROVIDER=fake uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+READFLOW_TTS_PROVIDER=fake uv run uvicorn main:app --reload --port 8000
 ```
 
-### Run frontend
+### Run frontend alone
 
 ```bash
 cd web
-npm run dev -- --host 0.0.0.0 --port 5173
+bun run dev
 ```
 
 ## Important Environment Variables
@@ -981,6 +1065,17 @@ Future agents should know that the following were created or materially changed 
   and per-chunk WebSocket events became summary + single-chunk deltas
 - e2e smoke suite repaired (stale selectors and version-less chunk fixtures that
   had left 3 of 4 tests failing on `main`)
+- bun-native toolchain (replacing npm repo-wide): `web/bun.lock` replaced
+  `package-lock.json`, the root `package.json` lost its `concurrently`/`wait-on`
+  dependencies (and the workspace), `web/package.json`'s `build` no longer shells out to
+  `npm`, Makefile/CI/README/AGENTS all speak `bun`, and CI uses `oven-sh/setup-bun`
+- `scripts/dev.sh`: one-command local stack (api + web, boxed status dashboard, coloured
+  log prefixes, `--fake` toggle, `status`/`logs`/`restart`/`stop`, and wrapper commands for
+  `make test|test-e2e|lint|typecheck`)
+- `web/vite.config.ts` lost its redundant `test:` block, making `web/vitest.config.ts` the
+  single source of truth for test config (this was a latent `npm`-only typecheck pass)
+- `@vitest/coverage-v8` added as a devDependency — `vitest run --coverage` (and therefore
+  CI's coverage step) previously failed with `Cannot find dependency '@vitest/coverage-v8'`
 
 ## Agent Workflow Checklist
 
@@ -999,7 +1094,7 @@ When making changes, use this checklist.
 - then run `make test`
 - then `make lint`
 - then `make typecheck`
-- if playback/media behavior changed, also run `npm run test:e2e` in `web/`
+- if playback/media behavior changed, also run `bun run test:e2e` in `web/`
 
 ### If you change Qwen/provider/model/runtime logic
 
@@ -1013,6 +1108,9 @@ When making changes, use this checklist.
 - be extremely careful with `flash-attn`
 - explain any change that could force a rebuild
 - do not surprise the user with a long compile unless it is necessary
+- keep the ownership split: bun for JS/TS (`web/bun.lock`), uv for Python (`server/uv.lock`)
+- never add an implicit `uv sync`/`uv run` that prunes an existing venv — `scripts/dev.sh`
+  already guards this, and `make install` is the explicit sync path
 
 ## Roadmap Direction
 
@@ -1034,6 +1132,8 @@ If you only remember a few things, remember these:
 - keep the frontend thin
 - keep the official Qwen integration aligned with the user's validated scripts
 - `flash-attn` is optional — provider falls back to SDPA when absent
+- bun is the package manager for all JS/TS, uv for all Python; do not reintroduce npm
+- `scripts/dev.sh` is the canonical way to run the app locally
 - the Docker build (`server/Dockerfile`) is the canonical production path
 - keep tests green and run them often
 - do not undo the async server test harness without very good reason
