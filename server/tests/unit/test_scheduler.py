@@ -289,7 +289,7 @@ def test_queue_snapshot_ranks_are_contiguous_and_priority_ordered(services):
     _add_chunk(services, active, "active two")
     _add_chunk(services, queued, "queued one")
 
-    snapshot = asyncio.run(services.scheduler.queue_snapshot())
+    snapshot = services.scheduler.queue_snapshot()
 
     assert [item.rank for item in snapshot.items] == [1, 2, 3]
     assert snapshot.items[0].priority_band == 0
@@ -302,7 +302,7 @@ def test_queue_snapshot_includes_text_and_estimated_duration(services):
     job = _create_job(services, title="snapshot text")
     chunk = _add_chunk(services, job, "A chunk of text for estimation.")
 
-    snapshot = asyncio.run(services.scheduler.queue_snapshot())
+    snapshot = services.scheduler.queue_snapshot()
     item = snapshot.items[0]
 
     assert item.text == chunk.text
@@ -329,7 +329,7 @@ def test_queue_snapshot_lists_version_history(services):
         parent_index=0,
     )
 
-    snapshot = asyncio.run(services.scheduler.queue_snapshot())
+    snapshot = services.scheduler.queue_snapshot()
     assert len(snapshot.items) == 1
     item = snapshot.items[0]
     assert item.version == 1
@@ -344,7 +344,7 @@ def test_queue_snapshot_marks_next_batch(services):
         _add_chunk(services, job, f"next batch chunk {index}")
     services.settings.runtime.batch_candidates_small_model = [2]
 
-    snapshot = asyncio.run(services.scheduler.queue_snapshot())
+    snapshot = services.scheduler.queue_snapshot()
 
     assert snapshot.next_batch is not None
     assert snapshot.next_batch.chunk_count == 2
@@ -357,7 +357,7 @@ def test_queue_snapshot_queue_depth_matches_manager(services):
     _add_chunk(services, job, "one")
     _add_chunk(services, job, "two")
 
-    snapshot = asyncio.run(services.scheduler.queue_snapshot())
+    snapshot = services.scheduler.queue_snapshot()
     assert snapshot.queue_depth == services.job_manager.queue_depth() == 2
 
 
@@ -431,3 +431,54 @@ def test_scheduler_requeues_chunks_dropped_by_partial_batch(services):
 
     statuses = [chunk.status for chunk in services.job_manager.get_job(job.id).chunks]
     assert statuses == [ChunkStatus.WRITTEN, ChunkStatus.WRITTEN, ChunkStatus.PLANNED]
+
+
+def test_queue_snapshot_never_calls_provider_memory_stats(services):
+    """Regression: awaiting provider memory stats queued behind an in-flight
+    synthesis (blocking for the whole batch) and yielded the event loop
+    mid-snapshot, so responses mixed pre- and post-batch state."""
+
+    async def exploding_memory_stats():
+        raise AssertionError("queue_snapshot must not read provider memory stats")
+
+    services.model_manager.memory_stats = exploding_memory_stats
+    job = _create_job(services, title="no memory stats")
+    _add_chunk(services, job, "a pending chunk")
+
+    snapshot = services.scheduler.queue_snapshot()
+
+    assert len(snapshot.items) == 1
+
+
+def test_queue_snapshot_only_returns_schedulable_statuses(services):
+    """A chunk that became `written` during a snapshot must never leak in."""
+    from app.jobs.models import ChunkStatus
+
+    job = _create_job(services, title="schedulable statuses")
+    _add_chunk(services, job, "planned")
+    rendering = _add_chunk(services, job, "rendering")
+    written = _add_chunk(services, job, "written")
+    rendering.status = ChunkStatus.RENDERING
+    written.status = ChunkStatus.WRITTEN
+
+    snapshot = services.scheduler.queue_snapshot()
+
+    assert all(item.status in {"planned", "queued", "rendering"} for item in snapshot.items)
+    assert snapshot.queue_depth == len(snapshot.items)
+    assert sum(1 for item in snapshot.items if item.is_rendering) == 1
+
+
+def test_queue_snapshot_reports_the_rendering_batch_while_in_flight(services):
+    from app.jobs.models import ChunkStatus
+
+    job = _create_job(services, title="in flight")
+    for index in range(3):
+        chunk = _add_chunk(services, job, f"rendering {index}")
+        chunk.status = ChunkStatus.RENDERING
+
+    snapshot = services.scheduler.queue_snapshot()
+
+    assert len(snapshot.items) == 3
+    assert snapshot.active_batch is not None
+    assert snapshot.active_batch.chunk_count == 3
+    assert all(item.is_rendering for item in snapshot.items)

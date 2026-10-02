@@ -444,4 +444,7 @@ test("surfaces queue load errors", async () => {
   await renderInspector();
 
   expect(await screen.findByText(/Backend offline/i)).toBeInTheDocument();
+  // A failed request must not be reported as an idle scheduler.
+  expect(screen.getByText(/Queue unavailable/i)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing queued/i)).not.toBeInTheDocument();
 });

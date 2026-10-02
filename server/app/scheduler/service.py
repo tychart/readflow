@@ -361,8 +361,17 @@ class SchedulerService:
             started_at=None,
         )
 
-    async def queue_snapshot(self) -> AdminQueueResponse:
+    def queue_snapshot(self) -> AdminQueueResponse:
         """Build the admin queue read-model.
+
+        Deliberately synchronous and free of provider calls. The real provider
+        runs synthesis on a worker thread, so awaiting `memory_stats()` here
+        would queue behind an in-flight batch and block for the entire synthesis
+        (the admin tab looked empty because its request never returned). That
+        await also yielded the event loop mid-snapshot, letting the scheduler
+        mutate chunk statuses between collection and serialization, which
+        produced self-inconsistent responses (e.g. `queue_depth: 0` alongside a
+        chunk already marked `written`). Everything below runs in one turn.
 
         Ordering, priority bands, and the predicted next batch all come from the
         same helpers the real scheduler uses, so the admin view cannot drift
@@ -370,9 +379,11 @@ class SchedulerService:
         """
         pending = self._pending_chunks_for_inspection()
         renderable = self._rank_renderable_chunks()
-        stats = await self._model_manager.memory_stats()
-        vram_total, vram_used = stats[1], stats[2]
-        _next_key, next_batch = self._select_next_batch(renderable, vram_used, vram_total)
+        # The next batch is a prediction. It is sized without live VRAM figures
+        # (that would require the blocking provider call described above); the
+        # real dispatch still applies the VRAM-aware downshift in
+        # `_render_next_batch`.
+        _next_key, next_batch = self._select_next_batch(renderable, 0, 0)
         next_batch_ids = {(chunk.job_id, chunk.index, chunk.version) for chunk in next_batch}
 
         items: list[QueueChunkResponse] = []

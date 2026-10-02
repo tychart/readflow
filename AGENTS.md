@@ -1024,6 +1024,16 @@ scheduler behavior debuggable, not just pretty.
   The scheduler emits one `scheduler_state` at batch start (in
   `_render_next_batch`) in addition to the end-of-tick one, so "rendering now"
   is observable while the batch is in flight.
+- **`queue_snapshot()` must stay synchronous and provider-free.** It used to
+  `await ModelManager.memory_stats()`, which on the real provider runs on the
+  synthesis worker thread and therefore queued *behind the in-flight batch*: the
+  endpoint took as long as the whole synthesis (the tab looked empty/stuck), and
+  the `await` yielded the event loop mid-snapshot so chunks mutated between
+  collection and serialization (`queue_depth: 0` next to a `written` chunk). It
+  now builds the whole response in one event-loop turn and sizes the predicted
+  `next_batch` without live VRAM figures (the real dispatch still applies the
+  VRAM downshift in `_render_next_batch`). `test_queue_snapshot_never_calls_provider_memory_stats`
+  and `test_admin_queue_does_not_depend_on_provider_memory_stats` pin this.
 
 ### Scheduler: partial batches are requeued (do not regress)
 

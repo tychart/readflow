@@ -522,9 +522,13 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         """Return the live synthesis queue for the admin inspector.
 
         Ordering, priority bands, and the predicted next batch come from the
-        scheduler itself, so this view mirrors the real dispatch order.
+        scheduler itself, so this view mirrors the real dispatch order. The
+        snapshot is synchronous on purpose: it must not await provider calls
+        (which queue behind an in-flight synthesis) and must not yield the event
+        loop partway through, or the response could mix pre- and post-batch
+        state.
         """
-        return await app_services.scheduler.queue_snapshot()
+        return app_services.scheduler.queue_snapshot()
 
     @router.get("/admin/state", response_model=AdminStateResponse)
     async def get_admin_state(app_services: AppServices = Depends(services)) -> AdminStateResponse:

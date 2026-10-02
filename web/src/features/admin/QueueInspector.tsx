@@ -324,7 +324,9 @@ export function QueueInspector() {
           </div>
           {items.length === 0 ? (
             <div className="px-4 py-12 text-center text-sm text-[var(--ink-secondary)]">
-              Nothing queued. The scheduler is idle.
+              {loadError
+                ? "Queue unavailable — the last request failed. Use Refresh to retry."
+                : "Nothing queued. The scheduler is idle."}
             </div>
           ) : (
             <div className="divide-y divide-[var(--line)]" role="list">

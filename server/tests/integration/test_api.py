@@ -710,3 +710,38 @@ async def test_admin_queue_reflects_reprocessed_chunk(client, services):
     item = items[0]
     assert item["version"] == 1
     assert [version["version"] for version in item["versions"]] == [0, 1]
+
+
+async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, services):
+    """The queue view must answer even while the provider is mid-synthesis.
+
+    `memory_stats()` is executed on the provider's worker thread, so awaiting it
+    here queued behind the batch and the endpoint never returned, which is why
+    the admin Queue tab looked empty. The snapshot must not touch it.
+    """
+
+    async def exploding_memory_stats():
+        raise AssertionError("admin queue must not read provider memory stats")
+
+    services.model_manager.memory_stats = exploding_memory_stats
+
+    created = await client.post(
+        "/api/jobs", data={"text": "Queue must answer. " * 20, "voice_id": "suzy"}
+    )
+    job_id = created.json()["job"]["id"]
+    job = services.job_manager.get_job(job_id)
+    services.job_manager.add_planned_chunk(
+        job_id,
+        text="A pending chunk while the model is busy.",
+        char_start=0,
+        char_end=40,
+        plan_version=job.plan_version,
+        voice_id=job.voice_id,
+    )
+
+    response = await client.get("/api/admin/queue")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["status"] == "planned"
