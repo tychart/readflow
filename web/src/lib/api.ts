@@ -108,11 +108,17 @@ export const api = {
   resumeJob: (jobId: string) =>
     request<JobSummary>(apiPath(`/jobs/${jobId}/resume`), { method: "POST" }),
 
-  /** Updates the voice for future chunks of a job. */
-  updateJobVoice: (jobId: string, voiceId: string) =>
+  /**
+   * Changes the voice for chunks that are not rendered yet.
+   *
+   * `rerenderWritten` invalidates the whole job for one consistent take, which
+   * also resets playback (the bumped `audio_epoch` makes the reader drop its
+   * buffered media stream).
+   */
+  updateJobVoice: (jobId: string, voiceId: string, rerenderWritten = false) =>
     request<JobDetail>(apiPath(`/jobs/${jobId}/voice`), {
       method: "POST",
-      body: JSON.stringify({ voice_id: voiceId }),
+      body: JSON.stringify({ voice_id: voiceId, rerender_written: rerenderWritten }),
     }),
 
   /** Updates playback position. */

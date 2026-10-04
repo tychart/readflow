@@ -1232,17 +1232,45 @@ Jobs, telemetry, and runtime admin changes are in memory only.
 
 Do not assume restart persistence.
 
-### 5. Voice switching semantics are versioned and one-way
+### 5. Voice switching re-queues pending chunks in place (and can re-render everything)
 
-Voice changes affect future not-yet-started chunks only.
+A voice change is **not** a discard. `JobManager.set_voice(job_id, voice_id,
+rerender_written=False)`:
 
-The implemented behavior is:
+- bumps `plan_version`
+- re-points every non-deprecated chunk in `_REVOICEABLE_STATUSES`
+  (planned/queued/stale/failed/reprocessing, including exhausted retries) at the
+  new voice **in place** — same index, same text, same timeline slot — and puts
+  it back in `PLANNED` with a reset attempt budget
+- leaves already-`WRITTEN` chunks alone, so they keep the voice they were
+  actually rendered with (a partial change can leave a job mixed-voice)
+- never mutates a `RENDERING` chunk. For a partial change it pins the in-flight
+  chunk to the current `plan_version` so it is written as-is (old voice); for a
+  full re-render it leaves the old `plan_version` in place, and
+  `_requeue_superseded_chunk` (called from every terminal/requeue transition in
+  `JobManager`) re-queues it under the current voice instead of writing it.
 
-- bump `plan_version`
-- mark queued/planned future chunks stale
-- leave already written chunks alone
+The old implementation flipped those chunks to `STALE` and nothing ever
+re-planned them (the planner cursor only moves forward), so their text was
+silently dropped and rendering "started" at the next new chunk. That behavior
+must not come back.
 
-Do not mutate completed audio retroactively unless the user explicitly wants a new model.
+`rerender_written=True` (reader checkbox "Also re-render already-rendered
+chunks") additionally invalidates every chunk, resets the playback/timeline
+totals, and increments `Job.audio_epoch`. That epoch is part of the segment and
+peaks URLs and of the player's `streamKey` (`web/src/lib/media-source.ts`),
+which is what makes the browser drop its buffered MSE stream and re-fetch
+instead of replaying the superseded take. A partial change does **not** bump the
+epoch, so it does not force a needless re-download.
+
+`POST /api/jobs/{id}/voice` takes `{"voice_id": str, "rerender_written": bool}`.
+The reader always confirms a voice change and names how many chunks it will
+rebuild (`ReaderSidebar.tsx`).
+
+Also fixed alongside: `add_planned_chunk` derives the next index from
+`max(index)+1`, not `len(job.chunks)`. Reprocessing appends a second record for
+an existing index, so `len` outran the real index and the planner skipped
+numbers, leaving a phantom gap.
 
 ### 6. Stream events carry summaries, not the document
 
@@ -1355,7 +1383,9 @@ Reader page:
 - jump playback to any chunk straight from its block in the text
 - a chunk conveyor (sub playbar) for thumb-sized scrubbing, draggable and flickable
 - monitor buffer progress
-- switch future voice
+- change voice: pending chunks are rebuilt with the new voice in place; a confirm
+  dialog reports the count, and an "Also re-render already-rendered chunks"
+  checkbox rebuilds the whole job for one consistent take
 - inspect chunk statuses
 - use a custom segmented timeline (the whole-document overview)
 - support gap-aware playback and manual jump-to-later-ready chunks

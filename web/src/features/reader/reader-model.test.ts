@@ -22,6 +22,7 @@ function buildManifest(chunks = buildChunks(2)): JobManifest {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
     chunks,
+    audio_epoch: 0,
   };
 }
 
@@ -85,6 +86,19 @@ describe("buildManifestFromPatch", () => {
     });
     expect(next?.chunks).toHaveLength(3);
     expect(next?.chunks[1]?.segment_url).toBe("/api/jobs/job-1/chunks/1?v=2");
+  });
+
+  test("keeps the audio epoch across a per-chunk patch", () => {
+    const next = buildManifestFromPatch(buildManifest(), { id: "job-1" } as never, buildChunk(0));
+    expect(next?.audio_epoch).toBe(0);
+  });
+
+  test("takes the patch's audio epoch on a full re-render", () => {
+    const next = buildManifestFromPatch(buildManifest(), {
+      id: "job-1",
+      audio_epoch: 3,
+    } as never);
+    expect(next?.audio_epoch).toBe(3);
   });
 });
 

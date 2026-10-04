@@ -43,13 +43,17 @@ export interface JobDetail extends JobSummary {
   plan_version: number;
   chunks: Chunk[];
   failed_reason: string | null;
-  active_chunk_version: Record<number, number>;
+  active_chunk_version?: Record<number, number>;
+  /** Bumped when already-rendered audio is invalidated (a full re-render). */
+  audio_epoch: number;
 }
 
 export interface JobManifest {
   mime_type: string;
   init_segment_url: string | null;
   chunks: Chunk[];
+  /** Take identity of the audio; part of the player's stream key. */
+  audio_epoch: number;
 }
 
 export interface Voice {

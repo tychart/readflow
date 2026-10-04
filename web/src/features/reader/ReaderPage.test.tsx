@@ -72,8 +72,11 @@ function buildReaderJob(
       peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
+      char_start: index * 20,
+      char_end: index * 20 + 19,
     })),
     failed_reason: null,
+    audio_epoch: 0,
   };
 }
 
@@ -81,6 +84,7 @@ function buildManifest(chunkCount: number) {
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
+    audio_epoch: 0,
     chunks: Array.from({ length: chunkCount }, (_, index) => ({
       index,
       status: "written" as const,
@@ -93,6 +97,8 @@ function buildManifest(chunkCount: number) {
       peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
+      char_start: index * 20,
+      char_end: index * 20 + 19,
     })),
   };
 }
@@ -113,6 +119,7 @@ function buildReaderJobWithChunks(
       .reduce((total, chunk) => total + chunk.duration_seconds, 0),
     total_versioned_chunks: chunks.length,
     total_versioned_completed: writtenChunkCount,
+    audio_epoch: 0,
     chunks,
   };
 }
@@ -127,6 +134,7 @@ function buildManifestFromChunks(chunks: Chunk[]) {
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
+    audio_epoch: 0,
     chunks: enriched,
   };
 }
@@ -177,7 +185,7 @@ test("loads a job and sends play plus voice actions", async () => {
   const user = userEvent.setup();
   seedStore();
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
       return { ok: true, json: async () => buildReaderJob(1) };
@@ -204,6 +212,7 @@ test("loads a job and sends play plus voice actions", async () => {
         }),
       };
     }
+    void init;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   });
   global.fetch = fetchMock as typeof fetch;
@@ -219,9 +228,87 @@ test("loads a job and sends play plus voice actions", async () => {
   await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
   await user.click(screen.getByRole("button", { name: "Play" }));
   await user.selectOptions(screen.getByRole("combobox"), "howard");
+  // Every voice change is confirmed: the dialog names what will be rebuilt.
+  await user.click(await screen.findByRole("button", { name: "Change voice" }));
 
   expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/voice", expect.any(Object));
+  const voiceCall = fetchMock.mock.calls.find(([input]) =>
+    String(input).endsWith("/api/jobs/job-1/voice"),
+  );
+  expect(JSON.parse(String(voiceCall?.[1]?.body))).toEqual({
+    voice_id: "howard",
+    rerender_written: false,
+  });
+});
+
+test("full re-render rebuilds written audio and resets playback", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  const writtenChunk = buildReaderJob(1).chunks[0];
+  const plannedChunks = [
+    { ...writtenChunk, status: "planned" as const, segment_url: null, duration_seconds: 0 },
+  ];
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(1) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(1) };
+    }
+    if (url.endsWith("/activate")) {
+      return { ok: true, json: async () => buildReaderJob(1, "playing") };
+    }
+    if (url.endsWith("/pause")) {
+      return { ok: true, json: async () => buildReaderJob(1, "paused") };
+    }
+    if (url.endsWith("/playback")) {
+      return { ok: true, json: async () => buildReaderJob(1, "playing") };
+    }
+    if (url.endsWith("/voice")) {
+      return {
+        ok: true,
+        json: async () => ({
+          ...buildReaderJobWithChunks(plannedChunks, "queued"),
+          voice_id: "howard",
+          plan_version: 2,
+          audio_epoch: 1,
+        }),
+      };
+    }
+    void init;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  });
+  global.fetch = fetchMock as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
+  await user.click(screen.getByRole("button", { name: "Play" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument());
+
+  await user.click(screen.getByLabelText(/Also re-render already-rendered chunks/));
+  await user.selectOptions(screen.getByRole("combobox"), "howard");
+  await user.click(await screen.findByRole("button", { name: "Change voice" }));
+
+  const voiceCall = fetchMock.mock.calls.find(([input]) =>
+    String(input).endsWith("/api/jobs/job-1/voice"),
+  );
+  expect(JSON.parse(String(voiceCall?.[1]?.body))).toEqual({
+    voice_id: "howard",
+    rerender_written: true,
+  });
+  // The whole job was invalidated, so the reader must not keep claiming to play.
+  await waitFor(() => expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument());
 });
 
 test("redirects to the jobs page when the job id does not exist", async () => {

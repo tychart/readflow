@@ -42,12 +42,16 @@ class JobDetailResponse(JobSummaryResponse):
     plan_version: int
     chunks: list[ChunkResponse]
     failed_reason: str | None
+    # Increments when already-rendered audio is invalidated (full re-render) so
+    # the reader can drop its buffered media stream instead of replaying it.
+    audio_epoch: int = 0
 
 
 class JobManifestResponse(BaseModel):
     mime_type: str
     init_segment_url: str | None
     chunks: list[ChunkResponse]
+    audio_epoch: int = 0
 
 
 class CreateJobResponse(BaseModel):
@@ -62,6 +66,10 @@ class VoiceResponse(BaseModel):
 
 class UpdateVoiceRequest(BaseModel):
     voice_id: str
+    # Re-render chunks that already have audio, for a single consistent take.
+    # Omitted/false keeps the already-rendered audio and only rebuilds the
+    # chunks that are still pending.
+    rerender_written: bool = False
 
 
 class ChunkReprocessRequest(BaseModel):
@@ -287,8 +295,13 @@ def chunk_to_response(job: Job, chunk: ChunkRecord) -> ChunkResponse:
     segment_url = None
     peaks_url = None
     if chunk.segment_path:
-        segment_url = f"/api/jobs/{job.id}/chunks/{chunk.index}"
-        peaks_url = f"/api/jobs/{job.id}/chunks/{chunk.index}/peaks"
+        # The take identity is part of the URL: `version` changes on a chunk
+        # reprocess and `audio_epoch` changes when a full re-render invalidates
+        # the whole job. Without it the browser could serve/keep the previous
+        # take from cache or its MSE buffer.
+        take = f"v={chunk.version}&e={job.audio_epoch}"
+        segment_url = f"/api/jobs/{job.id}/chunks/{chunk.index}?{take}"
+        peaks_url = f"/api/jobs/{job.id}/chunks/{chunk.index}/peaks?{take}"
     return ChunkResponse(
         index=chunk.index,
         status=chunk.status,
@@ -332,4 +345,5 @@ def job_to_detail(job: Job) -> JobDetailResponse:
             for chunk in sorted(job.chunks, key=lambda item: item.index)
         ],
         failed_reason=job.failed_reason,
+        audio_epoch=job.audio_epoch,
     )

@@ -257,7 +257,12 @@ export function useMediaSourcePlayer({
     playbackRate: 1,
   });
 
-  const streamKey = manifest ? `${jobId}:${manifest.mime_type}:${playbackAnchorIndex}` : null;
+  // A full re-render overwrites already-buffered segments, and MSE has no way
+  // to notice. `audio_epoch` is therefore part of the key so the stream is torn
+  // down and rebuilt from the anchor instead of replaying the superseded take.
+  const streamKey = manifest
+    ? `${jobId}:${manifest.mime_type}:${manifest.audio_epoch}:${playbackAnchorIndex}`
+    : null;
   const mimeType = manifest?.mime_type ?? null;
   const initSegmentUrl = manifest?.init_segment_url ?? null;
   const renderedDurationSeconds = useMemo(

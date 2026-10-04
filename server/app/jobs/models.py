@@ -98,6 +98,11 @@ class Job:
     voice_id: str
     language: str = "English"
     plan_version: int = 1
+    # Bumped when already-rendered audio is invalidated (a full voice
+    # re-render). It is surfaced in the media/peaks URLs and in the reader's
+    # player stream key so the browser drops its buffered MSE stream and
+    # re-fetches instead of continuing to play the superseded take.
+    audio_epoch: int = 0
     status: JobStatus = JobStatus.QUEUED
     is_active_listening: bool = False
     submitted_at: float = field(default_factory=time)

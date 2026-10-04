@@ -63,6 +63,9 @@ export function buildManifestFromPatch(
     mime_type: nextMimeType,
     init_segment_url: nextInitSegmentUrl,
     chunks: nextChunks,
+    // Carried forward from the previous manifest unless the patch itself is a
+    // full detail payload that bumped it (a full re-render).
+    audio_epoch: patch.audio_epoch ?? previousManifest?.audio_epoch ?? 0,
   } satisfies JobManifest;
 }
 
@@ -231,6 +234,7 @@ export function buildStreamManifest(
     mime_type: fullManifest.mime_type,
     init_segment_url: fullManifest.init_segment_url,
     chunks: normalizedChunks,
+    audio_epoch: fullManifest.audio_epoch,
   };
 }
 

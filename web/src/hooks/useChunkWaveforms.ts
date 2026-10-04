@@ -21,15 +21,24 @@ export function parsePeaks(data: unknown): Float32Array | null {
 }
 
 /**
+ * Identity of the peaks for one chunk. Includes the take params in `peaks_url`
+ * (chunk version + job audio epoch), so a reprocess or a full re-render
+ * re-fetches instead of keeping peaks for superseded audio.
+ */
+function peaksKey(chunk: Chunk): string {
+  return `${chunk.version}:${chunk.peaks_url ?? ""}`;
+}
+
+/**
  * useChunkWaveforms — fetches and caches per-chunk waveform peaks for the
  * static reader playbar.
  *
  * The hook owns the whole analysis pipeline:
  * - watches written chunks for `peaks_url`
- * - fetches peaks JSON once per (chunk index, version)
- * - re-fetches when a chunk is reprocessed (version bump); the stale peaks
- *   are dropped immediately so the chunk renders as a placeholder until the
- *   fresh fetch completes
+ * - fetches peaks JSON once per (chunk index, take identity)
+ * - re-fetches when a chunk is reprocessed (version bump) or the job is
+ *   re-rendered (audio epoch); the stale peaks are dropped immediately so the
+ *   chunk renders as a placeholder until the fresh fetch completes
  * - sequential FIFO processing keeps server load predictable
  * - aborts in-flight fetches on unmount
  *
@@ -38,7 +47,7 @@ export function parsePeaks(data: unknown): Float32Array | null {
  * timeline renders dim placeholders for them until the fetch completes.
  */
 export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
-  const versionsRef = useRef(new Map<number, number>());
+  const fetchedRef = useRef(new Map<number, string>());
   const inflightRef = useRef(new Set<number>());
   const queueRef = useRef<number[]>([]);
   const controllersRef = useRef(new Map<number, AbortController>());
@@ -62,7 +71,7 @@ export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
           if (!response.ok) continue;
           const peaks = parsePeaks(await response.json());
           if (peaks) {
-            versionsRef.current.set(index, chunk.version);
+            fetchedRef.current.set(index, peaksKey(chunk));
             setWaveforms((prev) => {
               const next = new Map(prev);
               next.set(index, peaks);
@@ -84,7 +93,7 @@ export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
   const enqueue = useCallback(() => {
     for (const chunk of chunksRef.current) {
       if (!chunk.peaks_url) continue;
-      if (versionsRef.current.get(chunk.index) === chunk.version) continue;
+      if (fetchedRef.current.get(chunk.index) === peaksKey(chunk)) continue;
       if (inflightRef.current.has(chunk.index)) continue;
       if (!queueRef.current.includes(chunk.index)) queueRef.current.push(chunk.index);
     }
@@ -98,14 +107,14 @@ export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
   // chunks that disappeared or whose version changed (they re-render as
   // placeholders until the fresh fetch completes), then enqueue work.
   useEffect(() => {
-    const active = new Map<number, number>();
+    const active = new Map<number, string>();
     for (const chunk of chunks) {
-      if (chunk.peaks_url) active.set(chunk.index, chunk.version);
+      if (chunk.peaks_url) active.set(chunk.index, peaksKey(chunk));
     }
     setWaveforms((prev) => {
       const next = new Map<number, Float32Array>();
-      for (const [index, version] of active) {
-        if (versionsRef.current.get(index) === version) {
+      for (const [index, key] of active) {
+        if (fetchedRef.current.get(index) === key) {
           const peaks = prev.get(index);
           if (peaks) next.set(index, peaks);
         }

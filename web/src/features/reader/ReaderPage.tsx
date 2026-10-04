@@ -709,10 +709,20 @@ export function ReaderPage() {
     }
   }, [downloadableChunks.length, job]);
 
-  const handleVoiceChange = async (voiceId: string) => {
+  const handleVoiceChange = async (voiceId: string, rerenderWritten = false) => {
     if (!job) return;
     try {
-      const nextJob = await api.updateJobVoice(job.id, voiceId);
+      const nextJob = await api.updateJobVoice(job.id, voiceId, rerenderWritten);
+      if (rerenderWritten) {
+        // Every chunk was invalidated so the old take is gone. Reset the local
+        // playback state to match: the bumped audio epoch tears the MSE stream
+        // down, and these are the reader-side equivalents (no autoplay into an
+        // empty stream, playhead back at the start).
+        setPlayIntent(false);
+        pausePlayback();
+        setSeekOverride(null);
+        setPlaybackAnchorIndex(0);
+      }
       applyJobPatch(nextJob);
       setError(null);
     } catch (voiceError) {

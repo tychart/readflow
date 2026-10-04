@@ -49,6 +49,7 @@ export function buildJobDetail(overrides: Partial<JobDetail> = {}): JobDetail {
     chunks,
     failed_reason: null,
     active_chunk_version: {},
+    audio_epoch: 0,
     ...overrides,
   };
 }

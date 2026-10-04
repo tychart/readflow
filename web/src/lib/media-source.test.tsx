@@ -27,6 +27,7 @@ function buildPendingManifest(): JobManifest {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: null,
     chunks: [],
+    audio_epoch: 0,
   };
 }
 

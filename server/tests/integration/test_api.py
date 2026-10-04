@@ -64,10 +64,16 @@ async def test_create_job_and_fetch_manifest(client, services):
     manifest = manifest_response.json()
     assert manifest["mime_type"].startswith("audio/mp4")
     assert manifest["init_segment_url"] is not None
+    assert manifest["audio_epoch"] == 0
     written = [chunk for chunk in manifest["chunks"] if chunk["status"] == "written"]
     assert written, "expected at least one written chunk"
     chunk = written[0]
-    assert chunk["peaks_url"] == f"/api/jobs/{job['id']}/chunks/{chunk['index']}/peaks"
+    # The take identity is in the URL so a reprocess/re-render cannot be served
+    # from the browser's cache.
+    assert chunk["peaks_url"] == (
+        f"/api/jobs/{job['id']}/chunks/{chunk['index']}/peaks"
+        f"?v={chunk['version']}&e={manifest['audio_epoch']}"
+    )
 
     peaks_response = await client.get(chunk["peaks_url"])
     assert peaks_response.status_code == 200
@@ -311,6 +317,72 @@ async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_
     assert response.json()["detail"] == "No contiguous rendered audio is ready"
 
 
+async def test_update_voice_requeues_pending_chunks_instead_of_discarding_them(client, services):
+    job = services.job_manager.create_job(
+        source_text="One. Two.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+    )
+    written = services.job_manager.add_planned_chunk(
+        job.id, text="One.", char_start=0, char_end=4, plan_version=1, voice_id="suzy"
+    )
+    pending = services.job_manager.add_planned_chunk(
+        job.id, text="Two.", char_start=5, char_end=9, plan_version=1, voice_id="suzy"
+    )
+    services.job_manager.mark_chunk_written(
+        written, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
+    )
+
+    response = await client.post(f"/api/jobs/{job.id}/voice", json={"voice_id": "howard"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["voice_id"] == "howard"
+    assert body["audio_epoch"] == 0
+    chunks = {chunk["index"]: chunk for chunk in body["chunks"]}
+    # Already-rendered audio keeps the voice it was rendered with.
+    assert chunks[written.index]["status"] == "written"
+    assert chunks[written.index]["voice_id"] == "suzy"
+    # The pending chunk is rebuilt with the new voice, not dropped.
+    assert chunks[pending.index]["status"] == "planned"
+    assert chunks[pending.index]["voice_id"] == "howard"
+
+
+async def test_update_voice_can_rerender_written_audio_for_one_consistent_take(client, services):
+    job = services.job_manager.create_job(
+        source_text="One finished chunk.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+    )
+    chunk = services.job_manager.add_planned_chunk(
+        job.id,
+        text="One finished chunk.",
+        char_start=0,
+        char_end=18,
+        plan_version=1,
+        voice_id="suzy",
+    )
+    services.job_manager.mark_chunk_written(
+        chunk, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
+    )
+
+    response = await client.post(
+        f"/api/jobs/{job.id}/voice",
+        json={"voice_id": "howard", "rerender_written": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["voice_id"] == "howard"
+    assert body["audio_epoch"] == 1
+    assert body["total_chunks_completed"] == 0
+    assert body["chunks"][0]["status"] == "planned"
+    assert body["chunks"][0]["voice_id"] == "howard"
+    assert body["chunks"][0]["segment_url"] is None
+
+
 async def test_create_job_with_custom_model_id(client, services):
     response = await client.post(
         "/api/jobs",
@@ -548,7 +620,10 @@ async def test_chunk_events_carry_summary_and_the_single_chunk(client, services)
     assert job["id"] == job_id
     assert chunk["index"] == payload["chunk_index"]
     assert chunk["status"] == "written"
-    assert chunk["segment_url"] == f"/api/jobs/{job_id}/chunks/{chunk['index']}"
+    detail = (await client.get(f"/api/jobs/{job_id}")).json()
+    assert chunk["segment_url"] == (
+        f"/api/jobs/{job_id}/chunks/{chunk['index']}?v={chunk['version']}&e={detail['audio_epoch']}"
+    )
 
 
 async def test_activation_endpoints_return_summaries(client):

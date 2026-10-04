@@ -1,8 +1,28 @@
+import { useState } from "react";
 import { useShallow } from "zustand/shallow";
 
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useAppStore } from "../../state/store";
-import type { Chunk, JobDetail } from "../../types/api";
+import type { Chunk, ChunkStatus, JobDetail } from "../../types/api";
 import { getChunkText, getLatestVersion, getRetryCount } from "./chunk-utils";
+
+/**
+ * States a partial voice change can rebuild. Mirrors the backend's
+ * `_REVOICEABLE_STATUSES`; `rendering` is deliberately excluded because the
+ * worker has already fetched the old voice prompt for the in-flight batch.
+ */
+const REVOICEABLE_STATUSES: ReadonlySet<ChunkStatus> = new Set([
+  "planned",
+  "queued",
+  "stale",
+  "failed",
+  "reprocessing",
+  "max_retries_exceeded",
+]);
+
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -36,7 +56,7 @@ export interface ReaderSidebarProps {
   reprocessError: string | null;
 
   /* ── Handlers ── */
-  onVoiceChange: (voiceId: string) => void;
+  onVoiceChange: (voiceId: string, rerenderWritten: boolean) => void;
   onVersionChange: (chunkIndex: number, version: number) => void;
   onReprocess: (chunkIndex: number, newText?: string) => void;
   onStartEdit: (chunk: Chunk) => void;
@@ -137,6 +157,18 @@ export function ReaderSidebar({
         isSocketStale: state.isSocketStale,
       })),
     );
+
+  const [rerenderWritten, setRerenderWritten] = useState(false);
+  const [pendingVoiceId, setPendingVoiceId] = useState<string | null>(null);
+
+  const writtenChunkCount = activeChunks.filter((chunk) => chunk.status === "written").length;
+  const pendingRebuildCount = activeChunks.filter((chunk) =>
+    REVOICEABLE_STATUSES.has(chunk.status),
+  ).length;
+  const willRerenderWritten = rerenderWritten && writtenChunkCount > 0;
+  const pendingVoiceLabel = pendingVoiceId
+    ? (voices.find((voice) => voice.id === pendingVoiceId)?.display_name ?? pendingVoiceId)
+    : "";
 
   /* ── Render chunk detail panel ────────────────────────── */
   const renderDetailPanel = () => {
@@ -291,7 +323,7 @@ export function ReaderSidebar({
         <select
           className="w-full rounded-md border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink-primary)]"
           id="voice-change-select"
-          onChange={(event) => void onVoiceChange(event.target.value)}
+          onChange={(event) => setPendingVoiceId(event.target.value)}
           value={job?.voice_id ?? ""}
         >
           {voices.map((voice) => (
@@ -300,7 +332,54 @@ export function ReaderSidebar({
             </option>
           ))}
         </select>
+        <label className="mt-3 flex items-start gap-2 text-xs text-[var(--ink-secondary)]">
+          <input
+            checked={rerenderWritten}
+            className="mt-0.5"
+            disabled={writtenChunkCount === 0}
+            id="voice-rerender-written"
+            onChange={(event) => setRerenderWritten(event.target.checked)}
+            type="checkbox"
+          />
+          <span>
+            Also re-render already-rendered chunks
+            {writtenChunkCount > 0 ? ` (${writtenChunkCount})` : ""}
+          </span>
+        </label>
+        <p className="mt-1 text-[11px] leading-snug text-[var(--ink-secondary)]">
+          Off keeps the audio you already have and only rebuilds what is still pending. On produces
+          one consistent take and resets playback.
+        </p>
       </div>
+
+      {pendingVoiceId ? (
+        <ConfirmDialog
+          confirmLabel="Change voice"
+          description={
+            willRerenderWritten
+              ? `All ${pluralize(activeChunks.length, "chunk")} will be re-rendered with ` +
+                `${pendingVoiceLabel}, including the ${pluralize(writtenChunkCount, "chunk")} ` +
+                "that already have audio. Playback resets to the start and the current audio is " +
+                "replaced."
+              : pendingRebuildCount > 0
+                ? `${pluralize(pendingRebuildCount, "chunk")} that are not rendered yet will be ` +
+                  `rebuilt with ${pendingVoiceLabel}, and are retried if they previously failed. ` +
+                  `${pluralize(writtenChunkCount, "chunk")} that already have audio keep the ` +
+                  "current voice."
+                : `Nothing is waiting to be rendered, so only future chunks will use ` +
+                  `${pendingVoiceLabel}. The ${pluralize(writtenChunkCount, "chunk")} that ` +
+                  "already have audio keep the current voice."
+          }
+          onCancel={() => setPendingVoiceId(null)}
+          onConfirm={() => {
+            const target = pendingVoiceId;
+            setPendingVoiceId(null);
+            setRerenderWritten(false);
+            if (target) onVoiceChange(target, willRerenderWritten);
+          }}
+          title={`Change voice to ${pendingVoiceLabel}?`}
+        />
+      ) : null}
 
       {/* Live diagnostics (collapsible) */}
       <details className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">

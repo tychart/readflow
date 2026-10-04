@@ -278,6 +278,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                 chunk_to_response(job, chunk)
                 for chunk in sorted(job.chunks, key=lambda item: item.index)
             ],
+            audio_epoch=job.audio_epoch,
         )
 
     @router.post("/jobs/{job_id}/chunks/{chunk_index}/reprocess", response_model=JobDetailResponse)
@@ -459,9 +460,17 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         request: UpdateVoiceRequest,
         app_services: AppServices = Depends(services),
     ) -> JobDetailResponse:
+        """Change the voice for chunks that are still pending.
+
+        With `rerender_written` the whole job is invalidated for a single
+        consistent take, which also resets playback (the reader drops its
+        buffered stream via the bumped `audio_epoch`).
+        """
         try:
             app_services.voice_registry.get_voice(request.voice_id)
-            job = app_services.job_manager.set_voice(job_id, request.voice_id)
+            job = app_services.job_manager.set_voice(
+                job_id, request.voice_id, rerender_written=request.rerender_written
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         detail = job_to_detail(job)

@@ -7,6 +7,19 @@ from uuid import uuid4
 from app.chunking.normalize import normalize_source_text
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 
+# Chunk states a partial voice change can re-point at the new voice. `WRITTEN`
+# keeps its rendered audio and `RENDERING` is reconciled when the batch returns.
+_REVOICEABLE_STATUSES = frozenset(
+    {
+        ChunkStatus.PLANNED,
+        ChunkStatus.QUEUED,
+        ChunkStatus.STALE,
+        ChunkStatus.FAILED,
+        ChunkStatus.REPROCESSING,
+        ChunkStatus.MAX_RETRIES_EXCEEDED,
+    }
+)
+
 
 class JobManager:
     def __init__(self) -> None:
@@ -97,16 +110,96 @@ class JobManager:
         job.updated_at = time()
         return job
 
-    def set_voice(self, job_id: str, voice_id: str) -> Job:
+    def set_voice(self, job_id: str, voice_id: str, *, rerender_written: bool = False) -> Job:
+        """Re-voice the chunks that have not been rendered yet.
+
+        A voice change is not a discard: every chunk the scheduler can still act
+        on is re-pointed at the new voice and put back in the queue, so it is
+        re-rendered rather than orphaned. Previously this only flipped those
+        chunks to `STALE`; nothing ever re-planned them (the planner cursor only
+        moves forward), so their text was silently dropped.
+
+        Already-`WRITTEN` chunks keep the voice they were actually rendered
+        with, which is why a partial change can leave a job with two voices.
+        Pass `rerender_written=True` to invalidate the whole job for one
+        consistent take; that also bumps `audio_epoch` so the reader rebuilds
+        its media stream.
+
+        A chunk is never mutated while the worker is synthesizing it. An
+        in-flight chunk keeps the batch it belongs to and is reconciled when it
+        comes back: for a partial change it is pinned to the current plan
+        generation and written as the old voice, and for a full re-render it is
+        requeued with the new voice (see `_requeue_superseded_chunk`).
+        """
         job = self.get_job(job_id)
+        if job.voice_id == voice_id and not rerender_written:
+            return job
         job.voice_id = voice_id
         job.plan_version += 1
+        now = time()
+        requeued = False
         for chunk in job.chunks:
-            if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED}:
-                chunk.status = ChunkStatus.STALE
-                chunk.updated_at = time()
-        job.updated_at = time()
+            if chunk.deprecated:
+                continue
+            if chunk.status == ChunkStatus.RENDERING:
+                if not rerender_written:
+                    # The worker already fetched the old voice prompt for this
+                    # batch; pin the chunk to the current generation so it is
+                    # written as-is instead of being requeued.
+                    chunk.plan_version = job.plan_version
+                    chunk.updated_at = now
+                # A full re-render leaves the old plan version in place; the
+                # chunk is requeued with the new voice once the batch returns.
+                continue
+            if rerender_written or chunk.status in _REVOICEABLE_STATUSES:
+                self._apply_voice(job, chunk, now)
+                requeued = True
+        if rerender_written:
+            job.audio_epoch += 1
+            job.completed_seconds = 0.0
+            job.buffered_seconds = 0.0
+            job.total_chunks_completed = 0
+            job.total_versioned_completed = 0
+            job.playback_state.current_time_seconds = 0.0
+            job.playback_state.is_playing = False
+            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                job.status = JobStatus.QUEUED
+        elif requeued and job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            # A finished job with a failed gap can still have work to redo, so
+            # it must leave the terminal state or the reader treats it as local
+            # and stops watching for the replacement chunks.
+            job.status = JobStatus.QUEUED
+        job.updated_at = now
         return job
+
+    def _apply_voice(self, job: Job, chunk: ChunkRecord, now: float) -> None:
+        """Re-point one queued chunk at a voice and return it to the queue."""
+        chunk.voice_id = job.voice_id
+        chunk.plan_version = job.plan_version
+        chunk.status = ChunkStatus.PLANNED
+        chunk.attempts = 0
+        chunk.error = None
+        chunk.reprocessing = False
+        # Any previously packaged take for this index is now superseded; the
+        # reader only links a segment while the chunk is `WRITTEN`.
+        chunk.duration_seconds = 0.0
+        chunk.start_seconds = 0.0
+        chunk.segment_path = None
+        chunk.wav_path = None
+        chunk.updated_at = now
+
+    def _requeue_superseded_chunk(self, job: Job, chunk: ChunkRecord) -> bool:
+        """Requeue a chunk that came back under an older plan version.
+
+        Only reachable for a chunk that was already in flight when a voice
+        change (or full re-render) bumped `job.plan_version`. Writing its
+        old-voice audio now would leave the job inconsistent, so it goes back
+        into the queue with the job's current voice instead.
+        """
+        if chunk.deprecated or chunk.plan_version == job.plan_version:
+            return False
+        self._apply_voice(job, chunk, time())
+        return True
 
     def add_planned_chunk(
         self,
@@ -121,7 +214,11 @@ class JobManager:
         job = self.get_job(job_id)
         chunk = ChunkRecord(
             job_id=job_id,
-            index=len(job.chunks),
+            # Derive the index from the highest existing index rather than
+            # `len(job.chunks)`: reprocessing appends a second record for an
+            # existing index, which made `len` outrun the real index and made
+            # the planner skip numbers (leaving a phantom gap).
+            index=max((c.index for c in job.chunks), default=-1) + 1,
             text=text,
             voice_id=voice_id,
             language=job.language,
@@ -159,6 +256,7 @@ class JobManager:
         chunk.status = ChunkStatus.PLANNED
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
+        self._requeue_superseded_chunk(job, chunk)
         job.updated_at = time()
 
     def mark_chunk_retry(self, chunk: ChunkRecord, error: str) -> Job:
@@ -172,6 +270,7 @@ class JobManager:
         chunk.status = ChunkStatus.PLANNED
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
+        self._requeue_superseded_chunk(job, chunk)
         job.updated_at = time()
         return job
 
@@ -183,13 +282,19 @@ class JobManager:
         segment_path: str,
         wav_path: str,
     ) -> Job:
+        job = self.get_job(chunk.job_id)
+        # A chunk that came back after its plan generation was superseded is
+        # requeued with the job's current voice rather than written as stale
+        # audio (see `_requeue_superseded_chunk`).
+        if self._requeue_superseded_chunk(job, chunk):
+            job.updated_at = time()
+            return job
         chunk.status = ChunkStatus.WRITTEN
         chunk.duration_seconds = duration_seconds
         chunk.segment_path = segment_path
         chunk.wav_path = wav_path
         chunk.error = None
         chunk.updated_at = time()
-        job = self.get_job(chunk.job_id)
         job.total_chunks_completed = len(job.written_chunks())
         job.total_versioned_completed = len(job.versioned_written_chunks())
         self._recalculate_timeline(job)
@@ -218,6 +323,7 @@ class JobManager:
         chunk.error = error
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
+        self._requeue_superseded_chunk(job, chunk)
         job.updated_at = time()
         return job
 
