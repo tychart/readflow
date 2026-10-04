@@ -10,12 +10,15 @@ const GPU_ADMIN_STATE = {
     device: "auto",
     idle_unload_seconds: 300,
     max_prebuffer_seconds: 300,
-    target_buffer_seconds: 45,
-    inactive_job_ahead_chunks: 1,
+    target_buffer_seconds: 60,
+    plan_ahead_chunks: 16,
     batch_candidates_small_model: [8, 7, 6, 5],
     batch_candidates_large_model: [6, 5, 4, 3],
     vram_soft_limit_mb: 9000,
     vram_hard_limit_mb: 11000,
+    chunk_max_attempts: 3,
+    model_load_timeout_seconds: 900,
+    synthesis_timeout_seconds: 300,
   },
   scheduler: {
     queue_depth: 2,
@@ -96,12 +99,15 @@ function mockFetch() {
         json: async () => ({
           idle_unload_seconds: 120,
           max_prebuffer_seconds: 300,
-          inactive_job_ahead_chunks: 1,
-          target_buffer_seconds: 45,
+          plan_ahead_chunks: 16,
+          target_buffer_seconds: 60,
           batch_candidates_small_model: [8, 7, 6, 5],
           batch_candidates_large_model: [6, 5, 4, 3],
           vram_soft_limit_mb: 9000,
           vram_hard_limit_mb: 11000,
+          chunk_max_attempts: 3,
+          model_load_timeout_seconds: 900,
+          synthesis_timeout_seconds: 300,
         }),
       };
     }
@@ -238,11 +244,14 @@ test("form initializes from adminState.config once", () => {
         device: "cpu",
         idle_unload_seconds: 600,
         max_prebuffer_seconds: 300,
-        target_buffer_seconds: 45,
+        target_buffer_seconds: 60,
         batch_candidates_small_model: [4, 3, 2, 1],
         batch_candidates_large_model: [3, 2, 1],
         vram_soft_limit_mb: 4000,
         vram_hard_limit_mb: 6000,
+        chunk_max_attempts: 3,
+        model_load_timeout_seconds: 900,
+        synthesis_timeout_seconds: 300,
       },
     });
   });
@@ -309,15 +318,15 @@ test("tabs expose tablist semantics and support arrow-key navigation", async () 
   );
 });
 
-test("edits and saves the inactive job lookahead setting", async () => {
+test("edits and saves the plan-ahead window setting", async () => {
   const user = userEvent.setup();
   mockFetch();
   setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
 
   render(<AdminPage />);
 
-  const input = screen.getByLabelText(/Inactive job lookahead/i) as HTMLInputElement;
-  expect(input.value).toBe("1");
+  const input = screen.getByLabelText(/Plan-ahead window/i) as HTMLInputElement;
+  expect(input.value).toBe("16");
 
   await user.clear(input);
   await user.type(input, "4");
@@ -328,6 +337,50 @@ test("edits and saves the inactive job lookahead setting", async () => {
   await waitFor(() =>
     expect(global.fetch).toHaveBeenCalledWith(
       "/api/admin/config",
+      expect.objectContaining({ method: "POST" }),
+    ),
+  );
+});
+
+test("surfaces scheduler liveness and the last error", () => {
+  setStoreWithAdminState(
+    {
+      ...GPU_ADMIN_STATE,
+      scheduler: {
+        queue_depth: 2,
+        batch_candidates: [8, 7, 6, 5],
+        running: false,
+        last_tick_at: Date.now() / 1000 - 30,
+        last_error: "RuntimeError: boom",
+        consecutive_errors: 2,
+        warning: "VRAM hard limit reached (12000 MB >= 11000 MB); dispatch paused.",
+      },
+      model_last_error: "Synthesis timed out after 300s",
+    },
+    GPU_ADMIN_STATE.memory,
+  );
+
+  render(<AdminPage />);
+
+  expect(screen.getByText(/Scheduler stopped/)).toBeInTheDocument();
+  expect(screen.getByText(/2 consecutive errors/)).toBeInTheDocument();
+  expect(screen.getByText(/Last scheduler error: RuntimeError: boom/)).toBeInTheDocument();
+  expect(screen.getByText(/VRAM hard limit reached/)).toBeInTheDocument();
+  expect(screen.getByText(/Model error: Synthesis timed out after 300s/)).toBeInTheDocument();
+});
+
+test("reset provider button calls the reset endpoint", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  await user.click(screen.getByRole("button", { name: /reset provider/i }));
+
+  await waitFor(() =>
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/admin/model/reset",
       expect.objectContaining({ method: "POST" }),
     ),
   );

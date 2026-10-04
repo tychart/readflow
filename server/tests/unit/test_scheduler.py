@@ -137,9 +137,11 @@ def test_priority_band_matrix(services):
     cases = [
         (False, 0.0, True, 99),
         (True, 0.0, False, 0),
-        (True, 44.9, False, 0),
-        (True, 45.0, False, 1),
-        (True, 500.0, False, 1),
+        (True, 59.9, False, 0),
+        (True, 60.0, False, 1),
+        (True, 299.9, False, 1),
+        (True, 300.0, False, 2),
+        (True, 500.0, False, 2),
         (False, 0.0, False, 2),
     ]
     for active_listening, buffered, paused, expected in cases:
@@ -198,15 +200,21 @@ def test_priority_info_labels_and_reasons(services):
 
     current = services.job_manager.get_job(job.id)
     band, label, reason = services.scheduler._priority_info(current, chunk)
-    assert (band, label) == (2, "Normal")
+    assert (band, label) == (2, "Background")
     assert "no active listener" in reason
 
     services.job_manager.activate_job(job.id)
     current = services.job_manager.get_job(job.id)
     current.buffered_seconds = 100.0
     band, label, reason = services.scheduler._priority_info(current, chunk)
-    assert (band, label) == (1, "High")
-    assert "target of 45s met" in reason
+    assert (band, label) == (1, "Filling")
+    assert "target 60s met" in reason
+    assert "ideal" in reason
+
+    current.buffered_seconds = 400.0
+    band, label, reason = services.scheduler._priority_info(current, chunk)
+    assert (band, label) == (2, "Buffered")
+    assert "ideal 300s met" in reason
 
     current.buffered_seconds = 3.5
     band, label, reason = services.scheduler._priority_info(current, chunk)
@@ -418,6 +426,9 @@ def test_scheduler_requeues_chunks_dropped_by_partial_batch(services):
     from app.jobs.models import ChunkStatus
 
     job = _create_job(services, title="partial batch")
+    # Isolate the requeue behavior from the (now larger) plan-ahead window by
+    # planning exactly the chunks this test adds.
+    services.settings.runtime.plan_ahead_chunks = 3
     for index in range(3):
         _add_chunk(services, job, f"chunk number {index}")
     services.settings.runtime.batch_candidates_small_model = [3]
@@ -566,7 +577,7 @@ def test_queue_snapshot_truncates_large_jobs_but_keeps_pending(services, monkeyp
     assert returned_indices == sorted(returned_indices)
 
 
-def test_inactive_job_ahead_window_controls_planning(services):
+def test_plan_ahead_window_controls_planning(services):
     from app.jobs.models import ChunkStatus
 
     job = services.job_manager.create_job(
@@ -576,9 +587,300 @@ def test_inactive_job_ahead_window_controls_planning(services):
         voice_id="suzy",
         title="ahead window",
     )
-    services.settings.runtime.inactive_job_ahead_chunks = 3
+    services.settings.runtime.plan_ahead_chunks = 3
 
     services.scheduler._ensure_planned_chunks()
 
     planned = [chunk for chunk in job.chunks if chunk.status == ChunkStatus.PLANNED]
     assert len(planned) == 3
+
+
+# ── Reliability: the loop must survive anything a single tick throws ──
+
+
+def test_run_forever_survives_a_failing_tick(services):
+    """A broken tick used to kill the scheduler task permanently."""
+    calls = {"count": 0}
+
+    async def flaky_run_once() -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("boom")
+        services.scheduler._stop_event.set()
+
+    services.scheduler.run_once = flaky_run_once  # type: ignore[method-assign]
+    asyncio.run(services.scheduler.run_forever())
+
+    assert calls["count"] == 2
+    assert services.scheduler._last_error == "RuntimeError: boom"
+    assert services.scheduler._running is False
+
+
+def test_batch_failure_retries_within_budget_then_skips_chunk(services):
+    """One failing batch must not stop the loop or fail the whole job."""
+    from app.jobs.models import ChunkStatus
+
+    job = _create_job(services, title="retry budget")
+    services.settings.runtime.batch_candidates_small_model = [1]
+    services.job_manager.activate_job(job.id)
+
+    async def always_fails(model_id, batch):
+        raise RuntimeError("ffmpeg exploded")
+
+    services.worker.render_batch = always_fails  # type: ignore[method-assign]
+
+    asyncio.run(services.scheduler.run_once())
+    chunk = services.job_manager.get_job(job.id).chunks[0]
+    assert chunk.status == ChunkStatus.PLANNED
+    assert chunk.attempts == 1
+
+    asyncio.run(services.scheduler.run_once())
+    assert chunk.status == ChunkStatus.PLANNED
+    assert chunk.attempts == 2
+
+    # Third failure exhausts the budget: only the chunk is abandoned.
+    asyncio.run(services.scheduler.run_once())
+    assert chunk.status == ChunkStatus.FAILED
+    assert services.job_manager.get_job(job.id).status != "failed"
+
+
+def test_synthesis_timeout_flags_model_error_and_pauses_dispatch(services):
+    """A hung call trips the circuit breaker instead of piling up work."""
+    from app.jobs.models import ChunkStatus, ModelState
+
+    job = _create_job(services, title="timeout")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.synthesis_timeout_seconds = 0.01
+    calls = {"count": 0}
+
+    async def hangs(model_id, chunks, prompts):
+        calls["count"] += 1
+        await asyncio.sleep(5)
+        return []
+
+    services.provider.synthesize_batch = hangs  # type: ignore[method-assign]
+
+    asyncio.run(services.scheduler.run_once())
+
+    assert services.model_manager.state == ModelState.ERROR
+    assert services.model_manager.last_error is not None
+    chunk = services.job_manager.get_job(job.id).chunks[0]
+    assert chunk.status == ChunkStatus.PLANNED
+    assert chunk.attempts == 1
+
+    # The errored provider must not be called again until it is reset.
+    dispatched_before = calls["count"]
+    asyncio.run(services.scheduler.run_once())
+    assert calls["count"] == dispatched_before
+
+    asyncio.run(services.model_manager.reset_provider())
+    assert services.model_manager.state == ModelState.UNLOADED
+
+
+# ── Throughput: plan-ahead, round-robin, VRAM budgets, idle unload ──
+
+
+def _long_job(services, *, title: str, voice_id: str = "suzy"):
+    return services.job_manager.create_job(
+        source_text="A sufficiently long sentence for planning. " * 200,
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id=voice_id,
+        title=title,
+    )
+
+
+def test_plan_ahead_lets_one_inactive_job_fill_a_batch(services):
+    """With a batch-sized lookahead, an inactive job can fill a full batch.
+
+    Previously the inactive window was 1 chunk, so every background batch was a
+    batch of one and the GPU idled on undersized batches.
+    """
+    _long_job(services, title="full batch")
+    services.settings.runtime.plan_ahead_chunks = 16
+    services.settings.runtime.batch_candidates_small_model = [8]
+
+    rendered: dict[str, int] = {}
+
+    async def capture(model_id, chunks):
+        rendered["count"] = len(chunks)
+        return [
+            RenderedChunkResult(
+                chunk_index=chunk.index,
+                segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
+                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
+                wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
+                duration_seconds=1.0,
+                reserved_vram_mb=0,
+                allocated_vram_mb=0,
+            )
+            for chunk in chunks
+        ]
+
+    services.worker.render_batch = capture  # type: ignore[method-assign]
+    asyncio.run(services.scheduler.run_once())
+
+    assert rendered["count"] == 8
+
+
+def test_inactive_jobs_round_robin_by_chunk_index(services):
+    """Equal-priority jobs advance together, one chunk each per round."""
+    _long_job(services, title="job A")
+    _long_job(services, title="job B")
+    services.settings.runtime.plan_ahead_chunks = 3
+
+    services.scheduler._ensure_planned_chunks()
+    ranked = services.scheduler._rank_renderable_chunks()
+
+    indices = [chunk.index for chunk in ranked]
+    assert indices == [0, 0, 1, 1, 2, 2]
+    # The first batch therefore contains one chunk from each job, not two
+    # chunks from one job.
+    group_key, batch = services.scheduler._select_next_batch(ranked, 100, 24000)
+    assert group_key is not None
+    assert [chunk.index for chunk in batch[:2]] == [0, 0]
+    assert len({chunk.job_id for chunk in batch[:2]}) == 2
+
+
+def test_batch_size_uses_configured_soft_limit(services):
+    services.settings.runtime.batch_candidates_small_model = [8, 4, 3, 2, 1]
+    services.settings.runtime.vram_soft_limit_mb = 1000
+
+    # 90% of the soft budget -> downshift.
+    assert services.scheduler._choose_batch_size(8, 900, 24000) <= 3
+    # Plenty of headroom -> the largest candidate.
+    assert services.scheduler._choose_batch_size(8, 100, 24000) == 8
+
+    # A 0 soft limit falls back to physical VRAM.
+    services.settings.runtime.vram_soft_limit_mb = 0
+    assert services.scheduler._choose_batch_size(8, 5000, 10000) == 8
+    assert services.scheduler._choose_batch_size(8, 9000, 10000) <= 3
+
+
+def test_hard_vram_limit_pauses_dispatch_and_warns_once(services):
+    job = _create_job(services, title="hard limit")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.vram_hard_limit_mb = 100
+
+    async def over_hard_limit():
+        # total, allocated, reserved all above the hard limit.
+        return ("cuda", 24000, 12000, 200, 23800, 32000, 16000, 4096, "cuda")
+
+    services.model_manager.memory_stats = over_hard_limit  # type: ignore[method-assign]
+
+    calls = {"count": 0}
+
+    async def should_not_run(model_id, batch):
+        calls["count"] += 1
+        return []
+
+    services.worker.render_batch = should_not_run  # type: ignore[method-assign]
+
+    asyncio.run(services.scheduler.run_once())
+    assert calls["count"] == 0
+    warning = services.scheduler._warning
+    assert warning is not None and "hard limit" in warning.lower()
+
+    # Repeated ticks must not re-record the same warning every 0.2s.
+    asyncio.run(services.scheduler.run_once())
+    warnings = [
+        event
+        for event in services.telemetry.snapshot()["recent_events"]
+        if event["type"] == "scheduler_warning"
+    ]
+    assert len(warnings) == 1
+    # The scheduler is still alive and the queue still holds the work.
+    assert services.job_manager.queue_depth() >= 1
+
+
+def test_idle_unload_is_skipped_while_work_is_pending(services):
+    from time import monotonic
+
+    from app.jobs.models import ModelState
+
+    job = _create_job(services, title="keep loaded")
+    _add_chunk(services, job, "pending work")
+    services.model_manager._state = ModelState.WARM_IDLE
+    services.model_manager._loaded_model_id = "test-model"
+    services.model_manager._last_used_at = monotonic() - 10_000
+    services.settings.runtime.idle_unload_seconds = 1
+
+    asyncio.run(services.model_manager.maybe_unload_idle(has_pending_work=True))
+    assert services.model_manager.state == ModelState.WARM_IDLE
+
+    asyncio.run(services.model_manager.maybe_unload_idle(has_pending_work=False))
+    assert services.model_manager.state == ModelState.UNLOADED
+
+
+def test_run_once_keeps_model_loaded_while_work_is_pending(services):
+    from time import monotonic
+
+    from app.jobs.models import ModelState
+
+    job = _create_job(services, title="run once keep loaded")
+    _add_chunk(services, job, "pending work")
+    services.model_manager._state = ModelState.WARM_IDLE
+    services.model_manager._loaded_model_id = services.settings.runtime.default_model_id
+    services.model_manager._last_used_at = monotonic() - 10_000
+    services.settings.runtime.idle_unload_seconds = 1
+
+    async def noop_render(model_id, batch):
+        return []
+
+    services.worker.render_batch = noop_render  # type: ignore[method-assign]
+
+    asyncio.run(services.scheduler.run_once())
+
+    assert services.model_manager.state == ModelState.WARM_IDLE
+    assert services.job_manager.queue_depth() >= 1
+
+
+def test_oom_halves_the_batch_until_it_fits(services):
+    """The real fake provider OOMs above 6 chunks / 2400 chars.
+
+    The worker must keep shrinking (not just once) so an 8-chunk batch still
+    renders, and the chunks it dropped must be requeued rather than stuck.
+    """
+    job = services.job_manager.create_job(
+        source_text="A sentence long enough for a chunk. " * 300,
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="oom shrink",
+    )
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.plan_ahead_chunks = 16
+    services.settings.runtime.batch_candidates_small_model = [8]
+
+    asyncio.run(services.scheduler.run_once())
+
+    written = services.job_manager.get_job(job.id).written_chunks()
+    assert 0 < len(written) < 8
+    assert services.telemetry.snapshot()["oom_count"] >= 1
+    assert services.job_manager.queue_depth() >= 1
+
+
+def test_filling_listener_outranks_background_work(services):
+    """A listener inside the 60s..300s window is band 1; background is band 2."""
+    listener = _create_job(services, title="filling listener")
+    background = _create_job(services, title="background", voice_id="howard")
+    services.job_manager.activate_job(listener.id)
+
+    listener = services.job_manager.get_job(listener.id)
+    listener.buffered_seconds = 100.0
+
+    assert services.scheduler._priority_band(listener) == 1
+    assert services.scheduler._priority_band(services.job_manager.get_job(background.id)) == 2
+
+
+def test_fully_buffered_listener_shares_band_with_background(services):
+    """At/above the ideal buffer the listener drops into the background band."""
+    listener = _create_job(services, title="fully buffered listener")
+    background = _create_job(services, title="background two", voice_id="howard")
+    services.job_manager.activate_job(listener.id)
+
+    listener = services.job_manager.get_job(listener.id)
+    listener.buffered_seconds = 1000.0
+
+    assert services.scheduler._priority_band(listener) == 2
+    assert services.scheduler._priority_band(services.job_manager.get_job(background.id)) == 2

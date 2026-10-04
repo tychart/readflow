@@ -57,3 +57,30 @@ export function resolvePlayerStateLabel(state: PlayerStateInput): string {
   if (state.playIntent) return "Starting…";
   return "Ready";
 }
+
+/**
+ * How long playback can wait for new audio before we call the producer stalled.
+ * Long enough to not fire on a single slow batch, short enough to be useful.
+ */
+export const RENDERING_STALL_SECONDS = 25;
+
+export interface RenderStallInput {
+  isJobTerminal: boolean;
+  playIntent: boolean;
+  isWaitingForData: boolean;
+}
+
+/**
+ * True when the player wants audio, is starved, and none has arrived for a
+ * while. A terminal (completed/failed) job never "stalls" — it is simply done.
+ * `secondsSinceChunk` is null when no chunk has ever arrived.
+ */
+export function isRenderingStalled(
+  state: RenderStallInput,
+  secondsSinceChunk: number | null,
+): boolean {
+  if (state.isJobTerminal) return false;
+  if (!state.playIntent) return false;
+  if (!state.isWaitingForData) return false;
+  return secondsSinceChunk !== null && secondsSinceChunk >= RENDERING_STALL_SECONDS;
+}

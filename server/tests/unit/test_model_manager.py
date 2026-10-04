@@ -23,6 +23,9 @@ class _FakeProvider:
     def set_device(self, device: str) -> None:
         self._device = device
 
+    def reset(self) -> None:
+        self._device = "auto"
+
     async def load_model(self, model_id: str) -> None:
         self.load_called_with.append(model_id)
 
@@ -48,6 +51,9 @@ class _FakeOomProvider:
 
     def set_device(self, device: str) -> None:
         self._device = device
+
+    def reset(self) -> None:
+        self._device = "auto"
 
     async def load_model(self, model_id: str) -> None:
         self.load_called_with.append(model_id)
@@ -225,3 +231,78 @@ def test_unload_works_from_not_enough_vram_state(manager):
     asyncio.run(manager.unload())
 
     assert manager.state == ModelState.UNLOADED
+
+
+class _FakeBrokenProvider:
+    """Provider whose load always fails with a non-VRAM error."""
+
+    def __init__(self) -> None:
+        self.reset_called = 0
+        self.load_calls = 0
+
+    def validate_environment(self) -> None:
+        return None
+
+    def set_device(self, device: str) -> None:
+        self._device = device
+
+    def reset(self) -> None:
+        self.reset_called += 1
+
+    async def load_model(self, model_id: str) -> None:
+        self.load_calls += 1
+        raise RuntimeError("network down")
+
+    async def unload_model(self) -> None:
+        return None
+
+    async def synthesize_batch(self, *args, **kwargs):
+        raise RuntimeError("Not implemented")
+
+    async def memory_stats(self):
+        return (False, 0, 0, 0, 0, 16384, 10240, 4096, "cpu")
+
+
+@pytest.fixture
+def broken_manager(telemetry, config):
+    return ModelManager(_FakeBrokenProvider(), telemetry, config)
+
+
+def test_ensure_loaded_non_vram_failure_sets_error_not_loading(broken_manager):
+    """Regression: a non-VRAM load error used to leave the manager in LOADING
+    forever, so the model looked permanently busy and the failure was hidden."""
+    import asyncio
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(broken_manager.ensure_loaded("test-model"))
+
+    assert broken_manager.state == ModelState.ERROR
+    assert "network down" in (broken_manager.last_error or "")
+    assert broken_manager._loaded_model_id is None
+
+
+def test_ensure_loaded_retries_after_error(broken_manager):
+    import asyncio
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            asyncio.run(broken_manager.ensure_loaded("test-model"))
+    assert broken_manager._provider.load_calls == 2
+    assert broken_manager.state == ModelState.ERROR
+
+
+def test_mark_idle_does_not_clear_error_state(broken_manager):
+    broken_manager.mark_error("Synthesis timed out")
+    broken_manager.mark_idle()
+    assert broken_manager.state == ModelState.ERROR
+
+
+def test_reset_provider_clears_error_and_provider(broken_manager):
+    import asyncio
+
+    broken_manager.mark_error("Synthesis timed out")
+    asyncio.run(broken_manager.reset_provider())
+
+    assert broken_manager.state == ModelState.UNLOADED
+    assert broken_manager.last_error is None
+    assert broken_manager._provider.reset_called == 1

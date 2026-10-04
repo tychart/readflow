@@ -222,17 +222,26 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({
       json: {
         config: {
+          device: "auto",
           idle_unload_seconds: 300,
           max_prebuffer_seconds: 300,
-          target_buffer_seconds: 45,
+          target_buffer_seconds: 60,
+          plan_ahead_chunks: 16,
           batch_candidates_small_model: [8, 7, 6, 5],
           batch_candidates_large_model: [6, 5, 4, 3],
           vram_soft_limit_mb: 9000,
           vram_hard_limit_mb: 11000,
+          chunk_max_attempts: 3,
+          model_load_timeout_seconds: 900,
+          synthesis_timeout_seconds: 300,
         },
         scheduler: {
           queue_depth: 0,
           batch_candidates: [8, 7, 6, 5],
+          running: true,
+          last_tick_at: Date.now() / 1000,
+          last_error: null,
+          consecutive_errors: 0,
         },
         telemetry: {
           queue_depth: 0,

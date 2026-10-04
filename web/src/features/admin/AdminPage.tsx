@@ -18,7 +18,7 @@ function labelClass() {
 
 /* ── Types ────────────────────────────────────────────────── */
 
-type ModelAction = "idle" | "warm" | "evict";
+type ModelAction = "idle" | "warm" | "evict" | "reset";
 
 const MODEL_STATE_LABELS: Record<string, string> = {
   unloaded: "Unloaded",
@@ -27,6 +27,7 @@ const MODEL_STATE_LABELS: Record<string, string> = {
   busy: "Busy",
   evicting: "Evicting…",
   not_enough_vram: "Insufficient VRAM",
+  error: "Error — dispatch paused",
 };
 
 const MODEL_STATE_COLORS: Record<string, { dot: string; pulse?: boolean }> = {
@@ -36,7 +37,17 @@ const MODEL_STATE_COLORS: Record<string, { dot: string; pulse?: boolean }> = {
   busy: { dot: "bg-blue-400" },
   evicting: { dot: "bg-amber-400", pulse: true },
   not_enough_vram: { dot: "bg-rose-400" },
+  error: { dot: "bg-rose-500" },
 };
+
+/** Human-readable age of the scheduler's last tick. */
+function formatTickAge(timestamp: number | null | undefined): string {
+  if (!timestamp) return "never";
+  const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp));
+  if (seconds < 2) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.round(seconds / 60)}m ago`;
+}
 
 /* ── Stat Card ────────────────────────────────────────────── */
 
@@ -100,6 +111,19 @@ function AdminOverview() {
     }
   }
 
+  async function handleResetModel() {
+    setModelActionPending("reset");
+    setFeedbackMessage(null);
+    try {
+      await api.resetModel();
+      showFeedback("success", "Provider reset — scheduling will resume on the next tick");
+    } catch (error) {
+      showFeedback("error", error instanceof Error ? error.message : "Failed to reset provider");
+    } finally {
+      setModelActionPending("idle");
+    }
+  }
+
   useEffect(() => {
     if (adminState && adminState.config && !hasInitialized.current) {
       hasInitialized.current = true;
@@ -137,9 +161,12 @@ function AdminOverview() {
     formState.idle_unload_seconds !== adminState.config.idle_unload_seconds ||
     formState.max_prebuffer_seconds !== adminState.config.max_prebuffer_seconds ||
     formState.target_buffer_seconds !== adminState.config.target_buffer_seconds ||
-    formState.inactive_job_ahead_chunks !== adminState.config.inactive_job_ahead_chunks ||
+    formState.plan_ahead_chunks !== adminState.config.plan_ahead_chunks ||
     formState.vram_soft_limit_mb !== adminState.config.vram_soft_limit_mb ||
     formState.vram_hard_limit_mb !== adminState.config.vram_hard_limit_mb ||
+    formState.chunk_max_attempts !== adminState.config.chunk_max_attempts ||
+    formState.model_load_timeout_seconds !== adminState.config.model_load_timeout_seconds ||
+    formState.synthesis_timeout_seconds !== adminState.config.synthesis_timeout_seconds ||
     formState.batch_candidates_small_model.length !== adminState.config.batch_candidates_small_model.length ||
     formState.batch_candidates_small_model.some((v, i) => v !== adminState.config.batch_candidates_small_model[i]) ||
     formState.batch_candidates_large_model.length !== adminState.config.batch_candidates_large_model.length ||
@@ -231,19 +258,19 @@ function AdminOverview() {
           </label>
 
           <label className={labelClass()}>
-            Inactive job lookahead (chunks)
+            Plan-ahead window (chunks)
             <input
               className={`${inputClass()} mt-1.5`}
               type="number"
               min="1"
-              value={formState.inactive_job_ahead_chunks}
+              value={formState.plan_ahead_chunks}
               onChange={(e) =>
-                setFormState({ ...formState, inactive_job_ahead_chunks: Number(e.target.value) })
+                setFormState({ ...formState, plan_ahead_chunks: Number(e.target.value) })
               }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Chunks the planner keeps ready for jobs that are not actively playing. Higher
-              values let inactive jobs render in larger batches.
+              Chunks kept ready per job. Must be at least the largest batch size so a
+              single job can fill a batch.
             </span>
           </label>
 
@@ -266,6 +293,45 @@ function AdminOverview() {
               min="0"
               value={formState.vram_hard_limit_mb}
               onChange={(e) => setFormState({ ...formState, vram_hard_limit_mb: Number(e.target.value) })}
+            />
+          </label>
+
+          <label className={labelClass()}>
+            Chunk max attempts
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="1"
+              value={formState.chunk_max_attempts}
+              onChange={(e) => setFormState({ ...formState, chunk_max_attempts: Number(e.target.value) })}
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              Failed attempts before a chunk is skipped. The rest of the job keeps rendering.
+            </span>
+          </label>
+
+          <label className={labelClass()}>
+            Model load timeout (seconds)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="1"
+              value={formState.model_load_timeout_seconds}
+              onChange={(e) => setFormState({ ...formState, model_load_timeout_seconds: Number(e.target.value) })}
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              Generous to allow a first-time model download. A timeout pauses dispatch until Reset provider.
+            </span>
+          </label>
+
+          <label className={labelClass()}>
+            Synthesis timeout (seconds)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="1"
+              value={formState.synthesis_timeout_seconds}
+              onChange={(e) => setFormState({ ...formState, synthesis_timeout_seconds: Number(e.target.value) })}
             />
           </label>
         </div>
@@ -305,6 +371,19 @@ function AdminOverview() {
               <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--ink-secondary)] border-t-transparent" />
             )}
             {modelActionPending === "evict" ? "Evicting…" : "Evict model"}
+          </button>
+
+          <button
+            className="inline-flex items-center gap-2 rounded-lg border border-[var(--rose)]/40 bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--rose)] transition hover:bg-[var(--rose)]/10 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={modelActionPending !== "idle"}
+            onClick={() => void handleResetModel()}
+            title="Recover from an errored or hung model/synthesis call"
+            type="button"
+          >
+            {modelActionPending === "reset" && (
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--rose)] border-t-transparent" />
+            )}
+            {modelActionPending === "reset" ? "Resetting…" : "Reset provider"}
           </button>
         </div>
 
@@ -364,6 +443,47 @@ function AdminOverview() {
               </div>
             </StatCard>
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-[var(--ink-secondary)]">
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`inline-block h-1.5 w-1.5 rounded-full ${
+                  adminState.scheduler.running ? "bg-emerald-400" : "bg-rose-500"
+                }`}
+              />
+              Scheduler {adminState.scheduler.running ? "running" : "stopped"}
+            </span>
+            <span>Last tick {formatTickAge(adminState.scheduler.last_tick_at)}</span>
+            {(adminState.scheduler.consecutive_errors ?? 0) > 0 && (
+              <span className="text-[var(--rose)]">
+                {adminState.scheduler.consecutive_errors} consecutive error
+                {adminState.scheduler.consecutive_errors === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+          {adminState.scheduler.last_error && (
+            <div
+              className="mt-2 rounded-md border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-3 py-2 text-[10px] text-[var(--rose)]"
+              role="status"
+            >
+              Last scheduler error: {adminState.scheduler.last_error}
+            </div>
+          )}
+          {adminState.scheduler.warning && (
+            <div
+              className="mt-2 rounded-md border border-[var(--amber)]/30 bg-[var(--amber)]/10 px-3 py-2 text-[10px] text-[var(--amber)]"
+              role="status"
+            >
+              {adminState.scheduler.warning}
+            </div>
+          )}
+          {adminState.model_last_error && (
+            <div
+              className="mt-2 rounded-md border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-3 py-2 text-[10px] text-[var(--rose)]"
+              role="status"
+            >
+              Model error: {adminState.model_last_error}
+            </div>
+          )}
         </div>
 
         {/* System resources */}

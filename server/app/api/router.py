@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable
@@ -169,11 +170,14 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             idle_unload_seconds=runtime.idle_unload_seconds,
             max_prebuffer_seconds=runtime.max_prebuffer_seconds,
             target_buffer_seconds=runtime.target_buffer_seconds,
-            inactive_job_ahead_chunks=runtime.inactive_job_ahead_chunks,
+            plan_ahead_chunks=runtime.plan_ahead_chunks,
             batch_candidates_small_model=runtime.batch_candidates_small_model,
             batch_candidates_large_model=runtime.batch_candidates_large_model,
             vram_soft_limit_mb=runtime.vram_soft_limit_mb,
             vram_hard_limit_mb=runtime.vram_hard_limit_mb,
+            chunk_max_attempts=runtime.chunk_max_attempts,
+            model_load_timeout_seconds=runtime.model_load_timeout_seconds,
+            synthesis_timeout_seconds=runtime.synthesis_timeout_seconds,
         )
 
     def contiguous_export_wav_paths(job: Job) -> list[str]:
@@ -537,9 +541,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         scheduler = SchedulerStateResponse(
             queue_depth=app_services.job_manager.queue_depth(),
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
+            active_batch=app_services.scheduler.active_batch(),
+            **app_services.scheduler.liveness_snapshot(),
         )
         try:
-            mem_raw = await app_services.model_manager.memory_stats()
+            mem_raw = await asyncio.wait_for(app_services.model_manager.memory_stats(), timeout=2.0)
             memory = AdminMemoryStats(
                 device=mem_raw[0],
                 vram_total_mb=mem_raw[1],
@@ -557,14 +563,29 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             scheduler=scheduler,
             telemetry=app_services.telemetry.snapshot(),
             memory=memory,
+            model_last_error=app_services.model_manager.last_error,
         )
 
     @router.post("/admin/model/warm", response_model=dict[str, str])
     async def warm_model(app_services: AppServices = Depends(services)) -> dict[str, str]:
+        timeout = app_services.settings.runtime.model_load_timeout_seconds
         try:
-            await app_services.model_manager.ensure_loaded(
-                app_services.settings.runtime.default_model_id
+            # Bounded like the scheduler's load path: a hung load must not hang
+            # the admin request (and the panel) forever.
+            await asyncio.wait_for(
+                app_services.model_manager.ensure_loaded(
+                    app_services.settings.runtime.default_model_id
+                ),
+                timeout=timeout,
             )
+        except TimeoutError as exc:
+            app_services.model_manager.mark_error(f"Model load timed out after {timeout:.0f}s")
+            await app_services.hub.broadcast(
+                WsEnvelope(
+                    type="model_state", payload={"state": app_services.model_manager.state}
+                ).model_dump()
+            )
+            raise HTTPException(status_code=504, detail="Model load timed out") from exc
         except ModelVRAMError as exc:
             await app_services.hub.broadcast(
                 WsEnvelope(
@@ -588,6 +609,23 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             ).model_dump()
         )
         return {"status": "evicted"}
+
+    @router.post("/admin/model/reset", response_model=dict[str, str])
+    async def reset_model(app_services: AppServices = Depends(services)) -> dict[str, str]:
+        """Recover from an errored or hung provider without a server restart.
+
+        This is the manual escape hatch for the circuit breaker: when a load or
+        synthesis times out, the scheduler stops dispatching until the provider
+        is reset. It replaces the provider's worker executor and drops all
+        cached model state, then broadcasts the new (unloaded) state.
+        """
+        await app_services.model_manager.reset_provider()
+        await app_services.hub.broadcast(
+            WsEnvelope(
+                type="model_state", payload={"state": app_services.model_manager.state}
+            ).model_dump()
+        )
+        return {"status": "reset"}
 
     @router.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

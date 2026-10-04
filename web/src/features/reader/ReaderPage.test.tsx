@@ -587,6 +587,105 @@ test("stays in buffering mode when playback reaches the end of the current conti
   expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
 });
 
+test("shows a stall banner when the producer stops and can retry", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    seedStore();
+
+    const bufferedEnd = 12;
+    Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+      configurable: true,
+      get() {
+        return {
+          length: bufferedEnd > 0 ? 1 : 0,
+          start: () => 0,
+          end: () => bufferedEnd,
+        };
+      },
+    });
+
+    const chunks: Chunk[] = [0, 1, 2].map((index) => ({
+      index,
+      status: "written" as const,
+      duration_seconds: 4,
+      start_seconds: index * 4,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: `/api/jobs/job-1/chunks/${index}`,
+      peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
+      deprecated: false,
+      reprocessing: false,
+    }));
+    chunks.push({
+      index: 3,
+      status: "queued" as const,
+      duration_seconds: 0,
+      start_seconds: 0,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: null,
+      deprecated: false,
+      reprocessing: false,
+    });
+
+    let activateCalls = 0;
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+      }
+      if (url.endsWith("/activate")) {
+        activateCalls += 1;
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      }
+      if (url.endsWith("/playback")) {
+        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Reader job");
+    await user.click(screen.getByRole("button", { name: "Play" }));
+
+    const audio = container.querySelector("audio");
+    act(() => {
+      if (audio) {
+        audio.currentTime = 12;
+        audio.dispatchEvent(new Event("ended"));
+      }
+    });
+
+    await screen.findByText(/Buffering/i);
+    expect(screen.queryByText(/Rendering seems stalled/i)).not.toBeInTheDocument();
+
+    // No new chunk for longer than the stall threshold.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(await screen.findByText(/Rendering seems stalled/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(activateCalls).toBeGreaterThan(0));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("renders analyzed waveform bars fetched from the backend", async () => {
   seedStore();
 

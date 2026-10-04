@@ -41,6 +41,8 @@ import {
   ReaderTextBody,
 } from "./ReaderText";
 import { ReaderSidebar } from "./ReaderSidebar";
+import { RenderingStallBanner } from "./RenderingStallBanner";
+import { isRenderingStalled } from "./transport";
 
 /* ── Constants ────────────────────────────────────────────── */
 
@@ -50,6 +52,8 @@ const READER_POLL_INTERVAL_MS = 2_000;
 const INITIAL_LOAD_MAX_RETRIES = 5;
 const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
 const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
+/** How often the reader re-checks whether rendering has stalled. */
+const RENDER_STALL_POLL_MS = 5_000;
 
 /* ── Store state type ─────────────────────────────────────── */
 
@@ -217,6 +221,39 @@ export function ReaderPage() {
     pendingSeekSeconds: seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
     onSeekApplied: handleSeekApplied,
   });
+
+  // ── Render-stall detection ──────────────────────────────
+  // The player can sit in "waiting for data" forever if the backend stops
+  // producing; tracking when the last chunk arrived lets the UI tell "slow"
+  // apart from "stopped" and offer a retry instead of spinning silently.
+  const writtenChunkCount = activeChunks.reduce(
+    (count, chunk) => (chunk.status === "written" ? count + 1 : count),
+    0,
+  );
+  const lastChunkAtRef = useRef(Date.now());
+  useEffect(() => {
+    lastChunkAtRef.current = Date.now();
+  }, [writtenChunkCount, jobId]);
+  const [, forceStallTick] = useState(0);
+  useEffect(() => {
+    if (!playIntent || isJobTerminal) return;
+    const id = window.setInterval(
+      () => forceStallTick((tick) => tick + 1),
+      RENDER_STALL_POLL_MS,
+    );
+    return () => window.clearInterval(id);
+  }, [playIntent, isJobTerminal]);
+  const secondsSinceChunk = (Date.now() - lastChunkAtRef.current) / 1000;
+  const renderingStalled = isRenderingStalled(
+    { isJobTerminal, playIntent, isWaitingForData },
+    secondsSinceChunk,
+  );
+  const [stallDismissed, setStallDismissed] = useState(false);
+  useEffect(() => {
+    // A recovered producer clears the dismissal so a later stall is shown again.
+    if (!renderingStalled) setStallDismissed(false);
+  }, [renderingStalled]);
+  const [isRetryingStall, setIsRetryingStall] = useState(false);
 
   const activeProgress = useMemo(
     () => deriveActiveChunkProgress(contiguousReadyChunks, currentTimeSeconds),
@@ -601,6 +638,29 @@ export function ReaderPage() {
     [activeChunks, handleSeekToChunkWithScroll],
   );
 
+  /**
+   * Retry a stalled render: re-fetch state (in case the producer died and the
+   * reader missed events) and re-activate the job so the backend schedules it
+   * again. Also resets the stall timer so the banner cannot re-fire instantly.
+   */
+  const handleRetryRender = useCallback(async () => {
+    if (!job) return;
+    setIsRetryingStall(true);
+    try {
+      await refreshReaderState("stall-retry");
+      const nextJob = await api.activateJob(job.id);
+      applyJobPatch(nextJob);
+      setError(null);
+      lastChunkAtRef.current = Date.now();
+    } catch (retryError) {
+      setError(
+        retryError instanceof Error ? retryError.message : "Unable to retry rendering",
+      );
+    } finally {
+      setIsRetryingStall(false);
+    }
+  }, [applyJobPatch, job, refreshReaderState]);
+
   const handleSettingsChange = useCallback((patch: Partial<typeof settings>) => {
     setReaderSettings(patch);
   }, []);
@@ -695,7 +755,6 @@ export function ReaderPage() {
     setEditText("");
   }, []);
 
-  const writtenChunkCount = activeChunks.filter((c) => c.status === "written").length;
   const totalChunksInJob = job?.total_chunks_emitted ?? knownChunks.length;
 
   // ── Scroll-sync chunk content ───────────────────────────
@@ -924,6 +983,18 @@ export function ReaderPage() {
           </div>
         </div>
       </div>
+
+      {/* Rendering stall — the producer stopped; offer a retry instead of
+          spinning "Buffering…" forever. */}
+      {renderingStalled && !stallDismissed ? (
+        <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
+          <RenderingStallBanner
+            isRetrying={isRetryingStall}
+            onDismiss={() => setStallDismissed(true)}
+            onRetry={() => void handleRetryRender()}
+          />
+        </div>
+      ) : null}
 
       {/* Main content area — reader text + sidebar. The extra bottom padding
           keeps the phone dock from covering the last block. */}

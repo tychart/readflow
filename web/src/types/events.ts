@@ -85,6 +85,8 @@ export type AdminState = {
   scheduler: SchedulerState;
   telemetry: TelemetrySnapshot | null;
   memory: AdminMemoryStats | null;
+  /** Most recent model load/synthesis failure, if any. */
+  model_last_error?: string | null;
 };
 
 export interface AdminMemoryStatsPayload {

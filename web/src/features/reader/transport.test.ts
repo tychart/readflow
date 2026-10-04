@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  isRenderingStalled,
   resolvePlayButtonLabel,
   resolvePlayerStateLabel,
   resolveShowSpinner,
@@ -95,5 +96,35 @@ describe("resolvePlayerStateLabel", () => {
 
   test("idle", () => {
     expect(resolvePlayerStateLabel(base)).toBe("Ready");
+  });
+});
+
+describe("isRenderingStalled", () => {
+  const waiting = {
+    isJobTerminal: false,
+    playIntent: true,
+    isWaitingForData: true,
+  };
+
+  test("stalls only once the threshold is crossed while starved", () => {
+    expect(isRenderingStalled(waiting, 24.9)).toBe(false);
+    expect(isRenderingStalled(waiting, 25)).toBe(true);
+    expect(isRenderingStalled(waiting, 600)).toBe(true);
+  });
+
+  test("a terminal job never reports a stall", () => {
+    expect(isRenderingStalled({ ...waiting, isJobTerminal: true }, 600)).toBe(false);
+  });
+
+  test("not stalled when the user is not trying to play", () => {
+    expect(isRenderingStalled({ ...waiting, playIntent: false }, 600)).toBe(false);
+  });
+
+  test("not stalled while audio is actually flowing", () => {
+    expect(isRenderingStalled({ ...waiting, isWaitingForData: false }, 600)).toBe(false);
+  });
+
+  test("no chunk yet (null) is not a stall", () => {
+    expect(isRenderingStalled(waiting, null)).toBe(false);
   });
 });

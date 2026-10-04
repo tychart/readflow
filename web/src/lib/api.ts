@@ -183,4 +183,11 @@ export const api = {
   /** Evicts the model from VRAM. */
   evictModel: () =>
     request<{ status: string }>(apiPath("/admin/model/evict"), { method: "POST" }),
+
+  /**
+   * Resets a stuck or errored provider (fresh worker executor). The manual
+   * escape hatch for the scheduler's timeout circuit breaker.
+   */
+  resetModel: () =>
+    request<{ status: string }>(apiPath("/admin/model/reset"), { method: "POST" }),
 };

@@ -161,6 +161,20 @@ class JobManager:
         job = self.get_job(chunk.job_id)
         job.updated_at = time()
 
+    def mark_chunk_retry(self, chunk: ChunkRecord, error: str) -> Job:
+        """Requeue a chunk after a failed attempt, counting the attempt.
+
+        Keeps the job alive: only the chunk is requeued, and the job continues
+        rendering its other chunks until the attempt budget is spent.
+        """
+        chunk.attempts += 1
+        chunk.error = error
+        chunk.status = ChunkStatus.PLANNED
+        chunk.updated_at = time()
+        job = self.get_job(chunk.job_id)
+        job.updated_at = time()
+        return job
+
     def mark_chunk_written(
         self,
         chunk: ChunkRecord,
@@ -173,14 +187,16 @@ class JobManager:
         chunk.duration_seconds = duration_seconds
         chunk.segment_path = segment_path
         chunk.wav_path = wav_path
+        chunk.error = None
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         job.total_chunks_completed = len(job.written_chunks())
         job.total_versioned_completed = len(job.versioned_written_chunks())
         self._recalculate_timeline(job)
-        # Check completion using versioned counts
-        versioned_pending = job.versioned_pending_chunks()
-        if job.planner_cursor.exhausted and not versioned_pending:
+        # Complete only when the planner has nothing left to emit and no chunk
+        # is still queued/rendering. `has_unfinished_chunks` (not the versioned
+        # helper) is what makes this correct for ordinary, non-reprocessed jobs.
+        if job.planner_cursor.exhausted and not job.has_unfinished_chunks():
             job.status = JobStatus.COMPLETED
             job.is_active_listening = False
         elif job.is_active_listening:
@@ -191,12 +207,17 @@ class JobManager:
         return job
 
     def mark_chunk_failed(self, chunk: ChunkRecord, error: str) -> Job:
+        """Mark a single chunk failed after its attempt budget is spent.
+
+        Deliberately does NOT fail the whole job. One unrenderable chunk should
+        leave a recoverable gap (visible in the reader and admin queue) while
+        the rest of the job keeps rendering, rather than turning the job
+        terminal and stopping all work on it.
+        """
         chunk.status = ChunkStatus.FAILED
         chunk.error = error
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
-        job.status = JobStatus.FAILED
-        job.failed_reason = error
         job.updated_at = time()
         return job
 

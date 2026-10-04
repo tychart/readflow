@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from time import monotonic
 
@@ -9,9 +10,14 @@ from app.jobs.models import ChunkRecord
 from app.media.store import MediaStore
 from app.schemas.api import WsEnvelope
 from app.synthesis.model_manager import ModelManager
-from app.synthesis.provider import SynthesisOOMError, SynthesisProvider
+from app.synthesis.provider import (
+    RawSynthesisResult,
+    SynthesisOOMError,
+    SynthesisProvider,
+    SynthesisTimeoutError,
+)
 from app.telemetry.service import TelemetryService
-from app.voices.registry import VoiceRegistry
+from app.voices.registry import VoicePrompt, VoiceRegistry
 
 
 @dataclass(slots=True)
@@ -57,23 +63,13 @@ class SynthesisWorker:
     ) -> list[RenderedChunkResult]:
         if not chunks:
             return []
-        await self._model_manager.ensure_loaded(model_id)
+        await self._ensure_loaded_with_timeout(model_id)
         prompts = [self._voice_registry.get_prompt(chunk.voice_id) for chunk in chunks]
         start = monotonic()
         self._model_manager.mark_busy()
         await self._broadcast_model_state()
         try:
-            try:
-                results = await self._provider.synthesize_batch(model_id, chunks, prompts)
-            except SynthesisOOMError:
-                self._telemetry.record_oom()
-                if len(chunks) == 1:
-                    raise
-                retry_size = max(1, len(chunks) - 1)
-                results = await self._provider.synthesize_batch(
-                    model_id, chunks[:retry_size], prompts[:retry_size]
-                )
-                chunks = chunks[:retry_size]
+            results, chunks = await self._synthesize_with_oom_retry(model_id, chunks, prompts)
             packaged: list[RenderedChunkResult] = []
             for chunk, result in zip(chunks, results, strict=True):
                 stored = self._media_store.package_wav_chunk(
@@ -102,3 +98,53 @@ class SynthesisWorker:
         finally:
             self._model_manager.mark_idle()
             await self._broadcast_model_state()
+
+    async def _synthesize_with_oom_retry(
+        self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
+    ) -> tuple[list[RawSynthesisResult], list[ChunkRecord]]:
+        """Synthesize, halving the batch on OOM until it fits.
+
+        Returns the results together with the (possibly shrunk) chunk list, so
+        the caller knows which chunks were actually rendered and can requeue the
+        rest. A single shrink is not enough now that the default batch can be 8:
+        the OOM threshold can be several chunks below the configured size.
+        """
+        while True:
+            try:
+                results = await self._synthesize_with_timeout(model_id, chunks, prompts)
+                return results, chunks
+            except SynthesisOOMError:
+                self._telemetry.record_oom()
+                if len(chunks) <= 1:
+                    raise
+                size = max(1, len(chunks) // 2)
+                chunks = chunks[:size]
+                prompts = prompts[:size]
+
+    async def _ensure_loaded_with_timeout(self, model_id: str) -> None:
+        """Load the model, bounded by a deadline.
+
+        A hung load otherwise blocks the single worker thread forever and every
+        later tick queues behind it. On timeout the manager is flagged as
+        errored so the scheduler stops dispatching until the provider is reset.
+        """
+        timeout = self._config.model_load_timeout_seconds
+        try:
+            await asyncio.wait_for(self._model_manager.ensure_loaded(model_id), timeout=timeout)
+        except TimeoutError as exc:
+            message = f"Model load timed out after {timeout:.0f}s"
+            self._model_manager.mark_error(message)
+            raise SynthesisTimeoutError(message) from exc
+
+    async def _synthesize_with_timeout(
+        self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
+    ) -> list[RawSynthesisResult]:
+        timeout = self._config.synthesis_timeout_seconds
+        try:
+            return await asyncio.wait_for(
+                self._provider.synthesize_batch(model_id, chunks, prompts), timeout=timeout
+            )
+        except TimeoutError as exc:
+            message = f"Synthesis timed out after {timeout:.0f}s"
+            self._model_manager.mark_error(message)
+            raise SynthesisTimeoutError(message) from exc

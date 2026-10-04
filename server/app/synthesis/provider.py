@@ -17,6 +17,18 @@ class SynthesisOOMError(RuntimeError):
     pass
 
 
+class SynthesisTimeoutError(RuntimeError):
+    """Raised when a model load or synthesis call exceeds its deadline.
+
+    A timed-out call leaves the single worker thread running (a thread stuck in
+    native code cannot be interrupted), so the model manager moves to
+    `ModelState.ERROR` and the scheduler stops dispatching until the provider is
+    reset. See `ModelManager.reset_provider`.
+    """
+
+    pass
+
+
 class ModelVRAMError(RuntimeError):
     """Raised when there is insufficient VRAM to load the model."""
 
@@ -33,6 +45,7 @@ class RawSynthesisResult:
 class SynthesisProvider(Protocol):
     def validate_environment(self) -> None: ...
     def set_device(self, device: str) -> None: ...
+    def reset(self) -> None: ...
     async def load_model(self, model_id: str) -> None: ...
     async def unload_model(self) -> None: ...
     async def synthesize_batch(
@@ -51,6 +64,10 @@ class FakeQwenProvider:
 
     def set_device(self, device: str) -> None:
         self._device = device
+
+    def reset(self) -> None:
+        self._loaded = False
+        self._device = "auto"
 
     async def load_model(self, model_id: str) -> None:
         await asyncio.sleep(0.01)
@@ -140,6 +157,23 @@ class QwenProvider:
 
     def set_device(self, device: str) -> None:
         self._device = device
+
+    def reset(self) -> None:
+        """Replace the worker executor and drop all model state.
+
+        This is the recovery path for a stuck provider thread: the old pool is
+        shut down without waiting (a thread blocked in native code cannot be
+        interrupted, so it is abandoned deliberately) and a fresh single-worker
+        pool takes over, letting the scheduler recover without a server
+        restart. `cancel_futures=True` discards work that piled up behind the
+        stuck call instead of replaying it.
+        """
+        old_executor = self._executor
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readflow-qwen")
+        old_executor.shutdown(wait=False, cancel_futures=True)
+        self._model = None
+        self._loaded_model_id = None
+        self._prompt_cache.clear()
 
     def validate_environment(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

@@ -83,11 +83,14 @@ class AdminConfigResponse(BaseModel):
     idle_unload_seconds: int
     max_prebuffer_seconds: int
     target_buffer_seconds: int
-    inactive_job_ahead_chunks: int
+    plan_ahead_chunks: int
     batch_candidates_small_model: list[int]
     batch_candidates_large_model: list[int]
     vram_soft_limit_mb: int
     vram_hard_limit_mb: int
+    chunk_max_attempts: int
+    model_load_timeout_seconds: float
+    synthesis_timeout_seconds: float
 
 
 class AdminConfigUpdateRequest(BaseModel):
@@ -95,11 +98,14 @@ class AdminConfigUpdateRequest(BaseModel):
     idle_unload_seconds: int | None = None
     max_prebuffer_seconds: int | None = None
     target_buffer_seconds: int | None = None
-    inactive_job_ahead_chunks: int | None = None
+    plan_ahead_chunks: int | None = None
     batch_candidates_small_model: list[int] | None = None
     batch_candidates_large_model: list[int] | None = None
     vram_soft_limit_mb: int | None = None
     vram_hard_limit_mb: int | None = None
+    chunk_max_attempts: int | None = None
+    model_load_timeout_seconds: float | None = None
+    synthesis_timeout_seconds: float | None = None
 
 
 class QueueBatch(BaseModel):
@@ -122,6 +128,14 @@ class SchedulerStateResponse(BaseModel):
     # Present while a batch is rendering so the admin queue view can go live
     # without polling. The full queue detail is fetched over HTTP.
     active_batch: QueueBatch | None = None
+    # Liveness. `running=False`, a stale `last_tick_at`, or a non-empty
+    # `last_error` are what make a silently stalled scheduler visible.
+    running: bool = False
+    last_tick_at: float | None = None
+    last_error: str | None = None
+    consecutive_errors: int = 0
+    # Set while dispatch is intentionally paused (e.g. the VRAM hard limit).
+    warning: str | None = None
 
 
 class QueueChunkVersionResponse(BaseModel):
@@ -222,6 +236,9 @@ class AdminStateResponse(BaseModel):
     scheduler: SchedulerStateResponse
     telemetry: dict[str, object]
     memory: AdminMemoryStats | None = None
+    # Most recent model load/synthesis failure, so a stuck model is not just
+    # an unexplained "unloaded" chip.
+    model_last_error: str | None = None
 
 
 class WsEnvelope(BaseModel):

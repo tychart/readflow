@@ -254,7 +254,8 @@ Key files:
 - `web/src/features/reader/reader-model.ts` (pure: patch merging, version resolution, gap-aware playback model, slot states)
 - `web/src/features/reader/reader-text.ts` + `ReaderText.tsx` (canonical-text layout + reader blocks)
 - `web/src/features/reader/chunk-utils.ts` (chunk/version/status/text helpers, shared with the sidebar)
-- `web/src/features/reader/transport.ts` (play-button label, spinner and status-pill rules)
+- `web/src/features/reader/transport.ts` (play-button label, spinner, status-pill and render-stall rules)
+- `web/src/features/reader/RenderingStallBanner.tsx` (stalled-producer banner + Retry)
 - `web/src/features/reader/conveyor-physics.ts` (pure: conveyor gesture physics + layout)
 - `web/src/lib/media-source.ts` (player hook: `<audio>`, `MediaSource`, append queue)
 - `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
@@ -597,6 +598,28 @@ If you see bugs where the hidden audio plays but the button still says `Play`, o
 - `playIntent`
 - explicit timeline seek handlers
 
+### Render-stall banner (producer health in the reader)
+
+A starved player used to spin "Buffering…" forever, even if the backend had
+stopped producing for good. The reader now distinguishes "slow" from "stopped":
+
+- `transport.ts` owns the pure decision, `isRenderingStalled(state,
+  secondsSinceChunk)` (threshold `RENDERING_STALL_SECONDS = 25`). It is true only
+  when playback is wanted (`playIntent`), actually starved (`isWaitingForData`),
+  the job is non-terminal, and no new chunk has arrived for the threshold.
+- `ReaderPage` tracks `lastChunkAtRef`, reset whenever the written-chunk count
+  changes or the job changes, and re-checks on a 5 s poll while playing. Do not
+  measure "since mount" — a deep buffer could run for minutes without a new
+  chunk while healthy.
+- `RenderingStallBanner` is dismissable and offers **Retry**, which re-fetches
+  reader state and re-activates the job (`refreshReaderState` + `activateJob`)
+  so scheduling resumes. A recovered producer clears the dismissal so a later
+  stall is shown again.
+- This is the frontend half of the scheduler circuit breaker: when the model is
+  in `ModelState.ERROR`, dispatch stops until an operator uses Admin → **Reset
+  provider**, and the banner is what tells the listener to do that instead of
+  waiting forever.
+
 ### Missing job ids redirect home (and stale jobs are revalidated)
 
 Unknown *paths* are handled by the catch-all route in `App.tsx`. A real route
@@ -688,12 +711,22 @@ Important behavior:
 
 - jobs are containers; chunk tasks are what actually get scheduled
 - paused jobs are excluded from future scheduling
-- active listening jobs are prioritized above inactive queued jobs
+- priority bands: `0` an active listener below `target_buffer_seconds` (60s)
+  preempts everything; `1` an active listener between the target and the ideal
+  buffer (`max_prebuffer_seconds`, 300s) \u2014 keeps the listener ahead enough to
+  raise speed or skip; `2` background jobs **and** listeners already at/above the
+  ideal buffer (they round-robin together); `99` paused. Planning for an active
+  job stops at the ideal buffer, which is what drops it into band 2.
+- inactive jobs are scheduled fairly (round-robin by chunk index) instead of one
+  job monopolising the queue
 - scheduling is buffer-aware
 - per-job prebuffer is capped
-- batch size is dynamic
-- VRAM soft limit influences batch downshifting
-- on OOM, worker records telemetry and retries with a smaller batch once
+- batch size is dynamic, driven by the configured VRAM soft limit
+- the configured VRAM hard limit pauses dispatch and raises an Admin warning
+- the planner keeps `plan_ahead_chunks` (default 16) ready per job so a single
+  job can fill the largest batch
+- on OOM, worker records telemetry and halves the batch until it fits (then
+  requeues the chunks it dropped)
 
 Current batch grouping dimensions:
 
@@ -924,7 +957,11 @@ Design rules that are deliberate and easy to break:
 - Status output distinguishes "ours" (recorded pid) from "up but not started here" — the
   latter must never be presented as managed by the script.
 - Logs live in `.dev-logs/` (gitignored) and are tailed with coloured `[api]`/`[web]`
-  prefixes; `NO_COLOR=1` and non-TTY runs get plain output.
+  prefixes; `NO_COLOR=1` and non-TTY runs get plain output. Starting the stack
+  **rotates** the previous `api.log`/`web.log` into `.dev-logs/archive/`
+  (`DEV_LOG_RETENTION`, default 10, kept per stream) rather than truncating them —
+  a truncated log once made an outage impossible to diagnose. The stable log paths
+  are what `logs`/`status`/`report_failure` read, so rotation must move, not copy.
 
 ## Testing Strategy and Expectations
 
@@ -1278,6 +1315,7 @@ Reader page:
 - inspect chunk statuses
 - use a custom segmented timeline (the whole-document overview)
 - support gap-aware playback and manual jump-to-later-ready chunks
+- a dismissable "rendering seems stalled" banner with a one-click Retry when the producer stops
 - keyboard control anywhere on the page (see the shortcuts guide in reader settings)
 - reader settings (motion, conveyor, jump buttons, window size) persisted per device
 - a phone bottom dock with the transport and conveyor in the thumb zone
@@ -1306,11 +1344,12 @@ scheduler behavior debuggable, not just pretty.
   and `chunks_truncated`. Pending chunks carry the scheduler's own
   `priority_band/label/reason` and `rank`; `is_pending` tells the UI which rows
   the scheduler can still act on. Never re-derive priority in the frontend.
-- Important: for an **inactive** (not-playing) job the planner keeps only
-  `inactive_job_ahead_chunks` chunks ready (default 1), so its queue is tiny by
-  design and batches are single-chunk. Multi-chunk batches come from actively
-  listening jobs (5 ahead) or several queued jobs. `inactive_job_ahead_chunks`
-  is exposed in Admin → Overview so this can be tuned live.
+- Important: the planner keeps `plan_ahead_chunks` chunks ready per job
+  (default 16, Admin-tunable). This must stay at least the largest batch
+  candidate, otherwise no single job can fill a batch and background rendering
+  runs one chunk at a time. Inactive jobs use the same window, so a job nobody
+  is listening to still renders at full batch size once an active listener's
+  buffer is satisfied.
 - Rows are bounded server-side by `QUEUE_SNAPSHOT_CHUNK_LIMIT` (200/job); every
   pending chunk is always kept and the rest of the budget goes to the most
   recent history, with `chunks_truncated` set when history was dropped.
@@ -1348,13 +1387,68 @@ scheduler behavior debuggable, not just pretty.
 
 ### Scheduler: partial batches are requeued (do not regress)
 
-The worker retries an OOM with a smaller batch and returns fewer results than
-the scheduler dispatched. `_render_next_batch` therefore zips
+The worker handles an OOM by halving the batch and retrying until it fits, then
+returns fewer results than the scheduler dispatched. `_render_next_batch`
+therefore zips
 `batch`/`results` with `strict=False` and calls
 `JobManager.mark_chunk_planned` on the leftovers. Previously a `strict=True`
 zip raised inside `run_once` and could kill the scheduler loop, leaving the
 dropped chunks stuck in `RENDERING`. The queue inspector surfaces this state, so
 keep the requeue behavior intact.
+
+### Scheduler reliability: it must never die, and must never silently freeze
+
+This was a real outage: a long job rendered a while, then stopped permanently
+while HTTP kept serving. Root causes were structural, and all of them are now
+load-bearing behavior that must not be "simplified" away.
+
+- **`run_forever` isolates every tick.** Any exception from `run_once` is
+  logged, recorded as a `scheduler_error` telemetry event, and retried on the
+  next tick, with exponential backoff (capped at 5 s) so a persistent error
+  cannot spin-log at the tick rate. Previously one uncaught error (ffmpeg
+  `CalledProcessError`, a provider `RuntimeError`, a voice-prompt miss) escaped
+  the while loop and killed the task for the life of the process. Do not move
+  the `try/except` inside `run_once`; the whole tick must be covered.
+- **`_render_next_batch` catches every non-cancellation exception** and funnels
+  it through `_handle_batch_failure`. Only `SynthesisOOMError`/`ModelVRAMError`
+  were caught before.
+- **Bounded per-chunk retries.** `ChunkRecord.attempts` counts failures;
+  `_handle_batch_failure` calls `JobManager.mark_chunk_retry` until
+  `chunk_max_attempts` (default 3, Admin-tunable), then
+  `JobManager.mark_chunk_failed`. A failed chunk does **not** fail the job —
+  `mark_chunk_failed` deliberately leaves `job.status` alone so the rest of a
+  book keeps rendering with a visible gap.
+- **Completion is decided by `Job.has_unfinished_chunks()`**, not
+  `versioned_pending_chunks()`. The latter is always empty for ordinary
+  (non-reprocessed) jobs, so the old check marked a job `completed` as soon as
+  the planner reached the end of the text — even with a batch still queued.
+  This mattered the moment the plan-ahead window grew past one chunk.
+- **Provider calls have deadlines.** `SynthesisWorker._ensure_loaded_with_timeout`
+  and `_synthesize_with_timeout` wrap the provider in `asyncio.wait_for`
+  (`model_load_timeout_seconds` 900, `synthesis_timeout_seconds` 300,
+  Admin-tunable). On timeout the worker calls `ModelManager.mark_error`, which
+  sets `ModelState.ERROR`; `run_once` then refuses to dispatch into a possibly
+  stuck single worker thread and keeps broadcasting. `mark_idle` explicitly
+  does not clobber `ERROR` — that guard is the circuit breaker.
+- **Recovery is manual, by design.** Admin → **Reset provider**
+  (`POST /api/admin/model/reset` → `ModelManager.reset_provider` →
+  `QwenProvider.reset`) replaces the single-worker `ThreadPoolExecutor`
+  (`shutdown(wait=False, cancel_futures=True)`, abandoning a thread stuck in
+  native code) and clears model state. Warming the model alone never unstuck a
+  dead loop; this endpoint is what actually recovers it.
+- **Liveness is observable.** `/api/admin/state` and the `scheduler_state`
+  WebSocket tick carry `running`, `last_tick_at`, `last_error`,
+  `consecutive_errors`, plus `model_last_error`. The Admin Overview renders
+  them, so a frozen scheduler is visible instead of looking like an idle one.
+- **Admin HTTP paths are bounded too.** `/admin/state` reads `memory_stats()`
+  behind a 2 s `wait_for`, and `/admin/model/warm` uses the load timeout, so a
+  stuck worker thread cannot hang the admin panel.
+
+`test_run_forever_survives_a_failing_tick`,
+`test_batch_failure_retries_within_budget_then_skips_chunk`,
+`test_synthesis_timeout_flags_model_error_and_pauses_dispatch`,
+`test_job_completes_only_when_every_chunk_is_written`, and the
+`ModelManager` ERROR/`reset_provider` tests pin this.
 
 ## What Was Added During This Conversation
 
@@ -1376,9 +1470,14 @@ Future agents should know that the following were created or materially changed 
   per-job full chunk-lifecycle inspector (written/rendering/planned/failed +
   unplanned remainder) with active/next batch, priority reasons, version
   switching, and pause/resume/reprocess actions
-- `inactive_job_ahead_chunks` exposed as a live Admin → Overview knob (default
-  1); the queue inspector's "only one chunk" case is the intended lazy-planning
-  behavior for non-playing jobs, not a bug
+- `plan_ahead_chunks` (default 16) exposed as a live Admin → Overview knob,
+  replacing the old `inactive_job_ahead_chunks=1` window that kept background
+  batches at one chunk
+- VRAM `vram_soft_limit_mb` now actually drives batch sizing and
+  `vram_hard_limit_mb` pauses dispatch with an Admin warning (both were dead
+  config before)
+- idle model unload only happens when the queue is empty, so a long job keeps
+  its VRAM while unrendered work remains
 - scheduler partial-batch requeue fix (`mark_chunk_planned`, `zip(strict=False)`)
   so OOM-retry leftovers are retried instead of stuck in `RENDERING`
 - server-side `.m4a` export for contiguous rendered audio
@@ -1426,6 +1525,23 @@ Newest round — reader navigation (four commits):
 
 Test count over that round: 122 → 347 web unit/component tests, 4 → 8 Playwright
 tests.
+
+Reliability / throughput / stall round (three workstreams):
+
+1. **Scheduler reliability.** The unsupervised `run_forever` loop (any tick
+   exception killed rendering permanently), unbounded provider calls, the
+   `LOADING` dead-end, whole-job failure on one bad chunk, and the
+   premature-`completed` bug are all fixed and tested. See "Scheduler
+   reliability: it must never die" above. Adds Admin → **Reset provider** and
+   scheduler liveness in `/api/admin/state`.
+2. **Throughput and priority.** `plan_ahead_chunks` (16) replaces the old
+   one-chunk inactive window; priority bands give an active listener top
+   priority until its ideal buffer, then let it share the lowest band with
+   background work; the VRAM soft/hard limits actually do something; idle unload
+   waits for an empty queue. OOM handling now halves the batch until it fits
+   instead of shrinking once.
+3. **Reader stall banner.** `RenderingStallBanner` + `isRenderingStalled` give a
+   starved listener a visible stall and a Retry instead of an endless spinner.
 
 ## Agent Workflow Checklist
 

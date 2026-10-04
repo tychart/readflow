@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from time import time
+from typing import TypedDict
 
 from app.chunking.planner import ChunkPlanner
 from app.core.config import RuntimeConfig
 from app.core.hub import WebSocketHub
 from app.jobs.manager import JobManager
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
+from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, ModelState
 from app.schemas.api import (
     AdminQueueResponse,
     QueueBatch,
@@ -20,9 +22,10 @@ from app.schemas.api import (
     job_to_summary,
 )
 from app.synthesis.model_manager import ModelManager
-from app.synthesis.provider import ModelVRAMError, SynthesisOOMError
 from app.synthesis.worker import SynthesisWorker
 from app.telemetry.service import TelemetryService
+
+logger = logging.getLogger(__name__)
 
 # Chunks the scheduler can still act on. Shared so priority ranking and the
 # admin queue read-model cannot disagree about what "pending" means.
@@ -31,6 +34,16 @@ _PENDING_STATUSES = frozenset({ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkSta
 # Upper bound on rows returned per job by `queue_snapshot`; pending chunks are
 # always kept and the rest of the budget goes to the most recent history.
 QUEUE_SNAPSHOT_CHUNK_LIMIT = 200
+
+
+class SchedulerLiveness(TypedDict):
+    """Live health of the scheduling loop, surfaced in the admin views."""
+
+    running: bool
+    last_tick_at: float | None
+    last_error: str | None
+    consecutive_errors: int
+    warning: str | None
 
 
 class SchedulerService:
@@ -57,14 +70,58 @@ class SchedulerService:
         self._hub = hub
         self._stop_event = asyncio.Event()
         self._memory_broadcast_task: asyncio.Task[None] | None = None
+        # Liveness, surfaced through /admin/state and the scheduler_state tick.
+        self._running = False
+        self._last_tick_at: float | None = None
+        self._last_error: str | None = None
+        self._consecutive_errors = 0
+        # Set while dispatch is intentionally paused (e.g. the VRAM hard limit),
+        # cleared once a batch is dispatched again.
+        self._warning: str | None = None
+
+    def liveness_snapshot(self) -> SchedulerLiveness:
+        return {
+            "running": self._running,
+            "last_tick_at": self._last_tick_at,
+            "last_error": self._last_error,
+            "consecutive_errors": self._consecutive_errors,
+            "warning": self._warning,
+        }
 
     async def run_forever(self) -> None:
+        """Run the scheduling loop, surviving any single tick's failure.
+
+        One malformed batch, a provider error, or an ffmpeg failure used to
+        escape `run_once` and silently kill this task for the life of the
+        process — rendering stopped permanently while HTTP kept serving. A
+        failure is now logged, recorded, and retried on the next tick.
+        """
+        self._running = True
         self._start_memory_broadcast()
         try:
             while not self._stop_event.is_set():
-                await self.run_once()
-                await asyncio.sleep(self._config.planning_tick_seconds)
+                try:
+                    await self.run_once()
+                    self._consecutive_errors = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._consecutive_errors += 1
+                    self._last_error = f"{type(exc).__name__}: {exc}"
+                    self._telemetry.record_event(
+                        "scheduler_error",
+                        {"error": self._last_error, "count": self._consecutive_errors},
+                    )
+                    logger.exception("Scheduler tick failed; continuing")
+                # Back off after repeated failures so a persistent error cannot
+                # spin the loop (and flood the log) at the tick rate.
+                delay = self._config.planning_tick_seconds
+                if self._consecutive_errors:
+                    exponent = min(self._consecutive_errors, 6)
+                    delay = min(5.0, delay * (2**exponent))
+                await asyncio.sleep(delay)
         finally:
+            self._running = False
             self._stop_memory_broadcast()
 
     async def shutdown(self) -> None:
@@ -108,12 +165,24 @@ class SchedulerService:
                 break
 
     async def run_once(self) -> None:
+        self._last_tick_at = time()
+        if self._model_manager.state == ModelState.ERROR:
+            # A load or synthesis previously timed out; the worker thread may
+            # still be stuck. Do not dispatch into it — wait for an operator to
+            # reset the provider. Keep broadcasting so the failure is visible
+            # instead of the queue silently freezing.
+            await self._broadcast_scheduler_state()
+            return
         self._ensure_planned_chunks()
         renderable = self._rank_renderable_chunks()
         self._telemetry.set_queue_depth(self._job_manager.queue_depth())
         if renderable:
             await self._render_next_batch(renderable)
-        await self._model_manager.maybe_unload_idle()
+        # Keep the model resident while there is work to do; only let it idle
+        # out once the queue is genuinely empty.
+        await self._model_manager.maybe_unload_idle(
+            has_pending_work=self._job_manager.queue_depth() > 0
+        )
         await self._broadcast_scheduler_state()
 
     async def _broadcast_scheduler_state(self) -> None:
@@ -134,6 +203,7 @@ class SchedulerService:
                     "active_batch": (
                         active_batch.model_dump() if active_batch is not None else None
                     ),
+                    **self.liveness_snapshot(),
                 },
             ).model_dump()
         )
@@ -162,9 +232,11 @@ class SchedulerService:
             if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}
             and chunk.plan_version == job.plan_version
         )
-        if job.is_active_listening:
-            return job.buffered_seconds < self._config.max_prebuffer_seconds and active_planned < 5
-        return active_planned < self._config.inactive_job_ahead_chunks
+        if active_planned >= self._config.plan_ahead_chunks:
+            return False
+        if job.is_active_listening and job.buffered_seconds >= self._config.max_prebuffer_seconds:
+            return False
+        return True
 
     def _rank_renderable_chunks(self) -> list[ChunkRecord]:
         chunks = list(self._job_manager.renderable_chunks())
@@ -174,21 +246,33 @@ class SchedulerService:
         """Return the scheduler's coarse priority band for a job.
 
         Bands are the first component of `_chunk_priority` and are what the
-        scheduler orders jobs by: active listeners short on buffer first, then
-        active listeners, then queued jobs, with paused jobs excluded last.
+        scheduler orders jobs by:
+
+        - 0: an active listener below `target_buffer_seconds` \u2014 about to run
+          dry, preempts everything else.
+        - 1: an active listener between the target and the ideal buffer
+          (`max_prebuffer_seconds`). It is not about to dry up, but keeping it
+          comfortably ahead is what lets the user raise playback speed or skip
+          without hitting the render ceiling.
+        - 2: background work \u2014 queued jobs and listeners already at or above
+          the ideal buffer. These round-robin together, so a fully-prebuffered
+          listener stops monopolising the GPU.
+        - 99: paused, excluded.
         """
         if job.status == JobStatus.PAUSED:
             return 99
-        if job.is_active_listening and job.buffered_seconds < self._config.target_buffer_seconds:
-            return 0
         if job.is_active_listening:
-            return 1
+            if job.buffered_seconds < self._config.target_buffer_seconds:
+                return 0
+            if job.buffered_seconds < self._config.max_prebuffer_seconds:
+                return 1
         return 2
 
     def _priority_info(self, job: Job, chunk: ChunkRecord) -> tuple[int, str, str]:
         """Translate a priority band into an operator-facing label and reason."""
         band = self._priority_band(job)
         target = self._config.target_buffer_seconds
+        ideal = self._config.max_prebuffer_seconds
         if band == 99:
             return band, "Paused", "Paused job \u2014 excluded from scheduling."
         if band == 0:
@@ -201,11 +285,18 @@ class SchedulerService:
         if band == 1:
             return (
                 band,
-                "High",
+                "Filling",
                 f"Active listener with {job.buffered_seconds:.1f}s buffered "
-                f"(target of {target}s met).",
+                f"(target {target}s met, below the {ideal}s ideal buffer).",
             )
-        return band, "Normal", "Queued job with no active listener."
+        if job.is_active_listening:
+            return (
+                band,
+                "Buffered",
+                f"Active listener with {job.buffered_seconds:.1f}s buffered "
+                f"(ideal {ideal}s met) \u2014 shares the lowest band with background work.",
+            )
+        return band, "Background", "Queued job with no active listener."
 
     def _group_chunks(
         self, chunks: list[ChunkRecord]
@@ -224,7 +315,7 @@ class SchedulerService:
     def _select_next_batch(
         self,
         ranked_chunks: list[ChunkRecord],
-        vram_used_mb: int,
+        vram_reserved_mb: int,
         vram_total_mb: int,
     ) -> tuple[tuple[str, str, str] | None, list[ChunkRecord]]:
         """Pick the next batch exactly as the scheduler would dispatch it.
@@ -236,7 +327,7 @@ class SchedulerService:
         if not grouped:
             return None, []
         group_key, chunks = next(iter(grouped.items()))
-        batch_size = self._choose_batch_size(len(chunks), vram_used_mb, vram_total_mb)
+        batch_size = self._choose_batch_size(len(chunks), vram_reserved_mb, vram_total_mb)
         return group_key, chunks[:batch_size]
 
     def _chunk_priority(self, chunk: ChunkRecord) -> tuple[int, int, int]:
@@ -247,10 +338,19 @@ class SchedulerService:
         if not ranked_chunks:
             return
         stats = await self._model_manager.memory_stats()
-        _device, vram_total, vram_used = stats[0], stats[1], stats[2]
-        group_key, batch = self._select_next_batch(ranked_chunks, vram_used, vram_total)
+        # stats[1] is total VRAM, stats[3] is reserved (what nvidia-smi shows).
+        vram_total, vram_reserved = stats[1], stats[3]
+        if self._hard_limit_exceeded(vram_reserved):
+            self._set_warning(
+                f"VRAM hard limit reached ({vram_reserved} MB >= "
+                f"{self._config.vram_hard_limit_mb} MB); dispatch paused. "
+                "Evict the model or raise the hard limit in Admin."
+            )
+            return
+        group_key, batch = self._select_next_batch(ranked_chunks, vram_reserved, vram_total)
         if group_key is None or not batch:
             return
+        self._clear_warning()
         model_id = group_key[0]
         for chunk in batch:
             self._job_manager.mark_chunk_queued(chunk)
@@ -260,13 +360,14 @@ class SchedulerService:
         await self._broadcast_scheduler_state()
         try:
             results = await self._worker.render_batch(model_id, batch)
-        except SynthesisOOMError as exc:
-            for chunk in batch:
-                self._job_manager.mark_chunk_failed(chunk, str(exc))
-            return
-        except ModelVRAMError as exc:
-            for chunk in batch:
-                self._job_manager.mark_chunk_failed(chunk, f"Failed to load model: {exc}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Never let one bad batch kill the loop. The chunks are retried
+            # within their attempt budget; once that is spent only those chunks
+            # are marked failed and the job keeps rendering its other chunks.
+            logger.exception("Batch render failed for %d chunk(s)", len(batch))
+            self._handle_batch_failure(batch, exc)
             return
 
         # `strict=False`: the worker shrinks a batch when it hits an OOM and
@@ -303,9 +404,42 @@ class SchedulerService:
         for chunk in batch[len(results) :]:
             self._job_manager.mark_chunk_planned(chunk)
 
-    def _choose_batch_size(self, available: int, vram_used_mb: int, vram_total_mb: int) -> int:
+    def _handle_batch_failure(self, batch: list[ChunkRecord], error: Exception) -> None:
+        """Requeue or fail the chunks of a batch that raised.
+
+        Retries are bounded by `chunk_max_attempts`; when the budget is spent
+        the chunk is marked failed and skipped. Either way the job is left
+        alive — a single poison chunk must not stop a whole book.
+        """
+        message = f"{type(error).__name__}: {error}"
+        for chunk in batch:
+            if chunk.attempts + 1 >= self._config.chunk_max_attempts:
+                self._job_manager.mark_chunk_failed(chunk, message)
+            else:
+                self._job_manager.mark_chunk_retry(chunk, message)
+        self._telemetry.record_event("batch_failed", {"error": message, "chunk_count": len(batch)})
+
+    def _hard_limit_exceeded(self, vram_reserved_mb: int) -> bool:
+        hard = self._config.vram_hard_limit_mb
+        return hard > 0 and vram_reserved_mb >= hard
+
+    def _set_warning(self, message: str) -> None:
+        if self._warning == message:
+            return
+        self._warning = message
+        logger.warning("%s", message)
+        self._telemetry.record_event("scheduler_warning", {"warning": message})
+
+    def _clear_warning(self) -> None:
+        self._warning = None
+
+    def _choose_batch_size(self, available: int, vram_reserved_mb: int, vram_total_mb: int) -> int:
         candidates = list(self._config.batch_candidates_small_model)
-        if vram_total_mb > 0 and vram_used_mb / vram_total_mb >= 0.8:
+        # The configured soft limit is the real budget (falling back to physical
+        # VRAM when it is 0/unset). Downshift as usage approaches it so a batch
+        # cannot push the process over the limit.
+        budget = self._config.vram_soft_limit_mb or vram_total_mb
+        if budget > 0 and vram_reserved_mb / budget >= 0.8:
             candidates = [size for size in candidates if size <= 3] or [1]
         for size in candidates:
             if available >= size:
@@ -331,6 +465,10 @@ class SchedulerService:
             and chunk.status in _PENDING_STATUSES
         ]
         return sorted(chunks, key=self._chunk_priority)
+
+    def active_batch(self) -> QueueBatch | None:
+        """Public accessor for the batch currently in flight."""
+        return self._active_batch()
 
     def _active_batch(self) -> QueueBatch | None:
         """The batch currently in flight, derived from `RENDERING` status.

@@ -108,6 +108,31 @@ async def test_admin_warm_and_evict_endpoints(client):
     assert evict.json()["status"] == "evicted"
 
 
+async def test_admin_reset_provider_endpoint(client, services):
+    """The manual escape hatch for a hung/errored provider."""
+    services.model_manager.mark_error("Synthesis timed out")
+
+    response = await client.post("/api/admin/model/reset")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "reset"
+    assert services.model_manager.last_error is None
+    assert services.model_manager.state == "unloaded"
+
+
+async def test_admin_state_reports_scheduler_liveness(client, services):
+    response = await client.get("/api/admin/state")
+
+    assert response.status_code == 200
+    body = response.json()
+    scheduler = body["scheduler"]
+    assert "running" in scheduler
+    assert "last_tick_at" in scheduler
+    assert "last_error" in scheduler
+    assert "consecutive_errors" in scheduler
+    assert "model_last_error" in body
+
+
 async def test_playback_updates_do_not_broadcast_job_events(client, services):
     create_response = await client.post(
         "/api/jobs",
@@ -763,12 +788,12 @@ async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, serv
 async def test_admin_config_exposes_and_updates_inactive_ahead_window(client, services):
     initial = await client.get("/api/admin/config")
     assert initial.status_code == 200
-    assert initial.json()["inactive_job_ahead_chunks"] == 1
+    assert initial.json()["plan_ahead_chunks"] == 16
 
-    updated = await client.post("/api/admin/config", json={"inactive_job_ahead_chunks": 4})
+    updated = await client.post("/api/admin/config", json={"plan_ahead_chunks": 4})
     assert updated.status_code == 200
-    assert updated.json()["inactive_job_ahead_chunks"] == 4
-    assert services.settings.runtime.inactive_job_ahead_chunks == 4
+    assert updated.json()["plan_ahead_chunks"] == 4
+    assert services.settings.runtime.plan_ahead_chunks == 4
 
     # An inactive job now plans up to the configured window.
     long_text = "A sentence that is long enough to plan a chunk. " * 200

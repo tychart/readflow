@@ -32,6 +32,11 @@ class ModelState(StrEnum):
     BUSY = "busy"
     EVICTING = "evicting"
     NOT_ENOUGH_VRAM = "not_enough_vram"
+    # A load or synthesis failed in a way the provider cannot recover from by
+    # itself (timeout, executor hang, non-VRAM load error). Scheduling pauses
+    # until an operator hits "Reset provider", so a poisoned worker thread does
+    # not silently absorb every subsequent batch.
+    ERROR = "error"
 
 
 @dataclass(slots=True)
@@ -71,6 +76,10 @@ class ChunkRecord:
     parent_chunk_index: int | None = None
     deprecated: bool = False
     reprocessing: bool = False
+    # Number of failed attempts so far. The scheduler retries a failed chunk up
+    # to `chunk_max_attempts`, then marks it failed and moves on without
+    # failing the whole job.
+    attempts: int = 0
     created_at: float = field(default_factory=time)
     updated_at: float = field(default_factory=time)
 
@@ -114,6 +123,23 @@ class Job:
             for chunk in self.chunks
             if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}
         ]
+
+    def has_unfinished_chunks(self) -> bool:
+        """True while any non-deprecated chunk still needs rendering.
+
+        Completion must be decided from this, not from
+        `versioned_pending_chunks()`: that only knows about reprocessed
+        versions, so for a normal job it is always empty and a job would be
+        marked `completed` as soon as the planner reached the end of the text —
+        even with a whole batch still queued.
+        """
+        unfinished = {
+            ChunkStatus.PLANNED,
+            ChunkStatus.QUEUED,
+            ChunkStatus.RENDERING,
+            ChunkStatus.REPROCESSING,
+        }
+        return any(not chunk.deprecated and chunk.status in unfinished for chunk in self.chunks)
 
     def next_unwritten_chunk(self) -> ChunkRecord | None:
         for chunk in sorted(self.chunks, key=lambda item: item.index):

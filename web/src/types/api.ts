@@ -63,11 +63,14 @@ export interface AdminConfig {
   idle_unload_seconds: number;
   max_prebuffer_seconds: number;
   target_buffer_seconds: number;
-  inactive_job_ahead_chunks: number;
+  plan_ahead_chunks: number;
   batch_candidates_small_model: number[];
   batch_candidates_large_model: number[];
   vram_soft_limit_mb: number;
   vram_hard_limit_mb: number;
+  chunk_max_attempts: number;
+  model_load_timeout_seconds: number;
+  synthesis_timeout_seconds: number;
 }
 
 export interface QueueBatch {
@@ -154,6 +157,13 @@ export interface SchedulerState {
   batch_candidates: number[];
   /** Set while a batch is rendering so the queue view can refresh live. */
   active_batch?: QueueBatch | null;
+  /** Liveness of the scheduling loop; a stale tick or error means it is stuck. */
+  running?: boolean;
+  last_tick_at?: number | null;
+  last_error?: string | null;
+  consecutive_errors?: number;
+  /** Set while dispatch is intentionally paused (e.g. the VRAM hard limit). */
+  warning?: string | null;
 }
 
 // Re-export types that moved to events.ts to keep existing imports working
