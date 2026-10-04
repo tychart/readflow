@@ -354,6 +354,7 @@ test("surfaces scheduler liveness and the last error", () => {
         last_error: "RuntimeError: boom",
         consecutive_errors: 2,
         warning: "VRAM hard limit reached (12000 MB >= 11000 MB); dispatch paused.",
+        vram_per_chunk_mb: 670,
       },
       model_last_error: "Synthesis timed out after 300s",
     },
@@ -365,6 +366,7 @@ test("surfaces scheduler liveness and the last error", () => {
   expect(screen.getByText(/Scheduler stopped/)).toBeInTheDocument();
   expect(screen.getByText(/2 consecutive errors/)).toBeInTheDocument();
   expect(screen.getByText(/Last scheduler error: RuntimeError: boom/)).toBeInTheDocument();
+  expect(screen.getByText(/670 MB\/chunk/)).toBeInTheDocument();
   expect(screen.getByText(/VRAM hard limit reached/)).toBeInTheDocument();
   expect(screen.getByText(/Model error: Synthesis timed out after 300s/)).toBeInTheDocument();
 });

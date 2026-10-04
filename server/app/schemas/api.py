@@ -128,6 +128,9 @@ class SchedulerStateResponse(BaseModel):
     # Present while a batch is rendering so the admin queue view can go live
     # without polling. The full queue detail is fetched over HTTP.
     active_batch: QueueBatch | None = None
+    # Measured marginal allocated VRAM per rendered chunk, used to size batches
+    # against the soft limit. None until the first batch completes.
+    vram_per_chunk_mb: float | None = None
     # Liveness. `running=False`, a stale `last_tick_at`, or a non-empty
     # `last_error` are what make a silently stalled scheduler visible.
     running: bool = False

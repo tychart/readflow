@@ -721,8 +721,15 @@ Important behavior:
   job monopolising the queue
 - scheduling is buffer-aware
 - per-job prebuffer is capped
-- batch size is dynamic, driven by the configured VRAM soft limit
-- the configured VRAM hard limit pauses dispatch and raises an Admin warning
+- batch size is dynamic: it is sized from the **measured marginal allocated VRAM
+  per chunk** (peak allocated minus the idle baseline, from the last completed
+  batch) against the configured VRAM soft limit. Do **not** size from
+  `memory_reserved`: the CUDA caching allocator's pool only grows, so one large
+  batch would pin it at its peak and permanently shrink every later batch
+  (`test_batch_size_uses_measured_per_chunk_cost_against_soft_limit` pins this).
+- the configured VRAM hard limit pauses dispatch and raises an Admin warning;
+  the hard check intentionally uses `memory_reserved` because that is the memory
+  the process cannot hand back
 - the planner keeps `plan_ahead_chunks` (default 16) ready per job so a single
   job can fill the largest batch
 - on OOM, worker records telemetry and halves the batch until it fits (then

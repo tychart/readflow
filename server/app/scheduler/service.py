@@ -22,7 +22,7 @@ from app.schemas.api import (
     job_to_summary,
 )
 from app.synthesis.model_manager import ModelManager
-from app.synthesis.worker import SynthesisWorker
+from app.synthesis.worker import RenderedChunkResult, SynthesisWorker
 from app.telemetry.service import TelemetryService
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,9 @@ class SchedulerService:
         # Set while dispatch is intentionally paused (e.g. the VRAM hard limit),
         # cleared once a batch is dispatched again.
         self._warning: str | None = None
+        # Measured marginal allocated VRAM per chunk, learned from the last
+        # completed batch. Used to size the next batch against the soft limit.
+        self._vram_per_chunk_mb: float | None = None
 
     def liveness_snapshot(self) -> SchedulerLiveness:
         return {
@@ -87,6 +90,11 @@ class SchedulerService:
             "consecutive_errors": self._consecutive_errors,
             "warning": self._warning,
         }
+
+    @property
+    def vram_per_chunk_mb(self) -> float | None:
+        """Measured marginal allocated VRAM per rendered chunk, if known."""
+        return self._vram_per_chunk_mb
 
     async def run_forever(self) -> None:
         """Run the scheduling loop, surviving any single tick's failure.
@@ -203,6 +211,7 @@ class SchedulerService:
                     "active_batch": (
                         active_batch.model_dump() if active_batch is not None else None
                     ),
+                    "vram_per_chunk_mb": self._vram_per_chunk_mb,
                     **self.liveness_snapshot(),
                 },
             ).model_dump()
@@ -315,7 +324,7 @@ class SchedulerService:
     def _select_next_batch(
         self,
         ranked_chunks: list[ChunkRecord],
-        vram_reserved_mb: int,
+        vram_allocated_mb: int,
         vram_total_mb: int,
     ) -> tuple[tuple[str, str, str] | None, list[ChunkRecord]]:
         """Pick the next batch exactly as the scheduler would dispatch it.
@@ -327,7 +336,7 @@ class SchedulerService:
         if not grouped:
             return None, []
         group_key, chunks = next(iter(grouped.items()))
-        batch_size = self._choose_batch_size(len(chunks), vram_reserved_mb, vram_total_mb)
+        batch_size = self._choose_batch_size(len(chunks), vram_allocated_mb, vram_total_mb)
         return group_key, chunks[:batch_size]
 
     def _chunk_priority(self, chunk: ChunkRecord) -> tuple[int, int, int]:
@@ -338,8 +347,11 @@ class SchedulerService:
         if not ranked_chunks:
             return
         stats = await self._model_manager.memory_stats()
-        # stats[1] is total VRAM, stats[3] is reserved (what nvidia-smi shows).
-        vram_total, vram_reserved = stats[1], stats[3]
+        # stats[1] total, stats[2] allocated (the live working set), stats[3]
+        # reserved (the caching allocator's sticky pool). Batch sizing uses
+        # allocated; the hard-limit brake uses reserved because that is what
+        # cannot be handed back to another process.
+        vram_total, vram_allocated, vram_reserved = stats[1], stats[2], stats[3]
         if self._hard_limit_exceeded(vram_reserved):
             self._set_warning(
                 f"VRAM hard limit reached ({vram_reserved} MB >= "
@@ -347,7 +359,7 @@ class SchedulerService:
                 "Evict the model or raise the hard limit in Admin."
             )
             return
-        group_key, batch = self._select_next_batch(ranked_chunks, vram_reserved, vram_total)
+        group_key, batch = self._select_next_batch(ranked_chunks, vram_allocated, vram_total)
         if group_key is None or not batch:
             return
         self._clear_warning()
@@ -373,6 +385,7 @@ class SchedulerService:
         # `strict=False`: the worker shrinks a batch when it hits an OOM and
         # retries, so a short result list is expected here (leftovers are
         # requeued below).
+        self._record_vram_estimate(len(results), results, base_allocated_mb=vram_allocated)
         for chunk, result in zip(batch, results, strict=False):
             job = self._job_manager.mark_chunk_written(
                 chunk,
@@ -433,18 +446,45 @@ class SchedulerService:
     def _clear_warning(self) -> None:
         self._warning = None
 
-    def _choose_batch_size(self, available: int, vram_reserved_mb: int, vram_total_mb: int) -> int:
+    def _choose_batch_size(self, available: int, vram_allocated_mb: int, vram_total_mb: int) -> int:
         candidates = list(self._config.batch_candidates_small_model)
-        # The configured soft limit is the real budget (falling back to physical
-        # VRAM when it is 0/unset). Downshift as usage approaches it so a batch
-        # cannot push the process over the limit.
+        # The configured soft limit is the budget for the batch's peak allocated
+        # working set (falling back to physical VRAM when it is 0/unset). Size
+        # the batch from the measured per-chunk cost so the budget is respected
+        # without being fooled by the sticky reserved pool.
         budget = self._config.vram_soft_limit_mb or vram_total_mb
-        if budget > 0 and vram_reserved_mb / budget >= 0.8:
-            candidates = [size for size in candidates if size <= 3] or [1]
+        if budget > 0:
+            if vram_allocated_mb >= budget:
+                return 1
+            if self._vram_per_chunk_mb:
+                max_by_budget = int((budget - vram_allocated_mb) / self._vram_per_chunk_mb)
+                candidates = [size for size in candidates if size <= max_by_budget] or [1]
         for size in candidates:
             if available >= size:
                 return size
         return 1
+
+    def _record_vram_estimate(
+        self,
+        rendered: int,
+        results: list[RenderedChunkResult],
+        *,
+        base_allocated_mb: int,
+    ) -> None:
+        """Learn the marginal allocated VRAM cost of one chunk.
+
+        `allocated` is used rather than `reserved`: the caching allocator's
+        reserved pool only grows, so a single large batch would pin it at its
+        peak forever and permanently shrink every later batch. The marginal
+        cost is the batch's peak allocated memory minus the idle baseline,
+        divided by the number of chunks that actually rendered.
+        """
+        if rendered <= 0 or not results:
+            return
+        peak_allocated_mb = max(result.allocated_vram_mb for result in results)
+        marginal_mb = peak_allocated_mb - base_allocated_mb
+        if marginal_mb > 0:
+            self._vram_per_chunk_mb = marginal_mb / rendered
 
     # ── Admin queue inspection ─────────────────────────────────────────
 

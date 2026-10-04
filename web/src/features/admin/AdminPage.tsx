@@ -453,6 +453,11 @@ function AdminOverview() {
               Scheduler {adminState.scheduler.running ? "running" : "stopped"}
             </span>
             <span>Last tick {formatTickAge(adminState.scheduler.last_tick_at)}</span>
+            {adminState.scheduler.vram_per_chunk_mb ? (
+              <span title="Measured marginal allocated VRAM per chunk; the soft limit sizes batches from this">
+                ≈{Math.round(adminState.scheduler.vram_per_chunk_mb)} MB/chunk
+              </span>
+            ) : null}
             {(adminState.scheduler.consecutive_errors ?? 0) > 0 && (
               <span className="text-[var(--rose)]">
                 {adminState.scheduler.consecutive_errors} consecutive error

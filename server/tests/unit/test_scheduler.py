@@ -742,19 +742,68 @@ def test_inactive_jobs_round_robin_by_chunk_index(services):
     assert len({chunk.job_id for chunk in batch[:2]}) == 2
 
 
-def test_batch_size_uses_configured_soft_limit(services):
-    services.settings.runtime.batch_candidates_small_model = [8, 4, 3, 2, 1]
-    services.settings.runtime.vram_soft_limit_mb = 1000
+def test_batch_size_uses_measured_per_chunk_cost_against_soft_limit(services):
+    """Sizing must use the measured working set, not the sticky reserved pool.
 
-    # 90% of the soft budget -> downshift.
-    assert services.scheduler._choose_batch_size(8, 900, 24000) <= 3
-    # Plenty of headroom -> the largest candidate.
-    assert services.scheduler._choose_batch_size(8, 100, 24000) == 8
+    Regression: a ratio on `memory_reserved` pinned batches at 3 forever after
+    one 8-chunk batch, because the caching allocator never returns its pool.
+    """
+    services.settings.runtime.vram_soft_limit_mb = 9000
 
-    # A 0 soft limit falls back to physical VRAM.
+    # Before any batch is measured, use the full candidate list.
+    assert services.scheduler._choose_batch_size(8, 2400, 12000) == 8
+
+    # ~670 MB/chunk above a 2400 MB baseline: 8 fits inside 9000 MB.
+    services.scheduler._vram_per_chunk_mb = 670.0
+    assert services.scheduler._choose_batch_size(8, 2400, 12000) == 8
+
+    # A tighter soft limit narrows the batch instead of ratcheting to the floor.
+    services.settings.runtime.vram_soft_limit_mb = 6000
+    assert services.scheduler._choose_batch_size(8, 2400, 12000) == 5
+
+    services.settings.runtime.vram_soft_limit_mb = 3000
+    assert services.scheduler._choose_batch_size(8, 2400, 12000) == 1
+
+    # Already at/over budget -> a single chunk.
+    services.settings.runtime.vram_soft_limit_mb = 9000
+    assert services.scheduler._choose_batch_size(8, 9500, 12000) == 1
+
+    # A 0 soft limit falls back to the physical total and the candidate list.
+    services.scheduler._vram_per_chunk_mb = None
     services.settings.runtime.vram_soft_limit_mb = 0
-    assert services.scheduler._choose_batch_size(8, 5000, 10000) == 8
-    assert services.scheduler._choose_batch_size(8, 9000, 10000) <= 3
+    assert services.scheduler._choose_batch_size(8, 5000, 12000) == 8
+
+
+def test_scheduler_learns_per_chunk_vram_cost(services):
+    job = _create_job(services, title="vram learn")
+    _add_chunk(services, job, "manual chunk")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.batch_candidates_small_model = [2]
+
+    async def fake_memory_stats():
+        return ("cuda", 12000, 2400, 8560, 3440, 32000, 16000, 4096, "cuda")
+
+    services.model_manager.memory_stats = fake_memory_stats  # type: ignore[method-assign]
+
+    async def render(model_id, batch):
+        return [
+            RenderedChunkResult(
+                chunk_index=chunk.index,
+                segment_path="s",
+                init_segment_path="i",
+                wav_path="w",
+                duration_seconds=1.0,
+                reserved_vram_mb=3500,
+                allocated_vram_mb=3740,  # baseline 2400 + 2 * 670
+            )
+            for chunk in batch
+        ]
+
+    services.worker.render_batch = render  # type: ignore[method-assign]
+
+    asyncio.run(services.scheduler.run_once())
+
+    assert round(services.scheduler.vram_per_chunk_mb or 0, 1) == 670.0
 
 
 def test_hard_vram_limit_pauses_dispatch_and_warns_once(services):

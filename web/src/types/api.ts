@@ -164,6 +164,8 @@ export interface SchedulerState {
   consecutive_errors?: number;
   /** Set while dispatch is intentionally paused (e.g. the VRAM hard limit). */
   warning?: string | null;
+  /** Measured marginal allocated VRAM per rendered chunk, if known. */
+  vram_per_chunk_mb?: number | null;
 }
 
 // Re-export types that moved to events.ts to keep existing imports working

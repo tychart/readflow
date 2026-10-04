@@ -542,6 +542,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             queue_depth=app_services.job_manager.queue_depth(),
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
             active_batch=app_services.scheduler.active_batch(),
+            vram_per_chunk_mb=app_services.scheduler.vram_per_chunk_mb,
             **app_services.scheduler.liveness_snapshot(),
         )
         try:
