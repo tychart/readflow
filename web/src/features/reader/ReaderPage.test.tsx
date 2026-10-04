@@ -296,9 +296,10 @@ test("full re-render rebuilds written audio and resets playback", async () => {
   await user.click(screen.getByRole("button", { name: "Play" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument());
 
-  await user.click(screen.getByLabelText(/Also re-render already-rendered chunks/));
   await user.selectOptions(screen.getByRole("combobox"), "howard");
-  await user.click(await screen.findByRole("button", { name: "Change voice" }));
+  // The re-render choice lives inside the confirmation dialog.
+  await user.click(await screen.findByLabelText(/Also re-render already-rendered chunks/));
+  await user.click(screen.getByRole("button", { name: "Change voice" }));
 
   const voiceCall = fetchMock.mock.calls.find(([input]) =>
     String(input).endsWith("/api/jobs/job-1/voice"),
@@ -309,6 +310,61 @@ test("full re-render rebuilds written audio and resets playback", async () => {
   });
   // The whole job was invalidated, so the reader must not keep claiming to play.
   await waitFor(() => expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument());
+});
+
+test("re-render all can be chosen later without changing the voice", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  const writtenChunk = buildReaderJob(1).chunks[0];
+  const plannedChunks = [
+    { ...writtenChunk, status: "planned" as const, segment_url: null, duration_seconds: 0 },
+  ];
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(1) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(1) };
+    }
+    if (url.endsWith("/voice")) {
+      return {
+        ok: true,
+        json: async () => ({
+          ...buildReaderJobWithChunks(plannedChunks, "queued"),
+          voice_id: "suzy",
+          plan_version: 2,
+          audio_epoch: 1,
+        }),
+      };
+    }
+    void init;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  });
+  global.fetch = fetchMock as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
+  await user.click(screen.getByRole("button", { name: /Re-render all rendered chunks/ }));
+  await user.click(await screen.findByRole("button", { name: "Re-render all" }));
+
+  const voiceCall = fetchMock.mock.calls.find(([input]) =>
+    String(input).endsWith("/api/jobs/job-1/voice"),
+  );
+  // Same voice, but every already-rendered chunk is invalidated.
+  expect(JSON.parse(String(voiceCall?.[1]?.body))).toEqual({
+    voice_id: "suzy",
+    rerender_written: true,
+  });
 });
 
 test("redirects to the jobs page when the job id does not exist", async () => {

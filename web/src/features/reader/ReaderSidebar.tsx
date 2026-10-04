@@ -24,6 +24,9 @@ function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+/** Which voice action the confirmation dialog is standing in for. */
+type VoiceAction = { kind: "change"; voiceId: string } | { kind: "rerender" };
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 function formatRelativeTime(timestamp: number | null): string {
@@ -158,17 +161,33 @@ export function ReaderSidebar({
       })),
     );
 
+  // The voice change is confirmed in a dialog, and the checkbox that decides
+  // whether already-rendered audio is replaced lives inside that dialog so the
+  // two choices are made together. "Re-render all" is the same dialog for the
+  // current voice, which is how someone changes their mind later.
+  const [pendingAction, setPendingAction] = useState<VoiceAction | null>(null);
   const [rerenderWritten, setRerenderWritten] = useState(false);
-  const [pendingVoiceId, setPendingVoiceId] = useState<string | null>(null);
 
   const writtenChunkCount = activeChunks.filter((chunk) => chunk.status === "written").length;
   const pendingRebuildCount = activeChunks.filter((chunk) =>
     REVOICEABLE_STATUSES.has(chunk.status),
   ).length;
-  const willRerenderWritten = rerenderWritten && writtenChunkCount > 0;
-  const pendingVoiceLabel = pendingVoiceId
-    ? (voices.find((voice) => voice.id === pendingVoiceId)?.display_name ?? pendingVoiceId)
-    : "";
+  const isRerenderAll = pendingAction?.kind === "rerender";
+  const targetVoiceId =
+    pendingAction?.kind === "change" ? pendingAction.voiceId : (job?.voice_id ?? "");
+  const targetVoiceLabel =
+    voices.find((voice) => voice.id === targetVoiceId)?.display_name ?? targetVoiceId;
+  const willRerenderWritten = (isRerenderAll || rerenderWritten) && writtenChunkCount > 0;
+
+  const openVoiceChange = (voiceId: string) => {
+    setRerenderWritten(false);
+    setPendingAction({ kind: "change", voiceId });
+  };
+
+  const closeVoiceAction = () => {
+    setPendingAction(null);
+    setRerenderWritten(false);
+  };
 
   /* ── Render chunk detail panel ────────────────────────── */
   const renderDetailPanel = () => {
@@ -323,7 +342,7 @@ export function ReaderSidebar({
         <select
           className="w-full rounded-md border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink-primary)]"
           id="voice-change-select"
-          onChange={(event) => setPendingVoiceId(event.target.value)}
+          onChange={(event) => openVoiceChange(event.target.value)}
           value={job?.voice_id ?? ""}
         >
           {voices.map((voice) => (
@@ -332,53 +351,71 @@ export function ReaderSidebar({
             </option>
           ))}
         </select>
-        <label className="mt-3 flex items-start gap-2 text-xs text-[var(--ink-secondary)]">
-          <input
-            checked={rerenderWritten}
-            className="mt-0.5"
-            disabled={writtenChunkCount === 0}
-            id="voice-rerender-written"
-            onChange={(event) => setRerenderWritten(event.target.checked)}
-            type="checkbox"
-          />
-          <span>
-            Also re-render already-rendered chunks
-            {writtenChunkCount > 0 ? ` (${writtenChunkCount})` : ""}
-          </span>
-        </label>
-        <p className="mt-1 text-[11px] leading-snug text-[var(--ink-secondary)]">
-          Off keeps the audio you already have and only rebuilds what is still pending. On produces
-          one consistent take and resets playback.
+        <p className="mt-2 text-[11px] leading-snug text-[var(--ink-secondary)]">
+          Pending chunks are rebuilt with the new voice. Already-rendered audio keeps the voice it
+          was made with unless you replace it when confirming.
         </p>
+        <button
+          className="mt-3 w-full rounded-md border border-[var(--line)] px-3 py-2 text-xs font-semibold text-[var(--ink-secondary)] transition hover:text-[var(--ink-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={writtenChunkCount === 0}
+          onClick={() => {
+            setRerenderWritten(false);
+            setPendingAction({ kind: "rerender" });
+          }}
+          type="button"
+        >
+          Re-render all rendered chunks
+          {writtenChunkCount > 0 ? ` (${writtenChunkCount})` : ""}
+        </button>
       </div>
 
-      {pendingVoiceId ? (
+      {pendingAction ? (
         <ConfirmDialog
-          confirmLabel="Change voice"
+          confirmLabel={isRerenderAll ? "Re-render all" : "Change voice"}
           description={
             willRerenderWritten
               ? `All ${pluralize(activeChunks.length, "chunk")} will be re-rendered with ` +
-                `${pendingVoiceLabel}, including the ${pluralize(writtenChunkCount, "chunk")} ` +
+                `${targetVoiceLabel}, including the ${pluralize(writtenChunkCount, "chunk")} ` +
                 "that already have audio. Playback resets to the start and the current audio is " +
                 "replaced."
               : pendingRebuildCount > 0
                 ? `${pluralize(pendingRebuildCount, "chunk")} that are not rendered yet will be ` +
-                  `rebuilt with ${pendingVoiceLabel}, and are retried if they previously failed. ` +
+                  `rebuilt with ${targetVoiceLabel}, and are retried if they previously failed. ` +
                   `${pluralize(writtenChunkCount, "chunk")} that already have audio keep the ` +
                   "current voice."
                 : `Nothing is waiting to be rendered, so only future chunks will use ` +
-                  `${pendingVoiceLabel}. The ${pluralize(writtenChunkCount, "chunk")} that ` +
+                  `${targetVoiceLabel}. The ${pluralize(writtenChunkCount, "chunk")} that ` +
                   "already have audio keep the current voice."
           }
-          onCancel={() => setPendingVoiceId(null)}
+          onCancel={closeVoiceAction}
           onConfirm={() => {
-            const target = pendingVoiceId;
-            setPendingVoiceId(null);
-            setRerenderWritten(false);
-            if (target) onVoiceChange(target, willRerenderWritten);
+            const action = pendingAction;
+            closeVoiceAction();
+            if (action) onVoiceChange(targetVoiceId, willRerenderWritten);
           }}
-          title={`Change voice to ${pendingVoiceLabel}?`}
-        />
+          title={
+            isRerenderAll
+              ? "Re-render all rendered chunks?"
+              : `Change voice to ${targetVoiceLabel}?`
+          }
+        >
+          {!isRerenderAll ? (
+            <label className="mt-3 flex items-start gap-2 text-xs text-[var(--ink-secondary)]">
+              <input
+                checked={rerenderWritten}
+                className="mt-0.5"
+                disabled={writtenChunkCount === 0}
+                id="voice-rerender-written"
+                onChange={(event) => setRerenderWritten(event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                Also re-render already-rendered chunks
+                {writtenChunkCount > 0 ? ` (${writtenChunkCount})` : ""}
+              </span>
+            </label>
+          ) : null}
+        </ConfirmDialog>
       ) : null}
 
       {/* Live diagnostics (collapsible) */}

@@ -1255,17 +1255,22 @@ re-planned them (the planner cursor only moves forward), so their text was
 silently dropped and rendering "started" at the next new chunk. That behavior
 must not come back.
 
-`rerender_written=True` (reader checkbox "Also re-render already-rendered
-chunks") additionally invalidates every chunk, resets the playback/timeline
-totals, and increments `Job.audio_epoch`. That epoch is part of the segment and
+`rerender_written=True` (reader dialog checkbox "Also re-render already-rendered
+chunks", or the sidebar's "Re-render all rendered chunks" button) additionally
+invalidates every chunk, resets the playback/timeline totals, and increments
+`Job.audio_epoch`. That epoch is part of the segment and
 peaks URLs and of the player's `streamKey` (`web/src/lib/media-source.ts`),
 which is what makes the browser drop its buffered MSE stream and re-fetch
 instead of replaying the superseded take. A partial change does **not** bump the
 epoch, so it does not force a needless re-download.
 
 `POST /api/jobs/{id}/voice` takes `{"voice_id": str, "rerender_written": bool}`.
-The reader always confirms a voice change and names how many chunks it will
-rebuild (`ReaderSidebar.tsx`).
+The reader always confirms a voice change in a dialog; the dialog holds the
+checkbox and names how many chunks it will rebuild. The same endpoint with the
+job's **current** voice and `rerender_written=True` is the "Re-render all
+rendered chunks" button, so choosing partial first is not a one-way door — a
+later click rebuilds everything in the current voice. (`set_voice`'s
+same-voice early return is bypassed whenever `rerender_written` is true.)
 
 Also fixed alongside: `add_planned_chunk` derives the next index from
 `max(index)+1`, not `len(job.chunks)`. Reprocessing appends a second record for
@@ -1383,9 +1388,11 @@ Reader page:
 - jump playback to any chunk straight from its block in the text
 - a chunk conveyor (sub playbar) for thumb-sized scrubbing, draggable and flickable
 - monitor buffer progress
-- change voice: pending chunks are rebuilt with the new voice in place; a confirm
-  dialog reports the count, and an "Also re-render already-rendered chunks"
-  checkbox rebuilds the whole job for one consistent take
+- change voice: pending chunks are rebuilt with the new voice in place; the
+  confirm dialog reports the count and carries an "Also re-render
+  already-rendered chunks" checkbox. A separate "Re-render all rendered chunks"
+  button rebuilds the whole job for one consistent take later, without changing
+  the voice
 - inspect chunk statuses
 - use a custom segmented timeline (the whole-document overview)
 - support gap-aware playback and manual jump-to-later-ready chunks
