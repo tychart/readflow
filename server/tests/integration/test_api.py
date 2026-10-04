@@ -120,6 +120,25 @@ async def test_admin_reset_provider_endpoint(client, services):
     assert services.model_manager.state == "unloaded"
 
 
+async def test_runtime_status_reports_residency(client, services):
+    response = await client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "resident_model_id" in body
+    assert "resident_voice_id" in body
+    assert body["model_residency_batches"] == 10
+    assert body["voice_residency_batches"] == 3
+
+
+async def test_admin_config_exposes_residency_knobs(client, services):
+    updated = await client.post("/api/admin/config", json={"model_residency_batches": 4})
+
+    assert updated.status_code == 200
+    assert updated.json()["model_residency_batches"] == 4
+    assert services.settings.runtime.model_residency_batches == 4
+
+
 async def test_admin_state_reports_scheduler_liveness(client, services):
     response = await client.get("/api/admin/state")
 

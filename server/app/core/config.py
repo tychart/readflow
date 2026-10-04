@@ -33,6 +33,15 @@ class RuntimeConfig(BaseModel):
     # pauses dispatch until the provider is reset from Admin.
     model_load_timeout_seconds: float = 900.0
     synthesis_timeout_seconds: float = 300.0
+    # How many consecutive batches a model stays resident before the scheduler
+    # will rotate to a model with pending work. A model swap unloads/reloads all
+    # weights (and clears the voice prompt cache), so this floor is what keeps
+    # competing models from thrashing the GPU.
+    model_residency_batches: int = 10
+    # Voice switches do not reload the model (only a cached per-voice prompt),
+    # so a voice group only needs to stay on for a few batches before another
+    # voice group gets a turn.
+    voice_residency_batches: int = 3
     default_model_id: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     default_voice_id: str = "suzy"
     default_language: str = "English"

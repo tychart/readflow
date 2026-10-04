@@ -46,6 +46,15 @@ class SchedulerLiveness(TypedDict):
     warning: str | None
 
 
+class SchedulerResidency(TypedDict):
+    """Model/voice the scheduler is currently committed to."""
+
+    resident_model_id: str | None
+    resident_voice_id: str | None
+    model_residency_batches: int
+    voice_residency_batches: int
+
+
 class SchedulerService:
     MEMORY_STATS_INTERVAL = 3.0
 
@@ -81,6 +90,13 @@ class SchedulerService:
         # Measured marginal allocated VRAM per chunk, learned from the last
         # completed batch. Used to size the next batch against the soft limit.
         self._vram_per_chunk_mb: float | None = None
+        # Model/voice residency. A model swap is a full weight reload (and clears
+        # the prompt cache), so the scheduler holds a model for a minimum number
+        # of batches; voice switches are cheap and only get a short bias.
+        self._resident_model_id: str | None = None
+        self._resident_voice_id: str | None = None
+        self._batches_on_model = 0
+        self._batches_on_voice = 0
 
     def liveness_snapshot(self) -> SchedulerLiveness:
         return {
@@ -95,6 +111,24 @@ class SchedulerService:
     def vram_per_chunk_mb(self) -> float | None:
         """Measured marginal allocated VRAM per rendered chunk, if known."""
         return self._vram_per_chunk_mb
+
+    def residency_snapshot(self) -> SchedulerResidency:
+        """The model/voice the scheduler is currently committed to."""
+        self._sync_residency()
+        return {
+            "resident_model_id": self._resident_model_id,
+            "resident_voice_id": self._resident_voice_id,
+            "model_residency_batches": self._config.model_residency_batches,
+            "voice_residency_batches": self._config.voice_residency_batches,
+        }
+
+    @property
+    def resident_model_id(self) -> str | None:
+        return self._resident_model_id
+
+    @property
+    def resident_voice_id(self) -> str | None:
+        return self._resident_voice_id
 
     async def run_forever(self) -> None:
         """Run the scheduling loop, surviving any single tick's failure.
@@ -212,6 +246,7 @@ class SchedulerService:
                         active_batch.model_dump() if active_batch is not None else None
                     ),
                     "vram_per_chunk_mb": self._vram_per_chunk_mb,
+                    **self.residency_snapshot(),
                     **self.liveness_snapshot(),
                 },
             ).model_dump()
@@ -386,6 +421,99 @@ class SchedulerService:
             grouped[(job.model_id, job.language, chunk.voice_id)].append(chunk)
         return dict(grouped)
 
+    def _sync_residency(self) -> None:
+        """Drop residency state when the loaded model no longer matches it.
+
+        Evicting or erroring out unloads the model, so a previously resident
+        model id would otherwise be advertised (and preferred) while nothing is
+        actually loaded. Skip the LOADING window: the new weights are not
+        recorded on the manager yet, and resetting there would drop the counter
+        mid-load.
+        """
+        if self._model_manager.state in {ModelState.LOADING, ModelState.BUSY}:
+            return
+        loaded = self._model_manager.loaded_model_id
+        if loaded != self._resident_model_id:
+            self._resident_model_id = loaded
+            self._batches_on_model = 0
+            self._resident_voice_id = None
+            self._batches_on_voice = 0
+
+    def _choose_group_key(
+        self,
+        keys: list[tuple[str, str, str]],
+        groups: dict[tuple[str, str, str], list[ChunkRecord]],
+    ) -> tuple[str, str, str]:
+        """Pick which (model, language, voice) group gets the next batch.
+
+        Model residency is the expensive axis: swapping unloads and reloads the
+        weights (and clears the prompt cache), so a resident model is held until
+        either it has nothing left to render, the residency window elapses, or
+        an active listener (band 0) on another model needs it now. At a rotation
+        boundary the model with an active listener wins; otherwise the next
+        model in priority order gets a turn so nobody starves.
+        """
+        self._sync_residency()
+        by_model: dict[str, list[tuple[str, str, str]]] = {}
+        for key in keys:
+            by_model.setdefault(key[0], []).append(key)
+        model_order = list(by_model)
+        urgent_models = {
+            key[0]
+            for key, chunks in groups.items()
+            if any(
+                self._priority_band(self._job_manager.get_job(chunk.job_id)) == 0
+                for chunk in chunks
+            )
+        }
+
+        resident = self._resident_model_id
+        if resident is None or resident not in by_model:
+            eligible_models = model_order
+        elif resident in urgent_models:
+            # Keep serving the listener the resident model is already feeding.
+            eligible_models = [resident]
+        else:
+            others = [model for model in model_order if model != resident]
+            boundary = self._batches_on_model >= self._config.model_residency_batches
+            if boundary:
+                # Window elapsed: an active listener gets the GPU first, otherwise
+                # the next model in priority order takes a turn. Both keep the
+                # swap rate at most once per residency window.
+                other_urgent = [model for model in others if model in urgent_models]
+                eligible_models = other_urgent or others or [resident]
+            else:
+                eligible_models = [resident]
+
+        chosen_model = eligible_models[0]
+        model_keys = by_model[chosen_model]
+        # Voice switches are cheap, so bias the current voice only briefly and
+        # then rotate to the next voice group.
+        if (
+            self._resident_voice_id is not None
+            and self._batches_on_voice < self._config.voice_residency_batches
+        ):
+            same_voice = [key for key in model_keys if key[2] == self._resident_voice_id]
+            if same_voice:
+                return same_voice[0]
+        other_voices = [key for key in model_keys if key[2] != self._resident_voice_id]
+        return (other_voices or model_keys)[0]
+
+    def _note_batch_affinity(self, model_id: str, voice_id: str) -> None:
+        """Record a dispatched batch against the residency counters."""
+        if model_id != self._resident_model_id:
+            self._resident_model_id = model_id
+            self._batches_on_model = 1
+            self._resident_voice_id = None
+            self._batches_on_voice = 0
+        else:
+            self._batches_on_model += 1
+        if voice_id != self._resident_voice_id:
+            self._resident_voice_id = voice_id
+            self._batches_on_voice = 1
+        else:
+            self._batches_on_voice += 1
+
     def _select_next_batch(
         self,
         ranked_chunks: list[ChunkRecord],
@@ -400,7 +528,8 @@ class SchedulerService:
         grouped = self._group_chunks(ranked_chunks)
         if not grouped:
             return None, []
-        group_key, chunks = next(iter(grouped.items()))
+        group_key = self._choose_group_key(list(grouped), grouped)
+        chunks = grouped[group_key]
         batch_size = self._choose_batch_size(len(chunks), vram_allocated_mb, vram_total_mb)
         return group_key, chunks[:batch_size]
 
@@ -424,6 +553,7 @@ class SchedulerService:
         if group_key is None or not batch:
             return
         self._clear_warning()
+        self._note_batch_affinity(group_key[0], group_key[2])
         model_id = group_key[0]
         for chunk in batch:
             self._job_manager.mark_chunk_queued(chunk)

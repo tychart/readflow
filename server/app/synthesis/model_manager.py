@@ -32,6 +32,11 @@ class ModelManager:
         """Description of the most recent load/synthesis failure, if any."""
         return self._last_error
 
+    @property
+    def loaded_model_id(self) -> str | None:
+        """Model id currently loaded in VRAM, or None when unloaded."""
+        return self._loaded_model_id
+
     def set_device(self, device: str) -> None:
         self._provider.set_device(device)
         # If the model was in NOT_ENOUGH_VRAM state and the device setting

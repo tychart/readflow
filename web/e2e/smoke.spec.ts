@@ -218,6 +218,18 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
+  await page.route("**/api/status", async (route) => {
+    await route.fulfill({
+      json: {
+        resident_model_id: null,
+        resident_voice_id: null,
+        model_state: "unloaded",
+        model_residency_batches: 10,
+        voice_residency_batches: 3,
+      },
+    });
+  });
+
   await page.route("**/api/admin/state", async (route) => {
     await route.fulfill({
       json: {
@@ -234,6 +246,8 @@ test.beforeEach(async ({ page }) => {
           chunk_max_attempts: 3,
           model_load_timeout_seconds: 900,
           synthesis_timeout_seconds: 300,
+          model_residency_batches: 10,
+          voice_residency_batches: 3,
         },
         scheduler: {
           queue_depth: 0,

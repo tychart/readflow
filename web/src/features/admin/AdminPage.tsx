@@ -167,6 +167,8 @@ function AdminOverview() {
     formState.chunk_max_attempts !== adminState.config.chunk_max_attempts ||
     formState.model_load_timeout_seconds !== adminState.config.model_load_timeout_seconds ||
     formState.synthesis_timeout_seconds !== adminState.config.synthesis_timeout_seconds ||
+    formState.model_residency_batches !== adminState.config.model_residency_batches ||
+    formState.voice_residency_batches !== adminState.config.voice_residency_batches ||
     formState.batch_candidates_small_model.length !== adminState.config.batch_candidates_small_model.length ||
     formState.batch_candidates_small_model.some((v, i) => v !== adminState.config.batch_candidates_small_model[i]) ||
     formState.batch_candidates_large_model.length !== adminState.config.batch_candidates_large_model.length ||
@@ -333,6 +335,34 @@ function AdminOverview() {
               value={formState.synthesis_timeout_seconds}
               onChange={(e) => setFormState({ ...formState, synthesis_timeout_seconds: Number(e.target.value) })}
             />
+          </label>
+
+          <label className={labelClass()}>
+            Model residency (batches)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="1"
+              value={formState.model_residency_batches}
+              onChange={(e) => setFormState({ ...formState, model_residency_batches: Number(e.target.value) })}
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              Batches a model stays loaded before rotating to another model. A swap is a full GPU reload.
+            </span>
+          </label>
+
+          <label className={labelClass()}>
+            Voice residency (batches)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="1"
+              value={formState.voice_residency_batches}
+              onChange={(e) => setFormState({ ...formState, voice_residency_batches: Number(e.target.value) })}
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              Batches a voice keeps the GPU before another voice group rotates in (no model reload).
+            </span>
           </label>
         </div>
 

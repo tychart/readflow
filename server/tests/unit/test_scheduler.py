@@ -1,6 +1,6 @@
 import asyncio
 
-from app.jobs.models import JobStatus
+from app.jobs.models import JobStatus, ModelState
 from app.synthesis.worker import RenderedChunkResult
 
 
@@ -113,6 +113,30 @@ def _create_job(services, *, title: str, voice_id: str = "suzy"):
     )
 
 
+SMALL_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+LARGE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+
+def _create_model_job(services, *, title: str, model_id: str, voice_id: str = "suzy"):
+    return services.job_manager.create_job(
+        source_text="Sentence one. Sentence two. Sentence three. " * 4,
+        source_kind="text",
+        model_id=model_id,
+        voice_id=voice_id,
+        title=title,
+    )
+
+
+def _mark_model_resident(services, model_id: str, *, batches: int, voice_id: str = "suzy"):
+    """Simulate a model having served `batches` batches."""
+    services.model_manager._loaded_model_id = model_id
+    services.model_manager._state = ModelState.WARM_IDLE
+    services.scheduler._resident_model_id = model_id
+    services.scheduler._batches_on_model = batches
+    services.scheduler._resident_voice_id = voice_id
+    services.scheduler._batches_on_voice = batches
+
+
 def _add_chunk(services, job, text: str, *, index_plan_version: int | None = None):
     if index_plan_version is None:
         plan_version = services.job_manager.get_job(job.id).plan_version
@@ -214,7 +238,7 @@ def test_batch_evenly_splits_across_same_priority_jobs(services):
         assert chosen == [4, 5]
 
 
-def test_different_voice_groups_are_drained_one_at_a_time(services):
+def test_disjoint_groups_are_ordered_group_major(services):
     older = _create_job(services, title="suzy job", voice_id="suzy")
     newer = _create_job(services, title="howard job", voice_id="howard")
     for index in range(3):
@@ -223,7 +247,7 @@ def test_different_voice_groups_are_drained_one_at_a_time(services):
 
     ranked = services.scheduler._rank_renderable_chunks()
 
-    # A batch cannot mix voices, so groups are finished one at a time.
+    # Ranking is group-major; residency then picks which group is dispatched.
     assert [chunk.job_id for chunk in ranked] == [older.id] * 3 + [newer.id] * 3
 
 
@@ -966,3 +990,120 @@ def test_fully_buffered_listener_shares_band_with_background(services):
 
     assert services.scheduler._priority_band(listener) == 2
     assert services.scheduler._priority_band(services.job_manager.get_job(background.id)) == 2
+
+
+# ── Model / voice residency ─────────────────────────────────────────
+
+
+def test_resident_model_is_held_within_its_window(services):
+    small = _create_model_job(services, title="small", model_id=SMALL_MODEL)
+    large = _create_model_job(services, title="large", model_id=LARGE_MODEL)
+    _add_chunk(services, small, "a")
+    _add_chunk(services, large, "b")
+    _mark_model_resident(services, SMALL_MODEL, batches=1)
+
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, batch = services.scheduler._select_next_batch(ranked, 0, 0)
+
+    assert group_key is not None
+    assert group_key[0] == SMALL_MODEL
+    assert batch
+
+
+def test_resident_model_rotates_after_its_window(services):
+    small = _create_model_job(services, title="small", model_id=SMALL_MODEL)
+    large = _create_model_job(services, title="large", model_id=LARGE_MODEL)
+    _add_chunk(services, small, "a")
+    _add_chunk(services, large, "b")
+    _mark_model_resident(
+        services, SMALL_MODEL, batches=services.settings.runtime.model_residency_batches
+    )
+
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, _batch = services.scheduler._select_next_batch(ranked, 0, 0)
+
+    assert group_key is not None
+    assert group_key[0] == LARGE_MODEL
+
+
+def test_urgent_listener_on_another_model_preempts_at_boundary(services):
+    small = _create_model_job(services, title="small", model_id=SMALL_MODEL)
+    large = _create_model_job(services, title="large", model_id=LARGE_MODEL)
+    _add_chunk(services, small, "a")
+    _add_chunk(services, large, "b")
+    services.job_manager.activate_job(large.id)
+    services.job_manager.get_job(large.id).buffered_seconds = 0.0
+    _mark_model_resident(
+        services, SMALL_MODEL, batches=services.settings.runtime.model_residency_batches
+    )
+
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, _batch = services.scheduler._select_next_batch(ranked, 0, 0)
+
+    assert group_key is not None
+    assert group_key[0] == LARGE_MODEL
+
+
+def test_urgent_listener_waits_until_the_rotation_window(services):
+    """A listener cannot bypass the residency window and force a swap."""
+    small = _create_model_job(services, title="small", model_id=SMALL_MODEL)
+    large = _create_model_job(services, title="large", model_id=LARGE_MODEL)
+    _add_chunk(services, small, "a")
+    _add_chunk(services, large, "b")
+    services.job_manager.activate_job(large.id)
+    services.job_manager.get_job(large.id).buffered_seconds = 0.0
+    _mark_model_resident(services, SMALL_MODEL, batches=1)
+
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, _batch = services.scheduler._select_next_batch(ranked, 0, 0)
+
+    assert group_key is not None
+    assert group_key[0] == SMALL_MODEL
+
+
+def test_resident_urgent_listener_keeps_the_gpu(services):
+    small = _create_model_job(services, title="small", model_id=SMALL_MODEL)
+    large = _create_model_job(services, title="large", model_id=LARGE_MODEL)
+    _add_chunk(services, small, "a")
+    _add_chunk(services, large, "b")
+    services.job_manager.activate_job(small.id)
+    services.job_manager.get_job(small.id).buffered_seconds = 0.0
+    _mark_model_resident(services, SMALL_MODEL, batches=1)
+
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, _batch = services.scheduler._select_next_batch(ranked, 0, 0)
+
+    assert group_key is not None
+    assert group_key[0] == SMALL_MODEL
+
+
+def test_voice_bias_then_rotation(services):
+    suzy = _create_model_job(services, title="suzy", model_id=SMALL_MODEL, voice_id="suzy")
+    howard = _create_model_job(services, title="howard", model_id=SMALL_MODEL, voice_id="howard")
+    _add_chunk(services, suzy, "a")
+    _add_chunk(services, howard, "b")
+    _mark_model_resident(services, SMALL_MODEL, batches=1, voice_id="suzy")
+    services.scheduler._batches_on_voice = 1
+
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, _batch = services.scheduler._select_next_batch(ranked, 0, 0)
+    assert group_key is not None
+    assert group_key[2] == "suzy"
+
+    services.scheduler._batches_on_voice = services.settings.runtime.voice_residency_batches
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, _batch = services.scheduler._select_next_batch(ranked, 0, 0)
+    assert group_key is not None
+    assert group_key[2] == "howard"
+
+
+def test_residency_snapshot_clears_when_model_is_unloaded(services):
+    _mark_model_resident(services, SMALL_MODEL, batches=3)
+    assert services.scheduler.residency_snapshot()["resident_model_id"] == SMALL_MODEL
+
+    # Simulate an evict/unload: the manager no longer holds a model.
+    services.model_manager._loaded_model_id = None
+
+    snapshot = services.scheduler.residency_snapshot()
+    assert snapshot["resident_model_id"] is None
+    assert snapshot["resident_voice_id"] is None

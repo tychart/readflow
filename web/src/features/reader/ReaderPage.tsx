@@ -11,9 +11,11 @@ import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
 import { useReaderSettings, useReaderMotion } from "../../hooks/useReaderSettings";
+import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
 import { ApiError, api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
 import { useMediaSourcePlayer } from "../../lib/media-source";
+import { modelLabel } from "../../lib/models";
 import { resetReaderSettings, setReaderSettings } from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest } from "../../types/api";
@@ -61,18 +63,20 @@ interface ReaderPageStoreState {
   lastEvent: ReturnType<typeof useAppStore.getState>["lastEvent"];
   websocketStatus: ReturnType<typeof useAppStore.getState>["websocketStatus"];
   isSocketStale: ReturnType<typeof useAppStore.getState>["isSocketStale"];
+  voices: ReturnType<typeof useAppStore.getState>["voices"];
 }
 
 /* ── Component ────────────────────────────────────────────── */
 
 export function ReaderPage() {
   const { jobId = "" } = useParams();
-  const { lastEvent, websocketStatus, isSocketStale } = useAppStore(
+  const { lastEvent, websocketStatus, isSocketStale, voices } = useAppStore(
     useShallow(
       (state): ReaderPageStoreState => ({
         lastEvent: state.lastEvent,
         websocketStatus: state.websocketStatus,
         isSocketStale: state.isSocketStale,
+        voices: state.voices,
       }),
     ),
   );
@@ -178,6 +182,23 @@ export function ReaderPage() {
     knownDurationSeconds,
     anchorOffsetSeconds: anchorOffset,
   } = playbackModel;
+
+  // A job whose model isn't the resident one is waiting behind another model's
+  // queue (a model swap is a full GPU reload). Show that proactively instead
+  // of only when playback finally runs dry.
+  const runtimeStatus = useRuntimeStatus();
+  const residentModelId = runtimeStatus?.resident_model_id ?? null;
+  const residentVoiceId = runtimeStatus?.resident_voice_id ?? null;
+  const waitingOnModel =
+    !isJobTerminal &&
+    !!job &&
+    !!residentModelId &&
+    job.model_id !== residentModelId &&
+    expectedNextChunkIndex !== null;
+  const residentVoiceLabel =
+    voices.find((voice) => voice.id === residentVoiceId)?.display_name ??
+    residentVoiceId ??
+    "";
 
   const streamManifest = useMemo(
     () => buildStreamManifest(manifest, contiguousReadyChunks),
@@ -984,9 +1005,26 @@ export function ReaderPage() {
         </div>
       </div>
 
+      {/* Waiting on a model swap — the job's chunks are queued behind another
+          model that has to finish or rotate first. */}
+      {waitingOnModel ? (
+        <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
+          <div
+            className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-4 py-3 text-xs text-[var(--ink-secondary)]"
+            role="status"
+          >
+            Waiting for the GPU: currently rendering {modelLabel(residentModelId)}
+            {residentVoiceLabel ? ` · ${residentVoiceLabel}` : ""}. This job starts
+            when that model rotates (about{" "}
+            {runtimeStatus?.model_residency_batches ?? 10} batches) or its queue
+            finishes.
+          </div>
+        </div>
+      ) : null}
+
       {/* Rendering stall — the producer stopped; offer a retry instead of
           spinning "Buffering…" forever. */}
-      {renderingStalled && !stallDismissed ? (
+      {renderingStalled && !stallDismissed && !waitingOnModel ? (
         <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
           <RenderingStallBanner
             isRetrying={isRetryingStall}

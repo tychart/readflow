@@ -28,6 +28,7 @@ from app.schemas.api import (
     JobManifestResponse,
     JobSummaryResponse,
     PlaybackUpdateRequest,
+    RuntimeStatusResponse,
     SchedulerStateResponse,
     UpdateVoiceRequest,
     VoiceResponse,
@@ -178,6 +179,8 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             chunk_max_attempts=runtime.chunk_max_attempts,
             model_load_timeout_seconds=runtime.model_load_timeout_seconds,
             synthesis_timeout_seconds=runtime.synthesis_timeout_seconds,
+            model_residency_batches=runtime.model_residency_batches,
+            voice_residency_batches=runtime.voice_residency_batches,
         )
 
     def contiguous_export_wav_paths(job: Job) -> list[str]:
@@ -497,6 +500,25 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             for voice in app_services.voice_registry.list_voices()
         ]
 
+    @router.get("/status", response_model=RuntimeStatusResponse)
+    async def get_runtime_status(
+        app_services: AppServices = Depends(services),
+    ) -> RuntimeStatusResponse:
+        """Public snapshot of what the GPU is committed to.
+
+        Used by the create-job form to default to the resident model/voice and
+        warn when a different one would have to wait, and by the reader to
+        explain a job that is queued behind another model.
+        """
+        runtime = app_services.settings.runtime
+        return RuntimeStatusResponse(
+            resident_model_id=app_services.scheduler.resident_model_id,
+            resident_voice_id=app_services.scheduler.resident_voice_id,
+            model_state=app_services.model_manager.state,
+            model_residency_batches=runtime.model_residency_batches,
+            voice_residency_batches=runtime.voice_residency_batches,
+        )
+
     @router.get("/admin/config", response_model=AdminConfigResponse)
     async def get_admin_config(
         app_services: AppServices = Depends(services),
@@ -543,6 +565,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
             active_batch=app_services.scheduler.active_batch(),
             vram_per_chunk_mb=app_services.scheduler.vram_per_chunk_mb,
+            **app_services.scheduler.residency_snapshot(),
             **app_services.scheduler.liveness_snapshot(),
         )
         try:

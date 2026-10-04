@@ -5,6 +5,7 @@ import type {
   JobDetail,
   JobManifest,
   JobSummary,
+  RuntimeStatus,
   Voice,
 } from "../types/api";
 import { apiPath } from "./transport";
@@ -163,6 +164,12 @@ export const api = {
 
   /** Lists available voices. */
   listVoices: () => request<Voice[]>(apiPath("/voices")),
+
+  /**
+   * Current GPU commitment: resident model/voice and the residency windows.
+   * Used by the create form defaults and the reader's waiting note.
+   */
+  getStatus: () => request<RuntimeStatus>(apiPath("/status")),
 
   /** Fetches admin state including config, scheduler info, and telemetry. */
   getAdminState: () => request<AdminState>(apiPath("/admin/state")),

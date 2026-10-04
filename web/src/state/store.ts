@@ -1,12 +1,13 @@
 import { create } from "zustand";
 
-import type { JobSummary, Voice } from "../types/api";
+import type { JobSummary, RuntimeStatus, Voice } from "../types/api";
 import type { AdminState, WebSocketStatus, WsEnvelope } from "../types/events";
 
 interface AppStore {
   jobs: Record<string, JobSummary>;
   voices: Voice[];
   adminState: AdminState | null;
+  runtimeStatus: RuntimeStatus | null;
   websocketStatus: WebSocketStatus;
   lastSocketMessageAt: number | null;
   lastSocketError: string | null;
@@ -16,6 +17,7 @@ interface AppStore {
   setJobs: (jobs: Record<string, JobSummary>) => void;
   setVoices: (voices: Voice[]) => void;
   setAdminState: (adminState: AdminState) => void;
+  setRuntimeStatus: (runtimeStatus: RuntimeStatus) => void;
   setSocketState: (state: {
     status?: AppStore["websocketStatus"];
     lastMessageAt?: number | null;
@@ -63,6 +65,17 @@ function adminStateEqual(
   );
 }
 
+function runtimeStatusEqual(a: RuntimeStatus | null, b: RuntimeStatus | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.resident_model_id === b.resident_model_id &&
+    a.resident_voice_id === b.resident_voice_id &&
+    a.model_residency_batches === b.model_residency_batches &&
+    a.voice_residency_batches === b.voice_residency_batches
+  );
+}
+
 /** Narrow any job payload (summary, streamed patch, or full detail) down to
  *  the list summary the jobs page needs. */
 function toSummary(job: JobSummary): JobSummary {
@@ -84,6 +97,7 @@ export const useAppStore = create<AppStore>((set) => ({
   jobs: {},
   voices: [],
   adminState: null,
+  runtimeStatus: null,
   websocketStatus: "idle",
   lastSocketMessageAt: null,
   lastSocketError: null,
@@ -93,6 +107,10 @@ export const useAppStore = create<AppStore>((set) => ({
   setJobs: (jobs) => set((state) => (jobsEqual(state.jobs, jobs) ? state : { jobs })),
   setVoices: (voices) => set((state) => (shallowArrayEqual(state.voices, voices) ? state : { voices })),
   setAdminState: (adminState) => set((state) => (adminStateEqual(state.adminState, adminState) ? state : { adminState })),
+  setRuntimeStatus: (runtimeStatus) =>
+    set((state) =>
+      runtimeStatusEqual(state.runtimeStatus, runtimeStatus) ? state : { runtimeStatus },
+    ),
   setSocketState: ({ status, lastMessageAt, error, reconnectAttempt, isStale }) =>
     set((state) => {
       const newState = { ...state };
@@ -155,12 +173,20 @@ export const useAppStore = create<AppStore>((set) => ({
         };
       }
 
-      if (event.type === "scheduler_state" && state.adminState) {
+      if (event.type === "scheduler_state") {
+        const nextStatus: RuntimeStatus = {
+          resident_model_id: event.payload.resident_model_id ?? null,
+          resident_voice_id: event.payload.resident_voice_id ?? null,
+          model_residency_batches: event.payload.model_residency_batches ?? 10,
+          voice_residency_batches: event.payload.voice_residency_batches ?? 3,
+        };
         return {
-          adminState: {
-            ...state.adminState,
-            scheduler: event.payload,
-          },
+          runtimeStatus: runtimeStatusEqual(state.runtimeStatus, nextStatus)
+            ? state.runtimeStatus
+            : nextStatus,
+          adminState: state.adminState
+            ? { ...state.adminState, scheduler: event.payload }
+            : state.adminState,
           lastEvent: event,
         };
       }

@@ -38,6 +38,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   global.fetch = originalFetch;
+  useAppStore.setState({ runtimeStatus: null });
 });
 
 function buildReaderJob(
@@ -1777,4 +1778,68 @@ describe("playback speed control", () => {
 
     expect(input).toHaveValue("1");
   });
+});
+
+test("shows a waiting note when the job's model is not resident", async () => {
+  seedStore();
+
+  const chunks: Chunk[] = [
+    {
+      index: 0,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 0,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/0",
+      peaks_url: "/api/jobs/job-1/chunks/0/peaks",
+      deprecated: false,
+      reprocessing: false,
+    },
+    {
+      index: 1,
+      status: "queued",
+      duration_seconds: 0,
+      start_seconds: 0,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: null,
+      peaks_url: null,
+      deprecated: false,
+      reprocessing: false,
+    },
+  ];
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  useAppStore.setState({
+    runtimeStatus: {
+      resident_model_id: "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      resident_voice_id: "howard",
+      model_residency_batches: 10,
+      voice_residency_batches: 3,
+    },
+  });
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/Waiting for the GPU/)).toBeInTheDocument();
+  expect(screen.getByText(/Large \(1.7B\)/)).toBeInTheDocument();
 });

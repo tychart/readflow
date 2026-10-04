@@ -91,6 +91,8 @@ class AdminConfigResponse(BaseModel):
     chunk_max_attempts: int
     model_load_timeout_seconds: float
     synthesis_timeout_seconds: float
+    model_residency_batches: int
+    voice_residency_batches: int
 
 
 class AdminConfigUpdateRequest(BaseModel):
@@ -106,6 +108,8 @@ class AdminConfigUpdateRequest(BaseModel):
     chunk_max_attempts: int | None = None
     model_load_timeout_seconds: float | None = None
     synthesis_timeout_seconds: float | None = None
+    model_residency_batches: int | None = None
+    voice_residency_batches: int | None = None
 
 
 class QueueBatch(BaseModel):
@@ -131,6 +135,12 @@ class SchedulerStateResponse(BaseModel):
     # Measured marginal allocated VRAM per rendered chunk, used to size batches
     # against the soft limit. None until the first batch completes.
     vram_per_chunk_mb: float | None = None
+    # Model/voice the scheduler is currently committed to. Changing model is an
+    # expensive GPU reload, so new jobs on a different model wait their turn.
+    resident_model_id: str | None = None
+    resident_voice_id: str | None = None
+    model_residency_batches: int = 10
+    voice_residency_batches: int = 3
     # Liveness. `running=False`, a stale `last_tick_at`, or a non-empty
     # `last_error` are what make a silently stalled scheduler visible.
     running: bool = False
@@ -242,6 +252,20 @@ class AdminStateResponse(BaseModel):
     # Most recent model load/synthesis failure, so a stuck model is not just
     # an unexplained "unloaded" chip.
     model_last_error: str | None = None
+
+
+class RuntimeStatusResponse(BaseModel):
+    """Lightweight, public view of what the GPU is currently committed to.
+
+    The create-job form and the reader use this to default to the resident
+    model/voice and to explain why a job on a different model is waiting.
+    """
+
+    resident_model_id: str | None = None
+    resident_voice_id: str | None = None
+    model_state: str
+    model_residency_batches: int
+    voice_residency_batches: int
 
 
 class WsEnvelope(BaseModel):

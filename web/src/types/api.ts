@@ -71,6 +71,8 @@ export interface AdminConfig {
   chunk_max_attempts: number;
   model_load_timeout_seconds: number;
   synthesis_timeout_seconds: number;
+  model_residency_batches: number;
+  voice_residency_batches: number;
 }
 
 export interface QueueBatch {
@@ -166,6 +168,20 @@ export interface SchedulerState {
   warning?: string | null;
   /** Measured marginal allocated VRAM per rendered chunk, if known. */
   vram_per_chunk_mb?: number | null;
+  /** Model/voice the scheduler is currently committed to (see /api/status). */
+  resident_model_id?: string | null;
+  resident_voice_id?: string | null;
+  model_residency_batches?: number;
+  voice_residency_batches?: number;
+}
+
+/** Public snapshot of what the GPU is currently committed to. */
+export interface RuntimeStatus {
+  resident_model_id: string | null;
+  resident_voice_id: string | null;
+  model_state?: string;
+  model_residency_batches: number;
+  voice_residency_batches: number;
 }
 
 // Re-export types that moved to events.ts to keep existing imports working

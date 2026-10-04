@@ -19,6 +19,8 @@ function setAdminState(memory: AdminMemoryStats | null) {
         chunk_max_attempts: 3,
         model_load_timeout_seconds: 900,
         synthesis_timeout_seconds: 300,
+        model_residency_batches: 10,
+        voice_residency_batches: 3,
       },
       scheduler: { queue_depth: 1, batch_candidates: [8, 7, 6, 5] },
       telemetry: {
@@ -47,6 +49,8 @@ const EMPTY_CONFIG: AdminConfig = {
   chunk_max_attempts: 3,
   model_load_timeout_seconds: 900,
   synthesis_timeout_seconds: 300,
+  model_residency_batches: 10,
+  voice_residency_batches: 3,
 };
 
 function makeAdminState(memory: AdminMemoryStats | null): AdminState {
@@ -84,6 +88,7 @@ describe("applyEvent — memory_stats", () => {
   beforeEach(() => {
     useAppStore.setState({
       adminState: null,
+      runtimeStatus: null,
       jobs: {},
       voices: [],
       websocketStatus: "connecting",
@@ -170,6 +175,29 @@ describe("applyEvent — memory_stats", () => {
     expect(useAppStore.getState().adminState?.scheduler.active_batch).toEqual(activeBatch);
   });
 
+  it("tracks residency from a scheduler_state event without admin state", () => {
+    useAppStore.setState({ adminState: null, runtimeStatus: null });
+
+    useAppStore.getState().applyEvent({
+      type: "scheduler_state",
+      payload: {
+        queue_depth: 1,
+        batch_candidates: [8],
+        resident_model_id: "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        resident_voice_id: "howard",
+        model_residency_batches: 10,
+        voice_residency_batches: 3,
+      },
+    });
+
+    expect(useAppStore.getState().runtimeStatus).toEqual({
+      resident_model_id: "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      resident_voice_id: "howard",
+      model_residency_batches: 10,
+      voice_residency_batches: 3,
+    });
+  });
+
   it("preserves adminState.memory on admin_config_updated event", () => {
     setAdminState(MEMORY);
 
@@ -187,6 +215,8 @@ describe("applyEvent — memory_stats", () => {
         chunk_max_attempts: 3,
         model_load_timeout_seconds: 900,
         synthesis_timeout_seconds: 300,
+        model_residency_batches: 10,
+        voice_residency_batches: 3,
       },
     });
 

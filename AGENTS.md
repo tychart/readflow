@@ -620,6 +620,25 @@ stopped producing for good. The reader now distinguishes "slow" from "stopped":
   provider**, and the banner is what tells the listener to do that instead of
   waiting forever.
 
+### GPU residency guidance (jobs page + reader)
+
+`GET /api/status` (public, `RuntimeStatusResponse`) exposes what the scheduler is
+committed to: `resident_model_id`, `resident_voice_id`, and the two residency
+windows. The store keeps it fresh from the `scheduler_state` WebSocket tick
+(`runtimeStatus`, updated even without admin state) and `useRuntimeStatus()`
+fetches it once on mount.
+
+- `JobCreateForm` defaults the voice/model to the resident ones and shows an
+  inline notice when they differ: a warn note for a different model (full GPU
+  reload, waits for rotation) and a mild note for a voice-only change.
+  Submitting a different model opens `ConfirmDialog` (with a remembered "don't
+  warn again"); a voice-only change never blocks.
+- `ReaderPage` shows a proactive "Waiting for the GPU: currently rendering
+  <model> · <voice>" note (and suppresses the stall banner) while the job's
+  model is not resident and it still has unwritten chunks.
+
+Do not re-derive the resident model in the frontend; it comes from the scheduler.
+
 ### Missing job ids redirect home (and stale jobs are revalidated)
 
 Unknown *paths* are handled by the catch-all route in `App.tsx`. A real route
@@ -743,6 +762,15 @@ Important behavior:
   job can fill the largest batch
 - on OOM, worker records telemetry and halves the batch until it fits (then
   requeues the chunks it dropped)
+- **model/voice residency**: a model swap is a full weight unload/reload (and
+  clears the voice prompt cache), so the scheduler holds the resident model for
+  `model_residency_batches` (default 10) before rotating to a model with pending
+  work, and keeps serving a resident model that has an urgent (active listener)
+  chunk. At a rotation boundary the model with an active listener wins, else the
+  next model in priority order gets a turn. Voice switches do **not** reload the
+  model, so a voice group is only biased for `voice_residency_batches` (default
+  3) before the next voice group rotates in. `_choose_group_key` owns this; do
+  not collapse it back to "first group wins".
 
 Current batch grouping dimensions:
 
@@ -1558,6 +1586,11 @@ Reliability / throughput / stall round (three workstreams):
    instead of shrinking once.
 3. **Reader stall banner.** `RenderingStallBanner` + `isRenderingStalled` give a
    starved listener a visible stall and a Retry instead of an endless spinner.
+4. **Model/voice residency + add-job guidance.** `model_residency_batches` (10)
+   and `voice_residency_batches` (3) keep the GPU from reloading a model every
+   batch; `/api/status` + `JobCreateForm` default to the resident model/voice and
+   warn/confirm before scheduling a different model; the reader names the
+   blocking model/voice instead of only stalling silently.
 
 ## Agent Workflow Checklist
 
