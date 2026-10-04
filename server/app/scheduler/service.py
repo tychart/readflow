@@ -249,7 +249,72 @@ class SchedulerService:
 
     def _rank_renderable_chunks(self) -> list[ChunkRecord]:
         chunks = list(self._job_manager.renderable_chunks())
-        return sorted(chunks, key=self._chunk_priority)
+        return self._ordered_for_dispatch(chunks)
+
+    def _ordered_for_dispatch(self, chunks: list[ChunkRecord]) -> list[ChunkRecord]:
+        """Order chunks for dispatch.
+
+        The rule the user asked for is: take turns by *amount of work*, not by
+        absolute chunk index, but never reorder chunks inside one job. So the
+        sort key uses a **per-job ordinal** (0 = that job's next chunk) instead
+        of the global `chunk.index`. That way a job at chunk 500 and a job at
+        chunk 10 both contribute their next chunk first, while chunk 501 can
+        never precede chunk 500 of the same job.
+
+        Groups (same model/language/voice) are served one at a time, in order of
+        their best `(band, job submission time)`; within a group, chunks are
+        interleaved round-robin across jobs by ordinal, so a batch splits evenly
+        between same-priority jobs. Batching different voices together is not
+        possible, hence the group-major order.
+        """
+        if not chunks:
+            return []
+        # (submitted_at, id) gives a fully deterministic oldest-first order.
+        job_order = {job.id: (job.submitted_at, job.id) for job in self._job_manager.list_jobs()}
+
+        # Per-job ordinal: position among that job's chunks in this list, by index.
+        ordinal: dict[int, int] = {}
+        per_job: dict[str, list[ChunkRecord]] = defaultdict(list)
+        for chunk in chunks:
+            per_job[chunk.job_id].append(chunk)
+        for job_chunks in per_job.values():
+            job_chunks.sort(key=lambda item: item.index)
+            for position, chunk in enumerate(job_chunks):
+                ordinal[id(chunk)] = position
+
+        def chunk_key(chunk: ChunkRecord) -> tuple[int, int, float, str, int]:
+            job = self._job_manager.get_job(chunk.job_id)
+            submitted_at, job_id = job_order.get(job.id, (0.0, ""))
+            return (
+                self._priority_band(job),
+                ordinal[id(chunk)],
+                submitted_at,
+                job_id,
+                chunk.index,
+            )
+
+        groups: dict[tuple[str, str, str], list[ChunkRecord]] = defaultdict(list)
+        for chunk in chunks:
+            job = self._job_manager.get_job(chunk.job_id)
+            groups[(job.model_id, job.language, chunk.voice_id)].append(chunk)
+
+        def group_priority(
+            item: tuple[tuple[str, str, str], list[ChunkRecord]],
+        ) -> tuple[int, float, str]:
+            # Ignore ordinals here: a group is drained before the next one starts.
+            _key, group = item
+            return min(
+                (
+                    self._priority_band(self._job_manager.get_job(chunk.job_id)),
+                    *job_order.get(chunk.job_id, (0.0, "")),
+                )
+                for chunk in group
+            )
+
+        ordered: list[ChunkRecord] = []
+        for _key, group in sorted(groups.items(), key=group_priority):
+            ordered.extend(sorted(group, key=chunk_key))
+        return ordered
 
     def _priority_band(self, job: Job) -> int:
         """Return the scheduler's coarse priority band for a job.
@@ -338,10 +403,6 @@ class SchedulerService:
         group_key, chunks = next(iter(grouped.items()))
         batch_size = self._choose_batch_size(len(chunks), vram_allocated_mb, vram_total_mb)
         return group_key, chunks[:batch_size]
-
-    def _chunk_priority(self, chunk: ChunkRecord) -> tuple[int, int, int]:
-        job = self._job_manager.get_job(chunk.job_id)
-        return (self._priority_band(job), chunk.index, len(chunk.text))
 
     async def _render_next_batch(self, ranked_chunks: list[ChunkRecord]) -> None:
         if not ranked_chunks:
@@ -504,7 +565,7 @@ class SchedulerService:
             and not chunk.deprecated
             and chunk.status in _PENDING_STATUSES
         ]
-        return sorted(chunks, key=self._chunk_priority)
+        return self._ordered_for_dispatch(chunks)
 
     def active_batch(self) -> QueueBatch | None:
         """Public accessor for the batch currently in flight."""

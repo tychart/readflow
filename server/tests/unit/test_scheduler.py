@@ -161,37 +161,70 @@ def test_priority_band_matrix(services):
         )
 
 
-def test_chunk_priority_prefers_lower_index(services):
-    job = _create_job(services, title="index tiebreak")
-    first = _add_chunk(services, job, "same length")
-    second = _add_chunk(services, job, "same length")
-    assert first.index < second.index
-    assert services.scheduler._chunk_priority(first) < services.scheduler._chunk_priority(second)
+def test_within_a_job_chunks_stay_in_index_order(services):
+    from app.jobs.models import ChunkStatus
+
+    job = _create_job(services, title="index order")
+    for index in range(3):
+        written = _add_chunk(services, job, f"written {index}")
+        written.status = ChunkStatus.WRITTEN
+    _add_chunk(services, job, "next")
+    _add_chunk(services, job, "after")
+    _add_chunk(services, job, "last")
+
+    ranked = services.scheduler._rank_renderable_chunks()
+
+    assert [chunk.index for chunk in ranked] == [3, 4, 5]
 
 
-def test_chunk_priority_prefers_shorter_text_at_same_index(services):
-    from app.jobs.models import ChunkRecord
+def test_batch_evenly_splits_across_same_priority_jobs(services):
+    """Fairness is by amount of work, not absolute chunk index.
 
-    job = _create_job(services, title="length tiebreak")
-    short = ChunkRecord(
-        job_id=job.id,
-        index=0,
-        text="abc",
-        voice_id="suzy",
-        plan_version=1,
-        char_start=0,
-        char_end=3,
-    )
-    long = ChunkRecord(
-        job_id=job.id,
-        index=0,
-        text="abcdefghij",
-        voice_id="suzy",
-        plan_version=1,
-        char_start=0,
-        char_end=10,
-    )
-    assert services.scheduler._chunk_priority(short) < services.scheduler._chunk_priority(long)
+    A job at chunk 4 and a job at chunk 4 (after writing a different amount)
+    each contribute half the batch, instead of the job with the lower absolute
+    indices getting everything until it catches up.
+    """
+    from app.jobs.models import ChunkStatus
+
+    first = _create_job(services, title="older")
+    second = _create_job(services, title="newer")
+    for index in range(4):
+        written = _add_chunk(services, first, f"a{index}")
+        written.status = ChunkStatus.WRITTEN
+    for index in range(8):
+        _add_chunk(services, first, f"a{index + 4}")
+    for index in range(4):
+        written = _add_chunk(services, second, f"b{index}")
+        written.status = ChunkStatus.WRITTEN
+    for index in range(8):
+        _add_chunk(services, second, f"b{index + 4}")
+
+    services.settings.runtime.batch_candidates_small_model = [4]
+    ranked = services.scheduler._rank_renderable_chunks()
+    group_key, batch = services.scheduler._select_next_batch(ranked, 0, 0)
+
+    assert group_key is not None
+    assert len(batch) == 4
+    assert sum(1 for chunk in batch if chunk.job_id == first.id) == 2
+    assert sum(1 for chunk in batch if chunk.job_id == second.id) == 2
+    # Each job's contribution is its next chunks, in index order.
+    for job in (first, second):
+        chosen = [chunk.index for chunk in batch if chunk.job_id == job.id]
+        assert chosen == sorted(chosen)
+        assert chosen == [4, 5]
+
+
+def test_different_voice_groups_are_drained_one_at_a_time(services):
+    older = _create_job(services, title="suzy job", voice_id="suzy")
+    newer = _create_job(services, title="howard job", voice_id="howard")
+    for index in range(3):
+        _add_chunk(services, older, f"o{index}")
+        _add_chunk(services, newer, f"n{index}")
+
+    ranked = services.scheduler._rank_renderable_chunks()
+
+    # A batch cannot mix voices, so groups are finished one at a time.
+    assert [chunk.job_id for chunk in ranked] == [older.id] * 3 + [newer.id] * 3
 
 
 def test_priority_info_labels_and_reasons(services):
@@ -723,7 +756,7 @@ def test_plan_ahead_lets_one_inactive_job_fill_a_batch(services):
     assert rendered["count"] == 8
 
 
-def test_inactive_jobs_round_robin_by_chunk_index(services):
+def test_same_priority_jobs_get_equal_turns(services):
     """Equal-priority jobs advance together, one chunk each per round."""
     _long_job(services, title="job A")
     _long_job(services, title="job B")

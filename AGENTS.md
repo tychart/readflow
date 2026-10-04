@@ -717,8 +717,17 @@ Important behavior:
   raise speed or skip; `2` background jobs **and** listeners already at/above the
   ideal buffer (they round-robin together); `99` paused. Planning for an active
   job stops at the ideal buffer, which is what drops it into band 2.
-- inactive jobs are scheduled fairly (round-robin by chunk index) instead of one
-  job monopolising the queue
+- jobs are scheduled fairly in **turns by amount of work**, not by absolute
+  chunk index: the dispatch sort key uses a **per-job ordinal** (0 = that job's
+  next chunk), so a job at chunk 500 and one at chunk 10 each contribute their
+  next chunk. Within one job, chunks always render in index order — an index is
+  never skipped except when a chunk is failed/skipped.
+- a batch splits **evenly across same-priority jobs** that share a
+  `(model, language, voice)` group (round-robin by ordinal), so two books
+  advance together instead of the lagging one being chased to catch up.
+- groups are drained **one at a time** (a batch cannot mix voices/models), in
+  order of their best `(band, submission time)`; `_ordered_for_dispatch` owns
+  this and both dispatch and the admin queue ranking use it.
 - scheduling is buffer-aware
 - per-job prebuffer is capped
 - batch size is dynamic: it is sized from the **measured marginal allocated VRAM
