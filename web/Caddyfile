@@ -1,0 +1,29 @@
+# ReadFlow web server.
+#
+# Serves the built SPA and proxies the API under the same origin, so the
+# frontend's relative `/api/...` and `/api/ws` paths keep working in production
+# exactly as they do behind the Vite dev proxy.
+#
+# Caddy's reverse_proxy transparently upgrades WebSocket connections, which is
+# what /api/ws needs.
+
+:80 {
+	encode zstd gzip
+
+	# Cheap liveness endpoint for the container healthcheck.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# API (including the WebSocket at /api/ws).
+	handle /api/* {
+		reverse_proxy {$READFLOW_API_UPSTREAM:api:8000}
+	}
+
+	# Static SPA with client-side routing fallback (/jobs/:id lands on index.html).
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

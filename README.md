@@ -33,11 +33,19 @@ The repo currently contains:
 - a fake provider for fast deterministic local tests
 - unit, integration, browser smoke, lint, and typecheck coverage
 
-The repo does **not** yet contain every production nicety — jobs live in memory, there is no auth and no persistence — but running it locally is one command:
+The repo does **not** yet contain every production nicety — jobs live in memory, there is no auth and no persistence — but local development is two commands:
 
 ```bash
-scripts/dev.sh
+make install      # one-time: uv sync (server) + bun install (web)
+scripts/dev.sh    # run the API + web dev server with hot reload
 ```
+
+Dependencies are managed with the native toolchains: **uv** owns the backend
+(`server/uv.lock`, `server/pyproject.toml`) and **bun** owns the frontend
+(`web/bun.lock`, `web/package.json`). Containers are for deployment and validation,
+not the day-to-day loop — see [Container Deployment](#container-deployment). The
+`bun run` aliases mirror the Make targets if you prefer to stay in the JS toolchain:
+`bun run setup` (setup) and `bun run dev` (run the stack).
 
 That starts the API (uvicorn `--reload`, real Qwen3-TTS by default) and the Vite dev server
 with HMR, waits until both are ready, then follows their logs. Ctrl-C stops both. Use
@@ -258,13 +266,18 @@ This architecture is simple on purpose, but that simplicity has consequences.
 When it is absent the provider falls back to PyTorch's SDPA implementation,
 so the app works on development machines without CUDA.
 
-On the target machine with CUDA:
+On the target machine with CUDA there are two options:
 
-- `uv sync --extra cuda` compiles flash-attn for your GPU architecture (about 30–60 min)
-- or build the pre-built Docker image below, which compiles flash-attn only once during the first build
-- on Fedora 44+ the system GCC is too new for CUDA 12.8, so use the Docker path
+- `uv sync --extra cuda` compiles flash-attn natively for your GPU architecture
+  (about 30–60 min). On Fedora 44+ the system GCC is too new for CUDA 12.8, so use the
+  container instead.
+- the container images: the default API image runs on PyTorch SDPA and needs no compile,
+  while the `-flash` tag installs a prebuilt flash-attn wheel. See
+  [Container Deployment](#container-deployment).
 
-If you change `flash-attn`, `torch`, or the CUDA base image, the container build layer that compiles flash-attn will be invalidated and recompilation is required.
+`torch` is pinned to `2.9.0` in `server/pyproject.toml` so the prebuilt flash-attn
+wheel matches (CUDA 12.8 + `cu12torch2.9`). Changing that pin means re-checking that a
+matching flash-attn wheel exists.
 
 ## Requirements
 
@@ -293,47 +306,128 @@ If `torch.cuda.is_available()` is false in your current shell, the real provider
 
 ## Container Deployment
 
-The recommended path for production or any machine where GCC is too new for CUDA is a
-single Docker image that bundles a pre-compiled flash-attn wheel.
+ReadFlow ships as **two images**, with three api variants:
 
-### Build
+| Image | Contents |
+|---|---|
+| `ghcr.io/tychart/readflow-api` | CUDA, PyTorch SDPA — boots on any NVIDIA GPU |
+| `ghcr.io/tychart/readflow-api:<tag>-flash` | CUDA, prebuilt flash-attn — fastest attention |
+| `ghcr.io/tychart/readflow-api:<tag>-cpu` | CPU-only torch — no NVIDIA runtime needed |
+| `ghcr.io/tychart/readflow-web` | Caddy serving the built SPA and proxying `/api` + `/api/ws` |
 
-```bash
-make docker-build
-```
+Caddy serves the SPA and the API from one origin, so the frontend keeps its relative
+`/api/...` paths with no CORS and no build-time backend URL. All api variants bake in
+the built-in voices and keep the model weights out of the image entirely.
 
-This:
-
-1. Compiles flash-attn inside a CUDA 12.8 + Ubuntu 24.04 container with GCC 13
-2. Targets only SM 86 (RTX 30xx) to minimize compile time
-3. Produces a lean runtime image with no build tools
-
-First build takes about an hour (flash-attn compilation). Subsequent builds are instant
-unless `pyproject.toml`, `uv.lock`, the CUDA base image, or `FLASH_ATTN_CUDA_ARCHS` changes.
-
-### Run
+### Run (published images)
 
 ```bash
-make docker-run
+cp .env.example .env          # optional overrides (tag, port, provider)
+podman compose up -d          # or: docker compose up -d
 ```
 
-This runs the container with GPU access, shared IPC namespace (required for PyTorch), and port 8000 mapped.
+Open <http://localhost:8080>. Compose pulls the images from GHCR, reserves the GPU for
+the API, and mounts a named `hf-cache` volume at the Hugging Face cache. The model
+downloads on first use and is reused across container updates — it is never baked into
+the image.
 
-With Podman:
+Requirements on the host:
+
+- Docker with `nvidia-container-toolkit`, or Podman with CDI
+- an NVIDIA GPU with enough VRAM for `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
+
+If `podman compose up` fails with
+`crun: cannot stat /usr/lib64/libEGL_nvidia.so.<version>`, the host CDI spec is stale
+after a driver upgrade. Regenerate it once:
 
 ```bash
-podman run --rm --security-opt=label=disable --device nvidia.com/gpu=all \
-    --ipc=host -p 8000:8000 readflow-server:cuda
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 ```
+
+No NVIDIA GPU at all? Use the CPU stack (see below).
+
+### Building and running from source
+
+The same compose file builds locally, so you never need a wrapper script:
+
+```bash
+podman compose up -d --build        # builds both images from this checkout
+```
+
+`--build` is required on code changes; without it Compose reuses the existing image.
+Override the local build variant through `.env`:
+
+```bash
+READFLOW_FLASH=1 podman compose up -d --build     # build the flash-attn api
+```
+
+### CPU stack (no GPU)
+
+```bash
+podman compose -f compose.cpu.yml up -d --build
+```
+
+Synthesising a book on a CPU is very slow, so this is mainly for trying the app out and
+for UI work. For a fast UI-only stack that never loads a model:
+
+```bash
+READFLOW_TTS_PROVIDER=fake podman compose -f compose.cpu.yml up -d
+```
+
+### Image tags
+
+| Tag | Meaning |
+|---|---|
+| `latest` | newest `main` commit or release |
+| `main`, `sha-<short>` | rolling branch / exact commit |
+| `1.2.3`, `1.2` | release (from a `v*` git tag) |
+| `-flash`, `-cpu` suffix | the corresponding api variant |
+
+The default api image does not include flash-attn and falls back to PyTorch SDPA. The
+`-flash` image is the accelerated one; select it by overriding the image:
+
+```bash
+READFLOW_API_IMAGE=ghcr.io/tychart/readflow-api:latest-flash podman compose up -d
+```
+
+### Why flash-attn needs no compiler
+
+PyTorch 2.9 on PyPI is a **CUDA 12.8** build and flash-attn 2.8.3 publishes a matching
+prebuilt `cu12torch2.9` wheel, so the api image installs flash-attn from that wheel and
+builds in minutes. The stack is pinned in `server/pyproject.toml` (`torch==2.9.0`,
+`torchaudio==2.9.0`) for exactly this reason — torch 2.11 is a CUDA 13 build with no
+matching flash-attn wheel, which is what previously forced a ~1 hour source compile.
+
+### Fast container check
+
+```bash
+scripts/compose-smoke.sh                     # or: make docker-smoke
+```
+
+Boots an api image with the fake provider (no GPU, no model download) and asserts it
+reaches `/health` and exposes the built-in voices. Seconds, not minutes.
+
+### How the images are built
+
+`.github/workflows/images.yml` publishes to GHCR on every push to `main`, on `v*` tags,
+and on manual dispatch — `latest`, the branch, `sha-<short>`, and semver tags, plus the
+`-flash` and `-cpu` variants.
+
+The api Dockerfile is multi-target: a shared Ubuntu 24.04 builder creates the venv (and
+optionally installs the flash-attn wheel), and two runtime stages (`cuda` and `cpu`)
+copy it. The builder deliberately matches the runtime distro so the copied venv's
+interpreter path stays valid.
 
 ### Development workflow
 
 | Activity | Command |
 |---|---|
-| Day-to-day dev (whole app) | `scripts/dev.sh` |
+| Day-to-day dev (whole app, hot reload) | `scripts/dev.sh` |
 | Day-to-day dev (backend only) | `uv sync --extra dev && uv run uvicorn main:app --reload` |
-| Real-model test (native) | `uv sync --extra cuda` then `uv run pytest` |
-| Build production image | `make docker-build && make docker-run` |
+| Real-model test (native) | `uv sync --extra cuda` then `uv run pytest -m real_model` |
+| Run containers from source | `podman compose up -d --build` |
+| Fast image check | `scripts/compose-smoke.sh` |
+| Logs / stop | `make docker-logs` / `make docker-down` |
 
 ## Installation
 

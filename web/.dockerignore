@@ -1,0 +1,22 @@
+# ── Dependencies (the builder installs its own) ──
+node_modules
+
+# ── Build output ──────────────────────────────
+dist
+
+# ── Test / CI artifacts ───────────────────────
+coverage
+test-results
+playwright-report
+blob-report
+.playwright
+
+# ── Git / IDE / OS ────────────────────────────
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# ── Logs ──────────────────────────────────────
+*.log

@@ -1176,19 +1176,88 @@ Do not casually perturb:
 Normal `uv sync` does not pull it. The QwenProvider falls back to SDPA when it is absent.
 This means daily development, testing, and CI do not trigger a flash-attn compile.
 
-Production / GPU installs use either:
+Production / GPU installs use one of:
+
 - `uv sync --extra cuda` on a compatible machine (GCC ≤ 14)
-- `docker build -f server/Dockerfile` which compiles flash-attn inside a CUDA 12.8 + Ubuntu 24.04 container with GCC 13
+- the published container images (see the container section below)
 
-The Docker build targets SM 86 (RTX 30xx) via `FLASH_ATTN_CUDA_ARCHS=86` to minimize compile time.
-It only recompiles flash-attn when `pyproject.toml`, `uv.lock`, or the CUDA base image changes.
+**Three api variants plus one web image are published to GHCR by
+`.github/workflows/images.yml`:**
 
-Fedora 44 ships GCC 15+, which CUDA 12.8 does not support — use the Docker build, not a native install.
+- `ghcr.io/tychart/readflow-api` — CUDA, PyTorch SDPA (universal default)
+- `ghcr.io/tychart/readflow-api:<tag>-flash` — CUDA, prebuilt flash-attn
+- `ghcr.io/tychart/readflow-api:<tag>-cpu` — CPU-only torch, no NVIDIA runtime
+- `ghcr.io/tychart/readflow-web` — Caddy serving the built SPA and proxying
+  `/api` + `/api/ws` to the api (same-origin, so the frontend's relative paths
+  keep working with no CORS and no build-time backend URL)
+
+`compose.yml` at the repo root is the end-user entry point and can both pull and
+**build from the checkout** (`compose up -d --build`), so local development needs
+no wrapper script. `compose.cpu.yml` is the no-GPU stack. `.env` (from
+`.env.example`) selects the image, the local build variant, the port and the
+provider. The `hf-cache` named volume holds the Hugging Face weights; they are
+**never baked into an image**.
+
+**flash-attn is installed from a PREBUILT wheel — no compiler, no ~1 h build.**
+That only works because `torch` is pinned to `2.9.0` in `server/pyproject.toml`:
+PyPI torch 2.9 is a CUDA 12.8 build and flash-attn 2.8.3 publishes a matching
+`cu12torch2.9` wheel (the Dockerfile detects the CXX11 ABI, `TRUE` here).
+torch 2.11 is a CUDA 13 build with no matching wheel, which is what previously
+forced a source compile against a mismatched toolkit. If you bump `torch`,
+verify a matching flash-attn wheel exists before shipping `-flash`.
+
+Verified end to end on this machine: the `-flash` image reports
+`torch 2.9.0+cu128`, `cuda_available True`, `flash_attn 2.8.3`, provider
+`attn_implementation == "flash_attention_2"`, and a real job rendered a 13.2 s
+chunk through `/api/jobs` on the GPU.
 
 Do not remove or significantly change `server/Dockerfile` without understanding:
-- the builder stage uses `nvidia/cuda:12.8.1-devel-ubuntu24.04`
-- `FLASH_ATTN_CUDA_ARCHS=86` pins compilation to Ampere
-- The layer cache strategy means pyproject.toml/uv.lock changes are the only thing that triggers flash-attn rebuild
+
+- the build context is **`server/`**, not the repo root (`COPY pyproject.toml`,
+  `app/`, `voices/` are relative to it). An earlier revision passed the repo root
+  while the COPY paths assumed `server/`, so the build always failed at the first
+  `COPY`.
+- it is **multi-target**: `--target cuda` (last stage, so it is the default) and
+  `--target cpu`; flash is `--target cuda --build-arg INSTALL_FLASH_ATTN=1`.
+- the builder and both runtimes are **Ubuntu 24.04 on purpose**. The venv records
+  the interpreter path (`/usr/bin/python3.12`), so a `python:*-slim` builder would
+  produce a venv that is dead in an Ubuntu runtime (and vice versa). Do not change
+  one side without the other.
+- the builder must install `curl` explicitly (the CUDA/Ubuntu bases have none).
+  The uv installer is fetched with `curl | sh`, and the pipeline masks a missing
+  `curl` as success, so `uv` would silently never install.
+- the flash-wheel step runs `cd / && uv pip install --no-config ...`. The
+  `--no-config` matters: `[tool.uv.extra-build-dependencies] flash-attn` (needed
+  for *native source builds*) otherwise makes uv look for `torch` in the one-wheel
+  resolution and abort with "declared as an extra build dependency ... but was not
+  found in the resolution".
+- the runtime installs `libsndfile1` (there is **no** `libsndfile1-2` package on
+  Ubuntu 24.04) and bakes in `server/voices/`, because `VoiceRegistry` fails fast
+  when the voices directory is missing or empty.
+- the app user is **UID 10001**; the CUDA runtime base already uses 1000 for
+  `ubuntu`.
+- `server/.dockerignore` must NOT ignore `voices/`.
+- the `web/Dockerfile` context is **`web/`** and its images must be
+  fully-qualified (`docker.io/oven/bun:...`, `docker.io/library/caddy:...`) or
+  rootless Podman refuses the short name when it cannot prompt.
+
+Fedora 44 ships GCC 15+, which CUDA 12.8 does not support — use the container
+build, not a native install.
+
+**Podman GPU gotcha (verified on this machine).** If `compose up` hangs then fails
+with `crun: cannot stat /usr/lib64/libEGL_nvidia.so.<old-version>`, the host's CDI
+spec is stale after a driver upgrade: `/etc/cdi/nvidia.yaml` still names the old
+driver. Regenerate it:
+
+```bash
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+```
+
+To verify without root, generate to a temp dir and use
+`podman --cdi-spec-dir=/tmp/cdi run --device nvidia.com/gpu=all ...`
+(that is how the GPU path was validated here). `podman-compose` correctly
+forwards the compose `deploy.resources.reservations.devices` block as a CDI
+device request — the crun error proves the request reached the runtime.
 
 ### 2. CUDA visibility can differ by shell/session
 
@@ -1629,6 +1698,30 @@ Reliability / throughput / stall round (three workstreams):
    warn/confirm before scheduling a different model; the reader names the
    blocking model/voice instead of only stalling silently.
 
+Container distribution round (two passes):
+
+1. **Two images + end-user compose.** `server/Dockerfile` (api) and
+   `web/Dockerfile` (Caddy + SPA); `compose.yml` pulls from GHCR, reserves the
+   GPU, and keeps the HF cache in a named volume. The frontend stays same-origin
+   because Caddy proxies `/api` + `/api/ws`.
+2. **Build fixes.** The api build context is now `server/` (it used to be the
+   repo root while COPY assumed `server/`, so it always failed); the missing
+   `curl` in the CUDA base is installed; `libsndfile1-2` (nonexistent) is
+   `libsndfile1`; `server/voices/` is baked in so `VoiceRegistry` can start;
+   the app user moved to UID 10001.
+3. **flash-attn without a compiler.** `torch` pinned to 2.9.0 (CUDA 12.8) so the
+   prebuilt `cu12torch2.9` flash-attn wheel applies; the api Dockerfile became
+   multi-target (`cuda` / `cpu`, flash via build arg) with a distro-matched
+   builder. A real GPU job was rendered to prove it.
+4. **Three api variants.** default CUDA/SDPA, `-flash`, and `-cpu`; the CPU
+   variant resolves CPU torch through `uv pip install --torch-backend=cpu` (the
+   one place the frozen lock is not used, because the lock pins the CUDA torch).
+5. **compose builds from source.** `compose.yml`/`compose.cpu.yml` carry `build:`
+   as well as `image:`, so `podman compose up -d --build` is the whole dev flow;
+   `scripts/compose-smoke.sh` is the seconds-long image check.
+6. **CI publishing.** `.github/workflows/images.yml` builds and pushes all
+   variants to GHCR with buildx caches on main, tags, and manual dispatch.
+
 ## Agent Workflow Checklist
 
 When making changes, use this checklist.
@@ -1674,7 +1767,8 @@ Likely next steps, unless the user changes direction:
 4. continue hardening reader/player edge cases (the conveyor and phone dock are
    the newest surfaces; gesture feel and small-screen layouts are the likeliest
    places for the next bug)
-5. expand deployment story for a single-host install (Docker is now in place)
+5. expand deployment story for a single-host install (two GHCR images + `compose.yml`
+   are in place; multi-arch flash builds, image signing, and cleanup remain)
 6. add a better documented GPU validation workflow
 
 ## Bottom Line for Future Agents
@@ -1688,6 +1782,6 @@ If you only remember a few things, remember these:
 - `flash-attn` is optional — provider falls back to SDPA when absent
 - bun is the package manager for all JS/TS, uv for all Python; do not reintroduce npm
 - `scripts/dev.sh` is the canonical way to run the app locally
-- the Docker build (`server/Dockerfile`) is the canonical production path
+- the Docker images (`server/Dockerfile` + `web/Dockerfile`) are the canonical production path, driven by `compose.yml`
 - keep tests green and run them often
 - do not undo the async server test harness without very good reason

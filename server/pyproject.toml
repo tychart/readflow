@@ -9,7 +9,12 @@ dependencies = [
   "pydantic-settings>=2.9.1",
   "python-multipart>=0.0.20",
   "qwen-tts",
-  "torch",
+  # Pinned deliberately. PyPI torch 2.9 is a CUDA 12.8 build that matches the
+  # nvidia/cuda:12.8 base images AND has a prebuilt flash-attn 2.8.3 wheel
+  # (cu12torch2.9), so the container never has to compile flash-attn.
+  # torch 2.11 moved to CUDA 13 and has no matching flash-attn wheel.
+  "torch==2.9.0",
+  "torchaudio==2.9.0",
   "uvicorn[standard]>=0.34.2"
 ]
 

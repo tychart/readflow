@@ -38,8 +38,11 @@ Thumbs.db
 *.log
 *.pid
 
-# ── Test voices (not shipped in container) ────
-voices
-
 # ── Tests (not needed at runtime) ─────────────
+# NOTE: server/voices/ is deliberately NOT ignored — the API image bakes in the
+# built-in voices because VoiceRegistry fails fast when they are absent.
 tests
+
+# ── Local cruft ───────────────────────────────
+coverage.xml
+htmlcov

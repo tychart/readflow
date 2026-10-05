@@ -2,7 +2,8 @@ SHELL := /bin/bash
 UV_CACHE_DIR := /tmp/readflow-uv-cache
 
 .PHONY: install dev test-web test-server test-e2e test lint typecheck test-real-model \
-        cuda-install docker-build docker-run docker-clean
+        cuda-install docker-build docker-build-flash docker-build-cpu docker-build-all \
+        docker-run docker-run-cpu docker-logs docker-down docker-smoke docker-clean
 
 # ── Setup ─────────────────────────────────────
 # Bun owns the frontend, uv owns the backend.
@@ -56,18 +57,54 @@ cuda-install:
 	cd server && \
 	uv sync --extra cuda
 
-# ── Docker build ───────────────────────────────
-# One-time: flash-attn compiles inside the container (~1 h on first run).
-# Subsequent starts use the pre-built image — zero compile time.
-#
-# Only rebuilds the compiler layer when pyproject.toml or uv.lock changes.
-# Application code changes do not trigger a rebuild.
+# ── Containers ─────────────────────────────────
+# Engine auto-detects docker, then podman. Override: `make docker-build ENGINE=podman`.
+# Compose prefers `docker compose`, then podman-compose.
+ENGINE ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null)
+COMPOSE ?= $(shell if command -v docker >/dev/null 2>&1; then echo "docker compose"; \
+	elif command -v podman-compose >/dev/null 2>&1; then echo "podman-compose"; \
+	else echo "podman compose"; fi)
+REGISTRY ?= ghcr.io/tychart
+IMAGE_TAG ?= latest
 
+# Build locally, tagged exactly like the published images so compose resolves
+# them without pulling. `$(COMPOSE) up -d --build` does the same from compose.yml.
 docker-build:
-	docker build -t readflow-server:cuda -f server/Dockerfile .
+	$(ENGINE) build --target cuda -t $(REGISTRY)/readflow-api:$(IMAGE_TAG) -f server/Dockerfile server
+	$(ENGINE) build -t $(REGISTRY)/readflow-web:$(IMAGE_TAG) -f web/Dockerfile web
 
+# flash-attn is a prebuilt wheel now, so this takes minutes, not an hour.
+docker-build-flash:
+	$(ENGINE) build --target cuda --build-arg INSTALL_FLASH_ATTN=1 \
+		-t $(REGISTRY)/readflow-api:$(IMAGE_TAG)-flash -f server/Dockerfile server
+
+# CPU-only api image (no NVIDIA runtime needed).
+docker-build-cpu:
+	$(ENGINE) build --target cpu -t $(REGISTRY)/readflow-api:$(IMAGE_TAG)-cpu -f server/Dockerfile server
+
+docker-build-all: docker-build docker-build-flash docker-build-cpu
+
+# Start the GPU stack. Add ARGS=--build to build from this checkout.
 docker-run:
-	docker run --rm --gpus all --ipc=host -p 8000:8000 readflow-server:cuda
+	$(COMPOSE) -f compose.yml up -d $(ARGS)
+	@echo "ReadFlow: http://localhost:$${READFLOW_PORT:-8080}"
+
+docker-run-cpu:
+	$(COMPOSE) -f compose.cpu.yml up -d $(ARGS)
+
+docker-logs:
+	$(COMPOSE) -f compose.yml logs -f
+
+docker-down:
+	-$(COMPOSE) -f compose.yml down
+	-$(COMPOSE) -f compose.cpu.yml down
+
+# Fast check that an api image boots, is healthy and has the built-in voices.
+docker-smoke:
+	scripts/compose-smoke.sh $(REGISTRY)/readflow-api:$(IMAGE_TAG)
 
 docker-clean:
-	docker rmi readflow-server:cuda 2>/dev/null || true
+	-$(ENGINE) rmi $(REGISTRY)/readflow-api:$(IMAGE_TAG) \
+		$(REGISTRY)/readflow-api:$(IMAGE_TAG)-flash \
+		$(REGISTRY)/readflow-api:$(IMAGE_TAG)-cpu \
+		$(REGISTRY)/readflow-web:$(IMAGE_TAG)

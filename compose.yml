@@ -1,0 +1,84 @@
+# ReadFlow — GPU deployment (default).
+#
+# Pull the published images:
+#   podman compose up -d                    # or: docker compose up -d
+#
+# Build both images from this checkout instead of pulling:
+#   podman compose up -d --build
+#
+# Open http://localhost:8080. The api reserves the GPU; the web image is Caddy
+# serving the SPA and reverse-proxying /api + /api/ws to it.
+#
+# Image variant: `latest` is the generic CUDA/SDPA image and boots on any NVIDIA
+# GPU. For the flash-attn build, either pull it:
+#   READFLOW_API_IMAGE=ghcr.io/tychart/readflow-api:latest-flash podman compose up -d
+# or build it locally:
+#   READFLOW_FLASH=1 podman compose up -d --build
+#
+# No GPU? Use compose.cpu.yml. No NVIDIA toolkit/CDI? Fix it with
+#   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+
+name: readflow
+
+services:
+  api:
+    image: ${READFLOW_API_IMAGE:-ghcr.io/tychart/readflow-api:latest}
+    build:
+      context: server
+      target: ${READFLOW_TARGET:-cuda}
+      args:
+        # 1 = bundle the prebuilt flash-attn wheel (target must be cuda).
+        INSTALL_FLASH_ATTN: ${READFLOW_FLASH:-0}
+    restart: unless-stopped
+    # PyTorch's shared-memory transport needs the host IPC namespace.
+    ipc: host
+    environment:
+      READFLOW_TTS_PROVIDER: ${READFLOW_TTS_PROVIDER:-qwen}
+      READFLOW_SCHEDULER_AUTOSTART: ${READFLOW_SCHEDULER_AUTOSTART:-true}
+      READFLOW_TEMP_DIR_NAME: ${READFLOW_TEMP_DIR_NAME:-readflow}
+      HF_HOME: /home/readflow/.cache/huggingface
+      # Optional: authenticated / faster Hugging Face downloads.
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      # Named volume: the model weights download once and survive image updates.
+      - hf-cache:/home/readflow/.cache/huggingface
+    expose:
+      - "8000"
+    # Defined here (not in the image) so it also applies to OCI-format builds,
+    # where Podman drops Dockerfile HEALTHCHECK instructions.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  web:
+    image: ${READFLOW_WEB_IMAGE:-ghcr.io/tychart/readflow-web:latest}
+    build:
+      context: web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Caddy reverse-proxies /api and /api/ws here.
+      READFLOW_API_UPSTREAM: api:8000
+    ports:
+      - "${READFLOW_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  hf-cache:

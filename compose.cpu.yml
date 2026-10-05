@@ -1,0 +1,60 @@
+# ReadFlow — no-GPU (CPU) deployment.
+#
+#   podman compose -f compose.cpu.yml up -d          # or: docker compose -f compose.cpu.yml up -d
+#   podman compose -f compose.cpu.yml up -d --build # build from this checkout
+#
+# The api image is the CPU variant (CPU-only torch). It works without any NVIDIA
+# driver or container toolkit, but synthesising a book on a CPU is very slow, so
+# this is best for trying the app out and for UI development. Long jobs are
+# practical on a GPU (see compose.yml).
+#
+# Tip: for a fast UI-only stack, use the fake provider so no model ever loads:
+#   READFLOW_TTS_PROVIDER=fake podman compose -f compose.cpu.yml up -d
+
+name: readflow
+
+services:
+  api:
+    image: ${READFLOW_API_IMAGE:-ghcr.io/tychart/readflow-api:latest-cpu}
+    build:
+      context: server
+      target: cpu
+    restart: unless-stopped
+    environment:
+      READFLOW_TTS_PROVIDER: ${READFLOW_TTS_PROVIDER:-qwen}
+      READFLOW_SCHEDULER_AUTOSTART: ${READFLOW_SCHEDULER_AUTOSTART:-true}
+      READFLOW_TEMP_DIR_NAME: ${READFLOW_TEMP_DIR_NAME:-readflow}
+      HF_HOME: /home/readflow/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf-cache:/home/readflow/.cache/huggingface
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+  web:
+    image: ${READFLOW_WEB_IMAGE:-ghcr.io/tychart/readflow-web:latest}
+    build:
+      context: web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      READFLOW_API_UPSTREAM: api:8000
+    ports:
+      - "${READFLOW_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  hf-cache:

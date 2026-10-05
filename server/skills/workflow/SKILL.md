@@ -49,17 +49,31 @@ Only run when CUDA is available (`torch.cuda.is_available()` must be `True`).
 
 **Prerequisite:** `READFLOW_ENABLE_REAL_MODEL_TESTS=1` is set, GPU visible.
 
-## Docker Build (production)
+## Container Build (production)
 
-One-time compile of flash-attn inside a CUDA container (~1 hour first run, cached afterwards).
+Two images (api + web) run together via `compose.yml`. The api comes in three
+variants: CUDA/SDPA (default), `-flash` (prebuilt flash-attn wheel), and `-cpu`.
+None of them compile flash-attn — it comes from a prebuilt wheel — so every build
+is minutes, not an hour.
+
+`podman compose up -d --build` builds and runs from this checkout; no Makefile needed.
+The Make targets below are just convenience wrappers (they auto-detect docker then
+podman; override with `ENGINE=podman`, `REGISTRY=...`, or `IMAGE_TAG=...`).
 
 | Target | Command | What it does |
 |--------|---------|--------------|
-| `docker-build` | `make docker-build` | Builds `readflow-server:cuda` image |
-| `docker-run` | `make docker-run` | Runs container with GPU, exposes port 8000 |
-| `docker-clean` | `make docker-clean` | Removes the image |
+| `docker-build` | `make docker-build` | Builds the api (CUDA/SDPA) + web images locally |
+| `docker-build-flash` | `make docker-build-flash` | Builds the api image with flash-attn |
+| `docker-build-cpu` | `make docker-build-cpu` | Builds the CPU-only api image |
+| `docker-run` | `make docker-run` | `compose up -d`, serves the UI on port 8080 |
+| `docker-smoke` | `make docker-smoke` | Boots an api image (fake provider) and checks health + voices |
+| `docker-logs` / `docker-down` | `make docker-logs` / `make docker-down` | Tail logs / stop the stack |
+| `docker-clean` | `make docker-clean` | Removes the local images |
 
-**Note:** On Fedora 44+ (GCC 15+), use `docker-build` — do **not** run `cuda-install` on the host.
+**Note:** On Fedora 44+ (GCC 15+), use the containers — do **not** run `cuda-install` on the host.
+
+**Note:** `torch` is pinned to 2.9.0 so the prebuilt flash-attn wheel matches. If you bump
+it, confirm a matching flash-attn wheel exists first.
 
 ## Workflow Checklist
 
