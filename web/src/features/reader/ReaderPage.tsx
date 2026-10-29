@@ -25,6 +25,7 @@ import { PlaybackSpeedControl } from "./PlaybackSpeedControl";
 import {
   buildManifestFromPatch,
   buildStreamManifest,
+  chunkIndexAtSeconds,
   chunkStartSeconds,
   deriveActiveChunkProgress,
   deriveActiveChunks,
@@ -96,6 +97,10 @@ export function ReaderPage() {
   const [loadRetryAttempt, setLoadRetryAttempt] = useState(0);
   const [playIntent, setPlayIntent] = useState(false);
   const [playbackAnchorIndex, setPlaybackAnchorIndex] = useState(0);
+  // Bumped when a seek targets audio the player no longer holds (evicted behind
+  // the retained window, or not fetched yet) *without* changing the anchor, so
+  // the player reopens the SourceBuffer instead of clamping to loaded audio.
+  const [streamRestartKey, setStreamRestartKey] = useState(0);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
   const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
@@ -226,6 +231,10 @@ export function ReaderPage() {
     diagnostics,
     isActuallyPlaying,
     isAutoplayBlocked,
+    isLoadingAudio,
+    isSecondsBehindRetainedAudio,
+    isSecondsLoaded,
+    isStreamPrimed,
     isWaitingForData,
     lastPlayerError,
     pausePlayback,
@@ -234,6 +243,7 @@ export function ReaderPage() {
     renderedDurationSeconds,
     requestUserGesturePlay,
     seekToSeconds,
+    seekWithinBuffered,
     setPlaybackRate,
   } = useMediaSourcePlayer({
     jobId,
@@ -243,6 +253,7 @@ export function ReaderPage() {
     isTerminal: isJobTerminal,
     pendingSeekSeconds: seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
     onSeekApplied: handleSeekApplied,
+    streamRestartKey,
   });
 
   // ── Render-stall detection ──────────────────────────────
@@ -588,28 +599,10 @@ export function ReaderPage() {
     }
   };
 
-  // Keyboard/direct seeks use normalized stream coords and seek immediately
-  // (no need to wait for buffer — the stream is already set up)
-  /**
-   * Relative seek for the −10s / +10s buttons and their shortcuts. Bounded by
-   * the rendered stream, so skipping past the end lands on the last playable
-   * position and lets the player enter its waiting state rather than seeking
-   * into audio that does not exist.
-   */
-  const handleSkip = (deltaSeconds: number) => {
-    if (renderedDurationSeconds <= 0) return;
-    seekToSeconds(skipTargetSeconds(currentTimeSeconds, deltaSeconds, renderedDurationSeconds));
-  };
-
   const handleTogglePlay = () => {
     if (isActuallyPlaying || playIntent) void handlePause();
     else void handlePlay();
   };
-
-  // Page-wide playback keys: the reader should not require clicking the
-  // controls first. Handlers are read from a ref inside the hook, so this does
-  // not resubscribe on every playback tick.
-  usePlaybackShortcuts({ togglePlay: handleTogglePlay, skipBy: handleSkip });
 
   const handleSeekToChunk = useCallback(
     async (chunkIndex: number, seekSeconds: number) => {
@@ -619,9 +612,18 @@ export function ReaderPage() {
       // the new position. Only an actively-playing player needs the job
       // re-activated for backend scheduling.
       const resumeAfterSeek = playIntent;
+      const isSameAnchor = chunkIndex === playbackAnchorIndex;
+      const streamTargetSeconds = Math.max(0, seekSeconds - anchorOffset);
       setPlaybackAnchorIndex(chunkIndex);
       setSeekOverride(seekSeconds);
       setError(null);
+      // Moving the anchor reopens the stream by itself. Staying on the anchor
+      // and aiming at audio that has been evicted (or not fetched yet) does not,
+      // so ask the player for a rebuild explicitly — otherwise MSE in sequence
+      // mode would silently clamp the seek to the retained audio.
+      if (isSameAnchor && !isSecondsLoaded(streamTargetSeconds)) {
+        setStreamRestartKey((key) => key + 1);
+      }
       if (isJobTerminal) {
         if (resumeAfterSeek) await requestUserGesturePlay();
         return;
@@ -641,7 +643,16 @@ export function ReaderPage() {
         );
       }
     },
-    [applyJobPatch, isJobTerminal, job, playIntent, requestUserGesturePlay],
+    [
+      anchorOffset,
+      applyJobPatch,
+      isJobTerminal,
+      isSecondsLoaded,
+      job,
+      playIntent,
+      playbackAnchorIndex,
+      requestUserGesturePlay,
+    ],
   );
 
   // Track the last user-initiated chunk change so the scroll-into-view effect
@@ -655,6 +666,40 @@ export function ReaderPage() {
     },
     [handleSeekToChunk],
   );
+
+  /**
+   * Relative seek for the −10s / +10s buttons, the arrow keys and J/L.
+   *
+   * While the target is buffered this is an instant in-stream seek. The player
+   * only retains a bounded window of audio (MSE cannot hold a whole book), so a
+   * target behind the retained audio — or in a stream that has not primed yet —
+   * has to go through the anchor path, which reopens the stream at the chunk
+   * containing the target.
+   */
+  const handleSkip = (deltaSeconds: number) => {
+    if (renderedDurationSeconds <= 0) return;
+    const targetStreamSeconds = skipTargetSeconds(
+      currentTimeSeconds,
+      deltaSeconds,
+      renderedDurationSeconds,
+    );
+    if (seekWithinBuffered(targetStreamSeconds) !== null) return;
+    if (isStreamPrimed && !isSecondsBehindRetainedAudio(targetStreamSeconds)) {
+      // Ahead of the buffered end: clamp into what is loaded and let the
+      // appending window catch up (the player enters its waiting state).
+      seekToSeconds(targetStreamSeconds);
+      return;
+    }
+    const timelineTarget = targetStreamSeconds + anchorOffset;
+    // Position math runs over the whole timeline (including any gap chunks), so
+    // the resolved anchor matches what the timeline itself would seek to.
+    void handleSeekToChunk(chunkIndexAtSeconds(activeChunks, timelineTarget), timelineTarget);
+  };
+
+  // Page-wide playback keys: the reader should not require clicking the
+  // controls first. Handlers are read from a ref inside the hook, so this does
+  // not resubscribe on every playback tick.
+  usePlaybackShortcuts({ togglePlay: handleTogglePlay, skipBy: handleSkip });
 
   /**
    * Jump to a chunk from its block in the reader text. Stable identity matters:
@@ -970,6 +1015,7 @@ export function ReaderPage() {
             isDownloadComplete={isDownloadComplete}
             isDownloading={isDownloading}
             isJobTerminal={isJobTerminal}
+            isLoadingAudio={isLoadingAudio}
             isPlaying={isActuallyPlaying}
             isWaitingForData={isWaitingForData}
             playIntent={playIntent}
@@ -1171,6 +1217,7 @@ export function ReaderPage() {
       {isPhoneViewport && settings.showConveyor ? (
         <ReaderDock
           isAutoplayBlocked={isAutoplayBlocked}
+          isLoadingAudio={isLoadingAudio}
           isPlaying={isActuallyPlaying}
           isWaitingForData={isWaitingForData}
           maxSeekSeconds={displayRenderedDurationSeconds}

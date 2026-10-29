@@ -12,6 +12,8 @@ export interface ReaderDockProps {
   motion: "animated" | "reduced";
   windowSizeSetting: ConveyorWindowSize;
   isAutoplayBlocked: boolean;
+  /** The client is still fetching/priming the requested audio. */
+  isLoadingAudio: boolean;
   isPlaying: boolean;
   isWaitingForData: boolean;
   playIntent: boolean;
@@ -39,6 +41,7 @@ export function ReaderDock({
   motion,
   windowSizeSetting,
   isAutoplayBlocked,
+  isLoadingAudio,
   isPlaying,
   isWaitingForData,
   playIntent,
@@ -69,6 +72,7 @@ export function ReaderDock({
             showPauseIcon={isPlaying || playIntent}
             showSpinner={resolveShowSpinner({
               isAutoplayBlocked,
+              isLoadingAudio,
               isPlaying,
               isWaitingForData,
               playIntent,

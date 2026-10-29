@@ -5,6 +5,7 @@ import { buildChunk, buildChunks, buildJobDetail } from "../../test-utils/chunks
 import {
   buildManifestFromPatch,
   buildStreamManifest,
+  chunkIndexAtSeconds,
   deriveActiveChunkProgress,
   deriveActiveChunks,
   deriveActiveVersionMap,
@@ -275,6 +276,34 @@ describe("skipTargetSeconds", () => {
   test("stops at the end of the rendered range instead of seeking into silence", () => {
     expect(skipTargetSeconds(55, 10, 60)).toBe(60);
     expect(skipTargetSeconds(60, 10, 60)).toBe(60);
+  });
+});
+
+describe("chunkIndexAtSeconds", () => {
+  const chunks = buildChunks(4); // 4s each: 0-4, 4-8, 8-12, 12-16
+
+  test("resolves a position to the chunk that contains it", () => {
+    expect(chunkIndexAtSeconds(chunks, 0)).toBe(0);
+    expect(chunkIndexAtSeconds(chunks, 3.9)).toBe(0);
+    expect(chunkIndexAtSeconds(chunks, 4)).toBe(1);
+    expect(chunkIndexAtSeconds(chunks, 11.5)).toBe(2);
+  });
+
+  test("positions past the end resolve to the last chunk", () => {
+    expect(chunkIndexAtSeconds(chunks, 16)).toBe(3);
+    expect(chunkIndexAtSeconds(chunks, 9999)).toBe(3);
+  });
+
+  test("an empty timeline resolves to chunk 0", () => {
+    expect(chunkIndexAtSeconds([], 5)).toBe(0);
+  });
+
+  test("skipping back from inside a long document lands on the right chunk", () => {
+    // A relative skip that left the retained window is converted back into
+    // anchor coordinates with this helper before the stream is reopened.
+    const longChunks = buildChunks(8); // 4s each, 32s total
+    expect(chunkIndexAtSeconds(longChunks, 30 - 10)).toBe(5);
+    expect(chunkIndexAtSeconds(longChunks, 30 + 10)).toBe(7);
   });
 });
 

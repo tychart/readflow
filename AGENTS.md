@@ -257,7 +257,8 @@ Key files:
 - `web/src/features/reader/transport.ts` (play-button label, spinner, status-pill and render-stall rules)
 - `web/src/features/reader/RenderingStallBanner.tsx` (stalled-producer banner + Retry)
 - `web/src/features/reader/conveyor-physics.ts` (pure: conveyor gesture physics + layout)
-- `web/src/lib/media-source.ts` (player hook: `<audio>`, `MediaSource`, append queue)
+- `web/src/lib/media-source.ts` (player hook: `<audio>`, `MediaSource`, append queue, eviction)
+- `web/src/lib/media-window.ts` (pure: streaming-window thresholds, eviction range, buffered-range checks)
 - `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
 - `web/src/components/WaveformSlot.tsx` (the shared waveform look, used by both bars)
 - `web/src/components/WaveformTimeline.tsx` (whole-document overview bar)
@@ -277,7 +278,8 @@ Current architecture:
 
 Important design rules:
 
-- the browser keeps one appendable MSE stream per active job/anchor
+- the browser keeps one appendable MSE stream per active job/anchor, holding a **bounded window**
+  of that stream (a few minutes ahead, two minutes behind) — never the whole job
 - the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
 - `playIntent` is user intent, not identical to "the browser is currently making sound"
 - real playback state comes from the hook and must stay synchronized with the custom controls
@@ -403,6 +405,70 @@ currentTimeSeconds + anchorOffset`). Do not "simplify" that back to always
 `currentTimeSeconds + anchorOffset` — it makes the fill snap to the start of
 the anchored chunk on release and then jump to the seeked position once the
 seek applies.
+
+### Bounded streaming window (why the whole job is never buffered)
+
+A job can be a whole book. Appending every rendered chunk into one
+`SourceBuffer` filled the browser's MSE memory quota and produced, on a phone
+(Chromium/Vivaldi on a Pixel 8 and WebKit on iOS both enforce it):
+
+```
+Failed to execute 'appendBuffer' on 'SourceBuffer': The SourceBuffer is full,
+and cannot free space to append additional buffers.
+```
+
+`web/src/lib/media-window.ts` + `useMediaSourcePlayer` now keep a sliding
+window instead:
+
+- **ahead**: `STREAM_WINDOW_AHEAD_SECONDS` (240s) of audio past the playhead,
+  topped up when less than `STREAM_WINDOW_REFILL_SECONDS` (30s) of that lookahead
+  remains;
+- **behind**: `STREAM_WINDOW_KEEP_BEHIND_SECONDS` (120s) retained so ←/→ skips
+  and short re-listens never touch the network;
+- everything older is dropped with `SourceBuffer.remove(0, playhead - 120)`.
+
+Rules that are easy to break:
+
+- **The window is a prefix, not an arbitrary slice.** `mode = "sequence"` lays
+  segments back-to-back in append order, so only the *front* can be trimmed.
+  Appends always continue forward from the last appended chunk; the pump keeps a
+  `windowCursorRef` into `manifest.chunks` and rewinds it on a failed append so
+  the quiet 3s `APPEND_RETRY_BACKOFF_MS` retry can pick the same chunk back up.
+  Never retry from a reset cursor without clearing `pendingChunkIndexesRef` for
+  the dropped queue entries — that leaves chunks permanently "in flight".
+- **Eviction is serialized with appends** through `processingQueueRef`:
+  `SourceBuffer.remove()` throws while an append is updating. Eviction runs
+  after the queue drains and from the playback tick, and its end is always
+  strictly behind the playhead, so it can never remove audio about to be heard.
+- **A full SourceBuffer is recoverable, not fatal.** A `QuotaExceededError` (name
+  or "SourceBuffer is full" message) triggers one aggressive eviction
+  (`EMERGENCY_KEEP_BEHIND_SECONDS`, 10s) and a single retry of that chunk. When
+  nothing can be freed the listener gets
+  "This device ran out of audio buffer space. Reload the reader to continue."
+  — never the raw browser text.
+- **A seek outside the loaded audio is a stream reopen, not a clamped seek.**
+  Reading back into evicted audio is impossible in sequence mode, so
+  `ReaderPage` asks the hook (`isSecondsLoaded`) and, when the target is not
+  loaded *and the anchor index did not change*, bumps `streamRestartKey`, which is
+  part of `streamKey`. A different chunk reopens the stream anyway by changing
+  the anchor. The pending seek then applies when the rebuilt window covers it.
+- **`isLoadingAudio` is a distinct state from `isWaitingForData`.** It is true
+  while a pending seek has not landed or a wanted stream has not primed, and it
+  drives the play-button spinner and the "Loading audio…" pill. `isWaitingForData`
+  means *the producer has not rendered far enough* and is what the stall banner
+  keys off — a client-side fetch must never look like a producer stall. With
+  nothing rendered yet the label stays "Preparing stream…".
+- Skip buttons (`handleSkip`) try an in-stream seek first; a target *ahead* of
+  the buffered end clamps and waits for the append, while a target *behind* the
+  retained audio is converted back to anchor coordinates
+  (`chunkIndexAtSeconds`) and reopens the stream.
+
+Tests: `web/src/lib/media-window.test.ts` (thresholds/eviction math),
+`web/src/lib/media-source.test.tsx` ("streaming window": window-bounded appends,
+window extension as the playhead advances, eviction without a rebuild, loading
+until an unloaded seek arrives, restart-key reopen, quota recovery + readable
+failure), and `ReaderPage.test.tsx` ("a skip back into evicted audio reopens the
+stream instead of clamping", with a MediaSource fake that counts instances).
 
 ### Chunk jump controls, skip buttons and keyboard shortcuts
 
@@ -1770,6 +1836,22 @@ Reliability / throughput / stall round (three workstreams):
    batch; `/api/status` + `JobCreateForm` default to the resident model/voice and
    warn/confirm before scheduling a different model; the reader names the
    blocking model/voice instead of only stalling silently.
+
+Playback memory round (bounded streaming window):
+
+1. **The player no longer buffers the whole job.** Appending every rendered chunk
+   into one `SourceBuffer` hit the browser's MSE quota on phones
+   (`The SourceBuffer is full, and cannot free space to append additional
+   buffers`). `media-window.ts` + the hook now keep 240s ahead / 120s behind and
+   evict the rest, with quota-error recovery and a readable failure message.
+2. **Far seeks reopen the stream.** `streamRestartKey`, `isSecondsLoaded`,
+   `seekWithinBuffered` and `isSecondsBehindRetainedAudio` let the reader detect
+   "this audio was evicted / is not loaded" and reopen at the target instead of
+   being clamped; skip buttons fall back to the anchor path via
+   `chunkIndexAtSeconds`.
+3. **Loading is its own state.** `isLoadingAudio` drives the spinner and the
+   "Loading audio…" pill, kept separate from producer starvation so the stall
+   banner cannot fire on a client-side fetch.
 
 Container distribution round (two passes):
 

@@ -38,8 +38,15 @@ export interface PlaybarProps {
   playIntent: boolean;
   /** True when the browser has blocked autoplay. */
   isAutoplayBlocked: boolean;
-  /** True if the job is in a terminal state (completed/failed). */
+  /** True when the job is in a terminal state (completed/failed). */
   isJobTerminal: boolean;
+  /**
+   * True while the client is still fetching/priming the audio the listener
+   * asked for (a seek outside the loaded window, or a stream that has not
+   * opened yet). Drives the spinner and the "Loading audio…" pill instead of
+   * "Buffering…", which means the producer has not rendered far enough yet.
+   */
+  isLoadingAudio: boolean;
   /** True when the player is waiting for buffered data. */
   isWaitingForData: boolean;
   /** Whether the download button should be enabled. */
@@ -112,6 +119,7 @@ export function Playbar({
   playIntent,
   isAutoplayBlocked,
   isJobTerminal,
+  isLoadingAudio,
   isWaitingForData,
   canDownload,
   isDownloadComplete,
@@ -137,6 +145,7 @@ export function Playbar({
         displayTimeSeconds,
         isAutoplayBlocked,
         isJobTerminal,
+        isLoadingAudio,
         isPlaying,
         isWaitingForData,
         playIntent,
@@ -147,6 +156,7 @@ export function Playbar({
       displayTimeSeconds,
       isAutoplayBlocked,
       isJobTerminal,
+      isLoadingAudio,
       isPlaying,
       isWaitingForData,
       playIntent,
@@ -157,6 +167,7 @@ export function Playbar({
   const playButtonLabel = resolvePlayButtonLabel({ isAutoplayBlocked, playIntent });
   const showSpinner = resolveShowSpinner({
     isAutoplayBlocked,
+    isLoadingAudio,
     isPlaying,
     isWaitingForData,
     playIntent,
@@ -288,7 +299,7 @@ export function Playbar({
                   ? "bg-[var(--amber-soft)] text-[var(--amber)]"
                   : playerStateLabel === "Playback complete"
                     ? "bg-emerald-900/30 text-emerald-400"
-                    : playerStateLabel === "Buffering…"
+                    : playerStateLabel === "Buffering…" || playerStateLabel === "Loading audio…"
                       ? "bg-amber-900/30 text-amber-400"
                       : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
               }`}

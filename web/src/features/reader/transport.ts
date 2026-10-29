@@ -9,6 +9,12 @@
 export interface TransportState {
   isAutoplayBlocked: boolean;
   isJobTerminal: boolean;
+  /**
+   * The client is still fetching/priming the audio the listener asked for (a
+   * pending seek, or a stream that has not opened yet). Separate from
+   * `isWaitingForData`, which means the producer has not rendered far enough.
+   */
+  isLoadingAudio: boolean;
   isPlaying: boolean;
   isWaitingForData: boolean;
   playIntent: boolean;
@@ -26,11 +32,12 @@ export function resolvePlayButtonLabel({
 /** True while the play button should show a spinner instead of an icon. */
 export function resolveShowSpinner({
   isAutoplayBlocked,
+  isLoadingAudio,
   isPlaying,
   isWaitingForData,
   playIntent,
 }: Omit<TransportState, "isJobTerminal">): boolean {
-  return (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
+  return isLoadingAudio || (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
 }
 
 export interface PlayerStateInput extends TransportState {
@@ -49,7 +56,11 @@ export function resolvePlayerStateLabel(state: PlayerStateInput): string {
   ) {
     return "Playback complete";
   }
-  if (state.isPlaying) return "Playing";
+  if (state.isPlaying && !state.isLoadingAudio) return "Playing";
+  // "Loading audio…" is about fetching/buffering audio this client asked for.
+  // With nothing rendered yet there is nothing to load, and "Preparing
+  // stream…" is the honest copy (the producer has not emitted a chunk).
+  if (state.isLoadingAudio && state.renderedDurationSeconds > 0) return "Loading audio…";
   if (state.playIntent && state.isWaitingForData) return "Buffering…";
   if (state.playIntent && !state.isPlaying && state.renderedDurationSeconds <= 0) {
     return "Preparing stream…";

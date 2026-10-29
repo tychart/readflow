@@ -252,6 +252,25 @@ export function chunkStartSeconds(activeChunks: Chunk[], chunkIndex: number): nu
   return start;
 }
 
+/**
+ * Index of the chunk that contains a timeline position: the last chunk whose
+ * start is at or before `seconds`. Positions past the end resolve to the last
+ * chunk and an empty list resolves to 0.
+ *
+ * Used to turn a relative skip that fell outside the retained audio window back
+ * into the anchor (chunk + offset) coordinates the player rebuilds streams in.
+ */
+export function chunkIndexAtSeconds(chunks: Chunk[], seconds: number): number {
+  let resolvedIndex = chunks[0]?.index ?? 0;
+  let runningStart = 0;
+  for (const chunk of chunks) {
+    if (runningStart > seconds) break;
+    resolvedIndex = chunk.index;
+    runningStart += chunk.duration_seconds;
+  }
+  return resolvedIndex;
+}
+
 /* ── Playback progress ────────────────────────────────────── */
 
 export interface ActiveChunkProgress {

@@ -32,12 +32,14 @@ Object.defineProperty(window, "PointerEvent", {
 });
 
 const originalFetch = global.fetch;
+const originalMediaSource = window.MediaSource;
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   global.fetch = originalFetch;
+  Object.defineProperty(window, "MediaSource", { writable: true, value: originalMediaSource });
   useAppStore.setState({ runtimeStatus: null });
 });
 
@@ -1297,6 +1299,110 @@ test("the ±10s buttons seek within the rendered stream", async () => {
 
   await user.click(screen.getByRole("button", { name: "Back 10 seconds" }));
   expect(audio!.currentTime).toBeCloseTo(0, 5);
+});
+
+test("a skip back into evicted audio reopens the stream instead of clamping", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  // A real-enough MSE stack: the reader only reopens the stream when the target
+  // is no longer loaded, so counting MediaSource instances is the assertion that
+  // a rebuild happened rather than a clamp.
+  let mediaSourceCount = 0;
+  class TestSourceBuffer extends EventTarget {
+    public updating = false;
+    public mode: AppendMode = "segments";
+
+    appendBuffer() {
+      this.updating = true;
+      queueMicrotask(() => {
+        this.updating = false;
+        this.dispatchEvent(new Event("updateend"));
+      });
+    }
+
+    remove() {
+      this.updating = true;
+      queueMicrotask(() => {
+        this.updating = false;
+        this.dispatchEvent(new Event("updateend"));
+      });
+    }
+  }
+  class TestMediaSource extends EventTarget {
+    public readyState = "closed";
+
+    constructor() {
+      super();
+      mediaSourceCount += 1;
+      queueMicrotask(() => {
+        this.readyState = "open";
+        this.dispatchEvent(new Event("sourceopen"));
+      });
+    }
+
+    addSourceBuffer() {
+      return new TestSourceBuffer() as unknown as SourceBuffer;
+    }
+  }
+  Object.defineProperty(window, "MediaSource", { writable: true, value: TestMediaSource });
+
+  // Buffered audio the test can move: 3 chunks of 4s = 12s.
+  let bufferedStart = 0;
+  let bufferedEnd = 0;
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get() {
+      return {
+        length: bufferedEnd > 0 ? 1 : 0,
+        start: () => bufferedStart,
+        end: () => bufferedEnd,
+      };
+    },
+  });
+
+  const chunks = buildTextChunks(3);
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "paused") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/init")) {
+      bufferedStart = 0;
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([255]).buffer };
+    }
+    const index = Number(url.split("/").at(-1));
+    bufferedStart = 0;
+    bufferedEnd = (index + 1) * 4;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([index]).buffer };
+  }) as unknown as typeof fetch;
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  const audio = document.querySelector("audio");
+  expect(audio).not.toBeNull();
+  await waitFor(() => expect(mediaSourceCount).toBe(1));
+  await waitFor(() => expect(bufferedEnd).toBe(12));
+
+  // The listener played deep into the document, so the player evicted everything
+  // before 10s — MSE in sequence mode cannot seek back into it.
+  act(() => {
+    audio!.currentTime = 11;
+    bufferedStart = 10;
+    audio!.dispatchEvent(new Event("timeupdate"));
+  });
+
+  await user.click(screen.getByRole("button", { name: "Back 10 seconds" }));
+
+  // Reopened, not clamped: the 1s target was outside the retained window, so the
+  // stream is rebuilt from the chunk that contains it.
+  await waitFor(() => expect(mediaSourceCount).toBe(2));
+  await waitFor(() => expect(audio!.currentTime).toBeCloseTo(1, 5));
 });
 
 describe("chunk versioning & reprocessing", () => {

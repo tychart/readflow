@@ -11,6 +11,7 @@ import {
 const IDLE = {
   isAutoplayBlocked: false,
   isJobTerminal: false,
+  isLoadingAudio: false,
   isPlaying: false,
   isWaitingForData: false,
   playIntent: false,
@@ -44,6 +45,18 @@ describe("resolveShowSpinner", () => {
     expect(resolveShowSpinner({ ...IDLE, isPlaying: true })).toBe(false);
     expect(resolveShowSpinner({ ...IDLE, isAutoplayBlocked: true, playIntent: true })).toBe(false);
   });
+
+  test("spins while the requested audio is still being loaded, even when paused", () => {
+    // A seek into audio this client does not hold yet: the listener needs the
+    // same feedback whether or not playback was already running.
+    expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: true })).toBe(true);
+    expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: true, playIntent: true })).toBe(true);
+    expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: true, isPlaying: true })).toBe(true);
+  });
+
+  test("stops spinning as soon as the requested audio has arrived", () => {
+    expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: false })).toBe(false);
+  });
 });
 
 describe("resolvePlayerStateLabel", () => {
@@ -74,6 +87,35 @@ describe("resolvePlayerStateLabel", () => {
 
   test("playing", () => {
     expect(resolvePlayerStateLabel({ ...base, isPlaying: true })).toBe("Playing");
+  });
+
+  test("loading audio the client has to fetch itself", () => {
+    expect(
+      resolvePlayerStateLabel({
+        ...base,
+        isLoadingAudio: true,
+        playIntent: true,
+        renderedDurationSeconds: 120,
+      }),
+    ).toBe("Loading audio…");
+    // Loading wins over a stale `isPlaying` flag while the stream is rebuilt.
+    expect(
+      resolvePlayerStateLabel({
+        ...base,
+        isLoadingAudio: true,
+        isPlaying: true,
+        playIntent: true,
+        renderedDurationSeconds: 120,
+      }),
+    ).toBe("Loading audio…");
+  });
+
+  test("loading is not a producer stall, and pre-render loading keeps preparing copy", () => {
+    // Nothing rendered yet: there is no client-side audio to load, so the
+    // producer-facing copy stays accurate.
+    expect(resolvePlayerStateLabel({ ...base, isLoadingAudio: true, playIntent: true })).toBe(
+      "Preparing stream…",
+    );
   });
 
   test("buffering once a stream exists", () => {

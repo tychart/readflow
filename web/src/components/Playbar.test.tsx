@@ -24,6 +24,7 @@ function buildProps(overrides: Partial<PlaybarProps> = {}): PlaybarProps {
     playIntent: false,
     isAutoplayBlocked: false,
     isJobTerminal: false,
+    isLoadingAudio: false,
     isWaitingForData: false,
     canDownload: true,
     isDownloadComplete: false,

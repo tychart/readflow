@@ -84,6 +84,114 @@ function installBufferedAudioState(getBufferedEnd: () => number) {
   });
 }
 
+/** Install an arbitrary set of buffered ranges (for window / eviction tests). */
+function installBufferedRanges(getRanges: () => Array<{ start: number; end: number }>) {
+  Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
+    configurable: true,
+    get() {
+      const ranges = getRanges();
+      return {
+        length: ranges.length,
+        start: (index: number) => ranges[index]?.start ?? 0,
+        end: (index: number) => ranges[index]?.end ?? 0,
+      };
+    },
+  });
+}
+
+interface StreamLog {
+  appended: number[];
+  removed: Array<{ start: number; end: number }>;
+  mediaSourceCount: number;
+  /** Marker byte -> number of appends that should reject with a quota error. */
+  remainingAppendFailures: Map<number, number>;
+}
+
+function createStreamLog(): StreamLog {
+  return {
+    appended: [],
+    removed: [],
+    mediaSourceCount: 0,
+    remainingAppendFailures: new Map(),
+  };
+}
+
+/**
+ * A MediaSource fake that records appends, removals and stream rebuilds — the
+ * three things the streaming window is responsible for.
+ */
+function installStreamingMediaSource(log: StreamLog) {
+  class LoggingSourceBuffer extends EventTarget {
+    public updating = false;
+    public mode: AppendMode = "segments";
+
+    appendBuffer(buffer: BufferSource) {
+      const bytes =
+        buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer.buffer);
+      const marker = bytes[0] ?? 0;
+      const remainingFailures = log.remainingAppendFailures.get(marker) ?? 0;
+      if (remainingFailures > 0) {
+        log.remainingAppendFailures.set(marker, remainingFailures - 1);
+        throw new DOMException(
+          "The SourceBuffer is full, and cannot free space to append additional buffers.",
+          "QuotaExceededError",
+        );
+      }
+      log.appended.push(marker);
+      this.updating = true;
+      queueMicrotask(() => {
+        this.updating = false;
+        this.dispatchEvent(new Event("updateend"));
+      });
+    }
+
+    remove(start: number, end: number) {
+      log.removed.push({ start, end });
+      this.updating = true;
+      queueMicrotask(() => {
+        this.updating = false;
+        this.dispatchEvent(new Event("updateend"));
+      });
+    }
+  }
+
+  class LoggingMediaSource extends EventTarget {
+    public readyState = "closed";
+
+    constructor() {
+      super();
+      log.mediaSourceCount += 1;
+      queueMicrotask(() => {
+        this.readyState = "open";
+        this.dispatchEvent(new Event("sourceopen"));
+      });
+    }
+
+    addSourceBuffer() {
+      return new LoggingSourceBuffer() as unknown as SourceBuffer;
+    }
+  }
+
+  Object.defineProperty(window, "MediaSource", { writable: true, value: LoggingMediaSource });
+}
+
+/** Fetch mock for the window tests: `/chunks/<index>` returns the index as byte 0. */
+function installSegmentFetch(onChunk: (index: number) => void, gate?: Map<number, Promise<void>>) {
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      return { ok: true, arrayBuffer: async () => new Uint8Array([255]).buffer };
+    }
+    const index = Number(url.split("/").at(-1));
+    const waitFor = gate?.get(index);
+    if (waitFor) {
+      await waitFor;
+    }
+    onChunk(index);
+    return { ok: true, arrayBuffer: async () => new Uint8Array([index % 250]).buffer };
+  }) as unknown as typeof fetch;
+}
+
 beforeEach(() => {
   HTMLMediaElement.prototype.pause = vi.fn();
   HTMLMediaElement.prototype.load = vi.fn();
@@ -1063,4 +1171,419 @@ test("reconciles a terminal job that stops at the end of the stream to ended (no
 
   requestAnimationFrameSpy.mockRestore();
   cancelAnimationFrameSpy.mockRestore();
+});
+
+describe("streaming window", () => {
+  /**
+   * These tests drive the playhead by hand: jsdom has no media clock, so
+   * `currentTime` is a getter over a mutable variable that the test advances and
+   * then announces with a `timeupdate` event (the signal a real element emits).
+   */
+  const LONG_JOB_SECONDS = 400;
+
+  test("appends only the audio inside the lookahead window", async () => {
+    const log = createStreamLog();
+    installStreamingMediaSource(log);
+    let bufferedEnd = 0;
+    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+
+    const chunkCount = LONG_JOB_SECONDS / 2;
+    const fetchedIndexes: number[] = [];
+    installSegmentFetch((index) => {
+      fetchedIndexes.push(index);
+      bufferedEnd = (index + 1) * 2;
+    });
+
+    function Harness() {
+      const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest(Array.from({ length: chunkCount }, (_, index) => index)),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      return (
+        <div data-appended={String(appendedChunksCount)}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+
+    // 240s of lookahead / 2s chunks = chunks 0..119. Chunk 120 starts *at* the
+    // window edge and must never be fetched.
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "120"));
+    expect(fetchedIndexes).toContain(119);
+    expect(fetchedIndexes).not.toContain(120);
+    expect(fetchedIndexes).not.toContain(400);
+    expect(log.appended).toHaveLength(121);
+  });
+
+  test("extends the window as the playhead advances", async () => {
+    const log = createStreamLog();
+    installStreamingMediaSource(log);
+    let bufferedEnd = 0;
+    let playhead = 0;
+    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+    installSegmentFetch((index) => {
+      bufferedEnd = (index + 1) * 2;
+    });
+
+    const chunkCount = LONG_JOB_SECONDS / 2;
+
+    function Harness() {
+      const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest(Array.from({ length: chunkCount }, (_, index) => index)),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+
+      useEffect(() => {
+        const audio = audioRef.current;
+        if (!audio) {
+          return;
+        }
+        Object.defineProperty(audio, "currentTime", {
+          configurable: true,
+          get: () => playhead,
+          set: (value: number) => {
+            playhead = value;
+          },
+        });
+      }, [audioRef]);
+
+      return (
+        <div data-appended={String(appendedChunksCount)}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "120"));
+
+    // Halfway through the buffered window: the lookahead is topped back up from
+    // the new playhead instead of the stream growing to the whole document.
+    act(() => {
+      playhead = 300;
+      container.querySelector("audio")?.dispatchEvent(new Event("timeupdate"));
+    });
+
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "200"));
+  });
+
+  test("evicts played audio behind the keep-behind margin without rebuilding the stream", async () => {
+    const log = createStreamLog();
+    installStreamingMediaSource(log);
+    let bufferedEnd = 0;
+    let playhead = 0;
+    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+    installSegmentFetch((index) => {
+      bufferedEnd = (index + 1) * 2;
+    });
+
+    function Harness() {
+      const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1, 2, 3, 4]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+
+      useEffect(() => {
+        const audio = audioRef.current;
+        if (!audio) {
+          return;
+        }
+        Object.defineProperty(audio, "currentTime", {
+          configurable: true,
+          get: () => playhead,
+          set: (value: number) => {
+            playhead = value;
+          },
+        });
+      }, [audioRef]);
+
+      return (
+        <div data-appended={String(appendedChunksCount)}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "5"));
+
+    act(() => {
+      playhead = 100;
+      container.querySelector("audio")?.dispatchEvent(new Event("timeupdate"));
+    });
+    // 100s in, the whole stream is still inside the 120s keep-behind margin.
+    expect(log.removed).toEqual([]);
+
+    act(() => {
+      playhead = 300;
+      container.querySelector("audio")?.dispatchEvent(new Event("timeupdate"));
+    });
+
+    await waitFor(() => expect(log.removed).toEqual([{ start: 0, end: 180 }]));
+    // Eviction trims the front of the same stream; it never reopens it.
+    expect(log.mediaSourceCount).toBe(1);
+  });
+
+  test("stays in the loading state until a seek outside the loaded audio arrives", async () => {
+    const log = createStreamLog();
+    installStreamingMediaSource(log);
+    let bufferedEnd = 0;
+    let playhead = 0;
+    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+
+    let releaseChunk: () => void = () => {};
+    const chunkGate = new Promise<void>((resolve) => {
+      releaseChunk = resolve;
+    });
+    installSegmentFetch(
+      (index) => {
+        bufferedEnd = (index + 1) * 2;
+      },
+      new Map([[5, chunkGate]]),
+    );
+
+    const onSeekApplied = vi.fn();
+
+    function Harness() {
+      const [pendingSeek, setPendingSeek] = useState<number | null>(null);
+      const { audioRef, currentTimeSeconds, isLoadingAudio, isStreamPrimed } =
+        useMediaSourcePlayer({
+          jobId: "job-1",
+          manifest: buildManifest([0, 1, 2, 3, 4, 5]),
+          playbackAnchorIndex: 0,
+          playIntent: false,
+          isTerminal: false,
+          pendingSeekSeconds: pendingSeek,
+          onSeekApplied: () => {
+            setPendingSeek(null);
+            onSeekApplied();
+          },
+        });
+
+      useEffect(() => {
+        const audio = audioRef.current;
+        if (!audio) {
+          return;
+        }
+        Object.defineProperty(audio, "currentTime", {
+          configurable: true,
+          get: () => playhead,
+          set: (value: number) => {
+            playhead = value;
+          },
+        });
+      }, [audioRef]);
+
+      return (
+        <div
+          data-loading={isLoadingAudio ? "yes" : "no"}
+          data-primed={isStreamPrimed ? "yes" : "no"}
+          data-time={currentTimeSeconds.toFixed(1)}
+        >
+          <audio ref={audioRef} />
+          <button onClick={() => setPendingSeek(11)} type="button">
+            seek
+          </button>
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+
+    // The stream is primed and buffered through chunk 4 (10s); chunk 5 — which
+    // holds the 11s target — is still in flight.
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-primed", "yes"));
+    await waitFor(() => expect(log.appended).toHaveLength(5 + 1));
+
+    act(() => {
+      (container.querySelector("button") as HTMLButtonElement).click();
+    });
+
+    // The listener asked for audio this client does not hold: spinner on, no seek
+    // applied, and the clock does not jump to a clamped position.
+    expect(container.firstChild).toHaveAttribute("data-loading", "yes");
+    expect(container.firstChild).toHaveAttribute("data-time", "0.0");
+    expect(onSeekApplied).not.toHaveBeenCalled();
+
+    await act(async () => {
+      releaseChunk();
+      await chunkGate;
+    });
+
+    await waitFor(() => expect(onSeekApplied).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-time", "11.0"));
+    expect(container.firstChild).toHaveAttribute("data-loading", "no");
+    expect(playhead).toBeCloseTo(11, 5);
+  });
+
+  test("reopening the stream at the same anchor applies a seek into evicted audio", async () => {
+    const log = createStreamLog();
+    installStreamingMediaSource(log);
+    let ranges: Array<{ start: number; end: number }> = [];
+    let playhead = 0;
+    installBufferedRanges(() => ranges);
+    installSegmentFetch((index) => {
+      ranges = [{ start: 0, end: (index + 1) * 2 }];
+    });
+
+    const onSeekApplied = vi.fn();
+
+    function Harness() {
+      const [pendingSeek, setPendingSeek] = useState<number | null>(null);
+      const [restartKey, setRestartKey] = useState(0);
+      const { audioRef, isLoadingAudio, currentTimeSeconds } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1, 2, 3, 4, 5]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+        pendingSeekSeconds: pendingSeek,
+        onSeekApplied: () => {
+          setPendingSeek(null);
+          onSeekApplied();
+        },
+        streamRestartKey: restartKey,
+      });
+
+      useEffect(() => {
+        const audio = audioRef.current;
+        if (!audio) {
+          return;
+        }
+        Object.defineProperty(audio, "currentTime", {
+          configurable: true,
+          get: () => playhead,
+          set: (value: number) => {
+            playhead = value;
+          },
+        });
+      }, [audioRef]);
+
+      return (
+        <div
+          data-loading={isLoadingAudio ? "yes" : "no"}
+          data-time={currentTimeSeconds.toFixed(1)}
+        >
+          <audio ref={audioRef} />
+          <button
+            onClick={() => {
+              setPendingSeek(3);
+              setRestartKey((key) => key + 1);
+            }}
+            type="button"
+          >
+            seek evicted
+          </button>
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(log.appended).toHaveLength(6 + 1));
+
+    // The listener played on: everything before 9s has been evicted.
+    ranges = [{ start: 9, end: 12 }];
+
+    act(() => {
+      (container.querySelector("button") as HTMLButtonElement).click();
+    });
+
+    expect(container.firstChild).toHaveAttribute("data-loading", "yes");
+
+    await waitFor(() => expect(onSeekApplied).toHaveBeenCalledTimes(1));
+    // A second MediaSource proves the stream was reopened rather than clamped.
+    expect(log.mediaSourceCount).toBe(2);
+    expect(playhead).toBeCloseTo(3, 5);
+    expect(container.firstChild).toHaveAttribute("data-loading", "no");
+  });
+
+  test("frees played audio and retries once when the browser reports a full SourceBuffer", async () => {
+    const log = createStreamLog();
+    log.remainingAppendFailures.set(3, 1);
+    installStreamingMediaSource(log);
+    let playhead = 300;
+    installBufferedRanges(() => [{ start: 0, end: 20 }]);
+    installSegmentFetch(() => {});
+
+    function Harness() {
+      const { audioRef, appendedChunksCount, lastPlayerError } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1, 2, 3, 4]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+
+      useEffect(() => {
+        const audio = audioRef.current;
+        if (!audio) {
+          return;
+        }
+        Object.defineProperty(audio, "currentTime", {
+          configurable: true,
+          get: () => playhead,
+          set: (value: number) => {
+            playhead = value;
+          },
+        });
+      }, [audioRef]);
+
+      return (
+        <div data-appended={String(appendedChunksCount)}>
+          <audio ref={audioRef} />
+          <span data-testid="error">{lastPlayerError}</span>
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+
+    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "5"));
+    expect(log.removed.length).toBeGreaterThan(0);
+    expect(container.querySelector("span")).toBeEmptyDOMElement();
+  });
+
+  test("reports a readable error when a full SourceBuffer cannot be recovered", async () => {
+    const log = createStreamLog();
+    log.remainingAppendFailures.set(0, 10);
+    installStreamingMediaSource(log);
+    // Nothing buffered yet, so there is nothing the player can free.
+    installBufferedRanges(() => []);
+    installSegmentFetch(() => {});
+
+    function Harness() {
+      const { audioRef, lastPlayerError } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
+      return (
+        <div>
+          <audio ref={audioRef} />
+          <span data-testid="error">{lastPlayerError}</span>
+        </div>
+      );
+    }
+
+    const { container } = render(<Harness />);
+    const error = container.querySelector('[data-testid="error"]');
+
+    await waitFor(() => expect(error).toHaveTextContent(/ran out of audio buffer space/i));
+    // The raw browser message never reaches the listener.
+    expect(error).not.toHaveTextContent(/appendBuffer/i);
+    expect(log.removed).toEqual([]);
+  });
 });

@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { JobManifest } from "../types/api";
+import {
+  STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS,
+  isSecondsBuffered,
+  isSecondsEvicted,
+  needsWindowFill,
+  resolveAppendWindowEnd,
+  resolveEvictionRange,
+  type SecondsRange,
+} from "./media-window";
 
 const PLAYABLE_EPSILON_SECONDS = 0.05;
+/** How long to wait after a failed append before the window tops up again. */
+const APPEND_RETRY_BACKOFF_MS = 3000;
 /**
  * Playback speed a session starts at. The user's slider moves this; 1x is the
  * only sane default (an earlier hardcoded 3x was a debugging leftover).
@@ -39,11 +50,23 @@ interface UseMediaSourcePlayerOptions {
   pendingSeekSeconds?: number | null;
   /** Called once a pending seek has been applied to the audio element. */
   onSeekApplied?: () => void;
+  /**
+   * Bump to reopen the media stream at the *same* anchor.
+   *
+   * MSE in `sequence` mode cannot seek back into audio that has been evicted,
+   * and a timeline click on the chunk that is already anchored does not change
+   * `playbackAnchorIndex` — so the anchor alone cannot express "rebuild the
+   * stream here". The reader bumps this after a seek that is outside the
+   * retained window.
+   */
+  streamRestartKey?: number;
 }
 
 interface QueuedChunk {
   index: number;
   url: string;
+  /** Position in the manifest, so a failed append can rewind the window scan. */
+  position: number;
 }
 
 interface AudioDiagnostics {
@@ -98,6 +121,27 @@ function getBufferedEnd(audio: HTMLAudioElement | null) {
   return audio.buffered.end(audio.buffered.length - 1);
 }
 
+function getBufferedStart(audio: HTMLAudioElement | null) {
+  if (!audio || audio.buffered.length === 0) {
+    return 0;
+  }
+  return audio.buffered.start(0);
+}
+
+function getBufferedRanges(audio: HTMLAudioElement | null): SecondsRange[] {
+  if (!audio) {
+    return [];
+  }
+  const ranges: SecondsRange[] = [];
+  for (let index = 0; index < audio.buffered.length; index += 1) {
+    ranges.push({
+      start: audio.buffered.start(index),
+      end: audio.buffered.end(index),
+    });
+  }
+  return ranges;
+}
+
 function hasBufferedAhead(audio: HTMLAudioElement | null, bufferedUntilSeconds: number) {
   if (!audio) {
     return false;
@@ -143,6 +187,45 @@ function appendBuffer(sourceBuffer: SourceBuffer, payload: ArrayBuffer) {
     sourceBuffer.addEventListener("error", handleError, { once: true });
     sourceBuffer.appendBuffer(payload);
   });
+}
+
+/**
+ * Evict a range from the front of the buffer.
+ *
+ * `SourceBuffer.remove` throws when an append is in flight or the media source
+ * is not open, so callers serialize it with the append loop. A rejected removal
+ * is treated as a no-op: the next maintenance tick retries it.
+ */
+function removeBufferRange(sourceBuffer: SourceBuffer, range: SecondsRange) {
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      sourceBuffer.removeEventListener("updateend", finish);
+      sourceBuffer.removeEventListener("error", finish);
+      resolve();
+    };
+    sourceBuffer.addEventListener("updateend", finish, { once: true });
+    sourceBuffer.addEventListener("error", finish, { once: true });
+    try {
+      sourceBuffer.remove(range.start, range.end);
+    } catch {
+      finish();
+    }
+  });
+}
+
+/**
+ * Chromium and WebKit both report a full SourceBuffer as a `QuotaExceededError`
+ * whose message contains "SourceBuffer is full"; Chromium sometimes only
+ * surfaces the message. Either shape means "try to free space and retry".
+ */
+function isBufferQuotaError(error: unknown) {
+  const name = error instanceof DOMException ? error.name : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    name === "QuotaExceededError" ||
+    /quota/i.test(message) ||
+    /sourcebuffer is full/i.test(message)
+  );
 }
 
 function safePause(audio: HTMLAudioElement) {
@@ -199,6 +282,7 @@ export function useMediaSourcePlayer({
   isTerminal,
   pendingSeekSeconds,
   onSeekApplied,
+  streamRestartKey = 0,
 }: UseMediaSourcePlayerOptions) {
   // Normalize an omitted/undefined prop to the same "no pending seek" state.
   const pendingSeekTargetSeconds = pendingSeekSeconds ?? null;
@@ -212,6 +296,16 @@ export function useMediaSourcePlayer({
   const appendQueueRef = useRef<QueuedChunk[]>([]);
   const appendedChunkIndexesRef = useRef<Set<number>>(new Set());
   const pendingChunkIndexesRef = useRef<Set<number>>(new Set());
+  // Position in `manifest.chunks` where the last window fill stopped. Appends
+  // are strictly forward in sequence order, so the scan never needs to restart.
+  const windowCursorRef = useRef(0);
+  // Set after a failed append so a dead segment cannot be retried every frame.
+  const appendRetryAtRef = useRef(0);
+  // Chunks that already used their one quota-recovery retry.
+  const quotaRetriedIndexesRef = useRef<Set<number>>(new Set());
+  // The window pump lives behind a ref because `updatePlaybackState` must stay
+  // dependency-free (it runs from the 60fps playback tick).
+  const windowMaintenanceRef = useRef<(() => void) | null>(null);
   const lastPlaybackSnapshotRef = useRef<PlaybackSnapshot>({
     paused: true,
     readyState: 0,
@@ -260,11 +354,25 @@ export function useMediaSourcePlayer({
   // A full re-render overwrites already-buffered segments, and MSE has no way
   // to notice. `audio_epoch` is therefore part of the key so the stream is torn
   // down and rebuilt from the anchor instead of replaying the superseded take.
+  // `streamRestartKey` rebuilds at the same anchor when a seek lands outside
+  // the retained window (see the option's doc comment).
   const streamKey = manifest
-    ? `${jobId}:${manifest.mime_type}:${manifest.audio_epoch}:${playbackAnchorIndex}`
+    ? `${jobId}:${manifest.mime_type}:${manifest.audio_epoch}:${playbackAnchorIndex}:${streamRestartKey}`
     : null;
   const mimeType = manifest?.mime_type ?? null;
   const initSegmentUrl = manifest?.init_segment_url ?? null;
+
+  /**
+   * Audio the listener asked for that the client does not have yet: a pending
+   * seek whose stream is still being rebuilt/primed, or a stream that has not
+   * opened while playback is wanted.
+   *
+   * Deliberately separate from `isWaitingForData`: that one means "the producer
+   * has not rendered far enough", which drives the stall banner. Waiting for a
+   * chunk this client must fetch itself is not a producer stall.
+   */
+  const isLoadingAudio =
+    pendingSeekTargetSeconds !== null || (playIntent && !!streamKey && !isStreamPrimed);
   const renderedDurationSeconds = useMemo(
     () =>
       manifest?.chunks.reduce((maxDuration, chunk) => {
@@ -312,6 +420,10 @@ export function useMediaSourcePlayer({
       playbackRate: audio?.playbackRate ?? 1,
     } satisfies PlaybackSnapshot;
     bufferedUntilRef.current = nextSnapshot.bufferedUntilSeconds;
+    // Keep the streaming window topped up and drop audio that has fallen behind
+    // the keep-behind margin. This runs on every playback tick (cheap early
+    // exits) so the buffer tracks the playhead instead of growing forever.
+    windowMaintenanceRef.current?.();
     const previousSnapshot = lastPlaybackSnapshotRef.current;
 
     // A terminal job has no future data: a playhead that stops at the end of
@@ -472,6 +584,58 @@ export function useMediaSourcePlayer({
     [bufferedUntilSeconds, isReady, isStreamPrimed],
   );
 
+  /**
+   * Free audio that has fallen behind the keep-behind margin.
+   *
+   * Serialized with the append loop through `processingQueueRef`: a
+   * `SourceBuffer` rejects `remove()` while an append is in flight. Returns
+   * whether anything was actually freed.
+   */
+  const evictPlayedAudio = useCallback(async () => {
+    const sourceBuffer = sourceBufferRef.current;
+    const audio = audioRef.current;
+    if (!sourceBuffer || !audio || sourceBuffer.updating || processingQueueRef.current) {
+      return false;
+    }
+    const range = resolveEvictionRange(getBufferedStart(audio), audio.currentTime ?? 0);
+    if (!range) {
+      return false;
+    }
+    processingQueueRef.current = true;
+    try {
+      await removeBufferRange(sourceBuffer, range);
+      return true;
+    } finally {
+      processingQueueRef.current = false;
+    }
+  }, []);
+
+  /**
+   * Last-resort recovery from a buffer-quota error: drop everything except the
+   * few seconds the listener is about to hear, so one more append fits.
+   *
+   * Called from inside the append loop (which already holds the queue lock), so
+   * this deliberately does not take it. Returns false when nothing can be freed
+   * — the signal to show a readable error instead of the raw browser message.
+   */
+  const recoverFromBufferQuota = useCallback(async (): Promise<boolean> => {
+    const sourceBuffer = sourceBufferRef.current;
+    const audio = audioRef.current;
+    if (!sourceBuffer || !audio || sourceBuffer.updating) {
+      return false;
+    }
+    const range = resolveEvictionRange(
+      getBufferedStart(audio),
+      audio.currentTime ?? 0,
+      STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS,
+    );
+    if (!range) {
+      return false;
+    }
+    await removeBufferRange(sourceBuffer, range);
+    return true;
+  }, []);
+
   const processQueue = useCallback(async () => {
     if (processingQueueRef.current || !sourceBufferRef.current || !activeStreamKeyRef.current) {
       return;
@@ -494,14 +658,40 @@ export function useMediaSourcePlayer({
           appendQueueRef.current.shift();
           pendingChunkIndexesRef.current.delete(nextChunk.index);
           appendedChunkIndexesRef.current.add(nextChunk.index);
+          appendRetryAtRef.current = 0;
           setAppendedChunksCount(appendedChunkIndexesRef.current.size);
           setLastPlayerError(null);
           setHasEnded(false);
           updatePlaybackState(true);
         } catch (error) {
           pendingChunkIndexesRef.current.delete(nextChunk.index);
+          // A full SourceBuffer is recoverable: free the played audio and retry
+          // this chunk once before giving up on it.
+          if (
+            isBufferQuotaError(error) &&
+            !quotaRetriedIndexesRef.current.has(nextChunk.index)
+          ) {
+            quotaRetriedIndexesRef.current.add(nextChunk.index);
+            if (await recoverFromBufferQuota()) {
+              pendingChunkIndexesRef.current.add(nextChunk.index);
+              updatePlaybackState(true);
+              continue;
+            }
+          }
+          // Stop here rather than looping: retrying a dead segment every frame
+          // would spin the network. Dropping the queue and rewinding the scan
+          // cursor lets the window retry this chunk (and everything after it)
+          // once the backoff expires.
+          for (const dropped of appendQueueRef.current) {
+            pendingChunkIndexesRef.current.delete(dropped.index);
+          }
+          appendQueueRef.current = [];
+          windowCursorRef.current = nextChunk.position;
+          appendRetryAtRef.current = Date.now() + APPEND_RETRY_BACKOFF_MS;
           setLastPlayerError(
-            readablePlaybackError(error, "Unable to append streamed audio"),
+            isBufferQuotaError(error)
+              ? "This device ran out of audio buffer space. Reload the reader to continue."
+              : readablePlaybackError(error, "Unable to append streamed audio"),
           );
           break;
         }
@@ -509,7 +699,91 @@ export function useMediaSourcePlayer({
     } finally {
       processingQueueRef.current = false;
     }
-  }, [streamKey, updatePlaybackState]);
+    // Only evict once the queue is drained, so a removal can never interleave
+    // with an append from this loop.
+    await evictPlayedAudio();
+  }, [evictPlayedAudio, recoverFromBufferQuota, streamKey, updatePlaybackState]);
+
+  /**
+   * Queue the chunks that belong inside the streaming window.
+   *
+   * In `sequence` mode a SourceBuffer lays segments out back-to-back in append
+   * order, so the window can only ever be a *prefix* of the anchored stream:
+   * forward growth is capped here, and the front is trimmed by
+   * `evictPlayedAudio`. Appending every rendered chunk instead is what filled
+   * the buffer (and threw the quota error) on a phone.
+   */
+  const fillAppendWindow = useCallback(() => {
+    if (!manifest || !streamKey || activeStreamKeyRef.current !== streamKey) {
+      return;
+    }
+    // Media segments are meaningless before the init segment (ftyp/moov) lands;
+    // appending one first corrupts sequence-mode placement.
+    if (!initSegmentAppendedRef.current) {
+      return;
+    }
+    if (appendQueueRef.current.length > 0) {
+      return;
+    }
+    if (Date.now() < appendRetryAtRef.current) {
+      return;
+    }
+    const audio = audioRef.current;
+    const playheadSeconds = audio?.currentTime ?? 0;
+    if (
+      !needsWindowFill({
+        playheadSeconds,
+        bufferedUntilSeconds: getBufferedEnd(audio),
+        pendingSeekSeconds: pendingSeekSecondsRef.current,
+      })
+    ) {
+      return;
+    }
+
+    const windowEndSeconds = resolveAppendWindowEnd({
+      playheadSeconds,
+      pendingSeekSeconds: pendingSeekSecondsRef.current,
+    });
+    const chunks = manifest.chunks;
+    let cursor = windowCursorRef.current;
+    for (; cursor < chunks.length; cursor += 1) {
+      const chunk = chunks[cursor];
+      if (chunk.start_seconds >= windowEndSeconds) {
+        break;
+      }
+      if (!chunk.segment_url) {
+        continue;
+      }
+      if (appendedChunkIndexesRef.current.has(chunk.index)) {
+        continue;
+      }
+      if (pendingChunkIndexesRef.current.has(chunk.index)) {
+        continue;
+      }
+      pendingChunkIndexesRef.current.add(chunk.index);
+      appendQueueRef.current.push({
+        index: chunk.index,
+        url: chunk.segment_url,
+        position: cursor,
+      });
+    }
+    windowCursorRef.current = cursor;
+
+    if (appendQueueRef.current.length === 0) {
+      return;
+    }
+    appendQueueRef.current.sort((left, right) => left.index - right.index);
+    void processQueue();
+  }, [manifest, processQueue, streamKey]);
+
+  const runWindowMaintenance = useCallback(() => {
+    fillAppendWindow();
+    void evictPlayedAudio();
+  }, [evictPlayedAudio, fillAppendWindow]);
+
+  useEffect(() => {
+    windowMaintenanceRef.current = runWindowMaintenance;
+  }, [runWindowMaintenance]);
 
   useEffect(() => {
     if (!streamKey || !mimeType || !audioRef.current) {
@@ -534,6 +808,9 @@ export function useMediaSourcePlayer({
     appendQueueRef.current = [];
     appendedChunkIndexesRef.current = new Set();
     pendingChunkIndexesRef.current = new Set();
+    windowCursorRef.current = 0;
+    appendRetryAtRef.current = 0;
+    quotaRetriedIndexesRef.current = new Set();
     processingQueueRef.current = false;
     lastPlaybackSnapshotRef.current = {
       paused: true,
@@ -598,6 +875,9 @@ export function useMediaSourcePlayer({
       initSegmentPendingRef.current = false;
       appendedChunkIndexesRef.current.clear();
       pendingChunkIndexesRef.current.clear();
+      windowCursorRef.current = 0;
+      appendRetryAtRef.current = 0;
+      quotaRetriedIndexesRef.current.clear();
       processingQueueRef.current = false;
       setIsReady(false);
       setIsStreamPrimed(false);
@@ -645,7 +925,7 @@ export function useMediaSourcePlayer({
         setIsStreamPrimed(true);
         setLastPlayerError(null);
         updatePlaybackState(true);
-        void processQueue();
+        fillAppendWindow();
       } catch (error) {
         setLastPlayerError(
           readablePlaybackError(error, "Failed to initialize media stream"),
@@ -654,36 +934,19 @@ export function useMediaSourcePlayer({
         initSegmentPendingRef.current = false;
       }
     })();
-  }, [initSegmentUrl, isReady, processQueue, streamKey, updatePlaybackState]);
+  }, [fillAppendWindow, initSegmentUrl, isReady, streamKey, updatePlaybackState]);
 
+  /**
+   * Top the window up whenever the manifest grows (the backend rendered more) or
+   * the stream becomes ready. `fillAppendWindow` owns which chunks qualify: it
+   * only queues audio inside the lookahead window, never the whole job.
+   */
   useEffect(() => {
-    if (!manifest || !isReady || !isStreamPrimed || activeStreamKeyRef.current !== streamKey) {
+    if (!isReady || !isStreamPrimed) {
       return;
     }
-    const missingChunks = manifest.chunks
-      .filter(
-        (chunk) =>
-          chunk.status === "written" &&
-          !!chunk.segment_url &&
-          !appendedChunkIndexesRef.current.has(chunk.index) &&
-          !pendingChunkIndexesRef.current.has(chunk.index),
-      )
-      .sort((left, right) => left.index - right.index);
-
-    if (missingChunks.length === 0) {
-      return;
-    }
-
-    for (const chunk of missingChunks) {
-      if (!chunk.segment_url) {
-        continue;
-      }
-      pendingChunkIndexesRef.current.add(chunk.index);
-      appendQueueRef.current.push({ index: chunk.index, url: chunk.segment_url });
-    }
-    appendQueueRef.current.sort((left, right) => left.index - right.index);
-    void processQueue();
-  }, [isReady, isStreamPrimed, manifest, processQueue, streamKey]);
+    fillAppendWindow();
+  }, [fillAppendWindow, isReady, isStreamPrimed]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -971,6 +1234,43 @@ export function useMediaSourcePlayer({
     [renderedDurationSeconds, updatePlaybackState],
   );
 
+  /**
+   * Whether the current stream already holds this position.
+   *
+   * The reader uses it to choose between an in-stream seek and reopening the
+   * stream: once played audio has been evicted, MSE in `sequence` mode cannot
+   * seek back into it, so the only correct move is a rebuild at that chunk.
+   */
+  const isSecondsLoaded = useCallback((targetSeconds: number) => {
+    return isSecondsBuffered(getBufferedRanges(audioRef.current), targetSeconds);
+  }, []);
+
+  /**
+   * True when the position is *behind* the retained audio — played and evicted,
+   * i.e. unreachable without reopening the stream. Positions ahead of the
+   * buffered end are reachable: the window appends forward to them.
+   */
+  const isSecondsBehindRetainedAudio = useCallback((targetSeconds: number) => {
+    return isSecondsEvicted(getBufferedRanges(audioRef.current), targetSeconds);
+  }, []);
+
+  /**
+   * Seek inside the retained window. Returns the applied position, or `null`
+   * when the target is not buffered — the caller then decides whether to wait
+   * for the appending window (target ahead) or rebuild the stream (target
+   * behind the retained audio) instead of being silently clamped.
+   */
+  const seekWithinBuffered = useCallback(
+    (targetSeconds: number) => {
+      const cappedTarget = Math.min(Math.max(0, targetSeconds), renderedDurationSeconds);
+      if (!isSecondsLoaded(cappedTarget)) {
+        return null;
+      }
+      return seekToSeconds(cappedTarget);
+    },
+    [isSecondsLoaded, renderedDurationSeconds, seekToSeconds],
+  );
+
   // Applies a pending seek (from a timeline click/drag) once the *current*
   // stream is primed and buffered past the target. This lives inside the hook
   // — not the reader — because it must run after the stream-reset effect
@@ -993,11 +1293,17 @@ export function useMediaSourcePlayer({
     if (pendingSeekTargetSeconds > bufferedUntilRef.current) {
       return;
     }
+    // The window may have evicted the front, so "buffered up to here" is not
+    // enough: the target itself has to be inside a buffered range.
+    if (!isSecondsLoaded(pendingSeekTargetSeconds)) {
+      return;
+    }
     seekToSeconds(Math.min(pendingSeekTargetSeconds, renderedDurationSeconds));
     lastAppliedPendingSeekRef.current = pendingSeekTargetSeconds;
     onSeekApplied?.();
   }, [
     bufferedUntilSeconds,
+    isSecondsLoaded,
     isStreamPrimed,
     onSeekApplied,
     pendingSeekTargetSeconds,
@@ -1013,7 +1319,10 @@ export function useMediaSourcePlayer({
     diagnostics,
     isActuallyPlaying,
     isAutoplayBlocked,
+    isLoadingAudio,
     isReady,
+    isSecondsBehindRetainedAudio,
+    isSecondsLoaded,
     isStreamPrimed,
     isWaitingForData,
     lastPlayerError,
@@ -1023,6 +1332,7 @@ export function useMediaSourcePlayer({
     renderedDurationSeconds,
     requestUserGesturePlay,
     seekToSeconds,
+    seekWithinBuffered,
     setPlaybackRate,
   };
 }
