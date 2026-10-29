@@ -35,6 +35,7 @@ function buildProps(overrides: Partial<PlaybarProps> = {}): PlaybarProps {
     onDownload: vi.fn(),
     totalChunks: 3,
     writtenChunks: 3,
+    playbackRate: 1,
     ...overrides,
   };
 }
@@ -129,5 +130,14 @@ describe("Playbar timeline and metadata", () => {
     const gear = screen.getByTestId("settings-control");
     expect(gear).toBeInTheDocument();
     expect(screen.getByTestId("playbar-meta")).not.toContainElement(gear);
+  });
+
+  test("shows the current speed badge only when it is not 1×", () => {
+    const { unmount } = render(<Playbar {...buildProps({ playbackRate: 1 })} />);
+    expect(screen.queryByTestId("playback-rate-indicator")).not.toBeInTheDocument();
+    unmount();
+
+    render(<Playbar {...buildProps({ playbackRate: 1.25 })} />);
+    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent("1.25×");
   });
 });

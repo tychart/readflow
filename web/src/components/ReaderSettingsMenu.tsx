@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { PLAYBACK_SHORTCUT_GUIDE } from "../hooks/usePlaybackShortcuts";
 import type { ConveyorWindowSize, MotionMode, ReaderSettings } from "../state/reader-settings";
+import { PlaybackSpeedControl } from "../features/reader/PlaybackSpeedControl";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -9,6 +10,12 @@ export interface ReaderSettingsMenuProps {
   settings: ReaderSettings;
   onChange: (patch: Partial<ReaderSettings>) => void;
   onReset: () => void;
+  /**
+   * Live playback speed. It is player state, not a stored preference, so it is
+   * passed in and out separately from `settings` (the reader also persists it).
+   */
+  playbackRate: number;
+  onPlaybackRateChange: (rate: number) => void;
   /** Phone widths get a bottom sheet; wider screens get an anchored popover. */
   isOverlay: boolean;
   /**
@@ -116,6 +123,8 @@ export function ReaderSettingsMenu({
   settings,
   onChange,
   onReset,
+  playbackRate,
+  onPlaybackRateChange,
   isOverlay,
   showConveyorControls,
 }: ReaderSettingsMenuProps) {
@@ -159,6 +168,15 @@ export function ReaderSettingsMenu({
 
   const body = (
     <div className="space-y-4">
+      {/* Speed first: it is the control people actually reach for mid-listen,
+          and it used to occupy the playbar's scarcest space. */}
+      <section className="space-y-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+          Playback speed
+        </p>
+        <PlaybackSpeedControl onChange={onPlaybackRateChange} value={playbackRate} />
+      </section>
+
       {showConveyorControls ? (
         <section className="space-y-3">
           <RadioGroup<MotionMode>

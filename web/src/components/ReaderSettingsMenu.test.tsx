@@ -27,6 +27,8 @@ function buildProps(overrides: Partial<Parameters<typeof ReaderSettingsMenu>[0]>
     settings,
     onChange: vi.fn(),
     onReset: vi.fn(),
+    playbackRate: 1,
+    onPlaybackRateChange: vi.fn(),
     isOverlay: false,
     showConveyorControls: false,
     ...overrides,
@@ -144,5 +146,30 @@ describe("ReaderSettingsMenu", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
     expect(props.onReset).toHaveBeenCalledTimes(1);
+  });
+
+  test("edits playback speed in the panel, including the one-tap presets", () => {
+    const props = buildProps({ playbackRate: 1.5 });
+    openMenu(props);
+
+    // The rate is player state passed in, not part of the persisted settings patch.
+    expect(screen.getByRole("button", { name: "1.5×" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.5");
+
+    fireEvent.click(screen.getByRole("button", { name: "2×" }));
+    expect(props.onPlaybackRateChange).toHaveBeenCalledWith(2);
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+
+  test("resetting settings does not silently change the live speed", () => {
+    const props = buildProps({ playbackRate: 1.75 });
+    openMenu(props);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
+
+    // The reader re-applies the stored default through the settings subscription;
+    // the menu itself only reports the reset.
+    expect(props.onReset).toHaveBeenCalled();
+    expect(props.onPlaybackRateChange).not.toHaveBeenCalled();
   });
 });

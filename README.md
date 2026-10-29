@@ -70,9 +70,10 @@ same-origin with no extra setup.
   - a **jump control on every chunk** in the text, so you can jump straight to a
     location without touching the playbar
   - **−10s / +10s** skip buttons
-  - a **playback speed** slider and numeric input (0.5–3×)
+  - **playback speed** with one-tap presets (0.75×–2×) plus a slider and numeric
+    input, in the reader settings panel and remembered per device
   - **page-wide keyboard shortcuts** (Space/K, arrows, J/L) with a shortcuts guide
-  - **reader settings** (motion, conveyor, jump buttons, chunk window), saved per device
+  - **reader settings** (speed, motion, conveyor, jump buttons, chunk window), saved per device
   - a **phone bottom dock** that puts the transport and conveyor in the thumb zone
 - WebSocket-driven live job and admin updates
 - Built-in server-side voices discovered from `server/voices/`
@@ -181,7 +182,7 @@ Important frontend pieces:
 - [web/src/features/reader/ReaderPage.tsx](/home/tychart/projects/readflow/web/src/features/reader/ReaderPage.tsx): playback, future-voice selection, chunk status
 - [web/src/features/reader/reader-model.ts](/home/tychart/projects/readflow/web/src/features/reader/reader-model.ts): pure reader derivations (patch merging, playback model, timeline slots)
 - [web/src/features/reader/conveyor-physics.ts](/home/tychart/projects/readflow/web/src/features/reader/conveyor-physics.ts): pure conveyor gesture physics and layout
-- [web/src/features/reader/PlaybackSpeedControl.tsx](/home/tychart/projects/readflow/web/src/features/reader/PlaybackSpeedControl.tsx): playback speed slider and input
+- [web/src/features/reader/PlaybackSpeedControl.tsx](/home/tychart/projects/readflow/web/src/features/reader/PlaybackSpeedControl.tsx): playback speed presets, slider and input (inside the settings panel)
 - [web/src/components/ChunkConveyor.tsx](/home/tychart/projects/readflow/web/src/components/ChunkConveyor.tsx): the fixed-playhead scrub strip
 - [web/src/state/reader-settings.ts](/home/tychart/projects/readflow/web/src/state/reader-settings.ts): device-local reader preferences
 - [web/src/features/admin/AdminPage.tsx](/home/tychart/projects/readflow/web/src/features/admin/AdminPage.tsx): runtime tuning and model controls

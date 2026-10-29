@@ -5,8 +5,10 @@ import { afterEach, vi } from "vitest";
 
 import { ReaderPage } from "./ReaderPage";
 import {
+  getReaderSettings,
   invalidateReaderSettingsCache,
   resetReaderSettings,
+  setReaderSettings,
 } from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
 import type { Chunk } from "../../types/api";
@@ -1958,7 +1960,8 @@ describe("playback speed control", () => {
     );
   });
 
-  test("renders the speed slider and text input in the player controls", async () => {
+  /** Renders the reader and opens the settings panel that now owns the control. */
+  async function openSettings() {
     render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
@@ -1966,99 +1969,84 @@ describe("playback speed control", () => {
         </Routes>
       </MemoryRouter>,
     );
+    await screen.findByText("Reader job");
+    fireEvent.click(screen.getByRole("button", { name: "Reader settings" }));
+  }
 
+  test("lives inside the reader settings panel, not the playbar chrome", async () => {
+    render(
+      <MemoryRouter initialEntries={["/jobs/job-1"]}>
+        <Routes>
+          <Route element={<ReaderPage />} path="/jobs/:jobId" />
+        </Routes>
+      </MemoryRouter>,
+    );
     await screen.findByText("Reader job");
 
+    // The whole point of the move: the playbar's top row keeps its space, so
+    // nothing speed-related is in the page until the panel is opened.
     expect(
+      screen.queryByRole("slider", { name: /playback speed slider/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: /playback speed value/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reader settings" }));
+
+    const panel = screen.getByRole("dialog", { name: "Reader settings" });
+    expect(panel).toContainElement(
       screen.getByRole("slider", { name: /playback speed slider/i }),
-    ).toBeInTheDocument();
-    expect(
+    );
+    expect(panel).toContainElement(
       screen.getByRole("textbox", { name: /playback speed value/i }),
-    ).toBeInTheDocument();
+    );
   });
 
-  test("slider and input start at 1.0x", async () => {
-    render(
-      <MemoryRouter initialEntries={["/jobs/job-1"]}>
-        <Routes>
-          <Route element={<ReaderPage />} path="/jobs/:jobId" />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await screen.findByText("Reader job");
+  test("starts at 1x with no speed badge in the playbar", async () => {
+    await openSettings();
 
     expect(screen.getByRole("slider", { name: /playback speed slider/i })).toHaveValue("1");
     expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1");
+    expect(screen.queryByTestId("playback-rate-indicator")).not.toBeInTheDocument();
   });
 
-  test("changing the speed slider updates the displayed speed value", async () => {
-    render(
-      <MemoryRouter initialEntries={["/jobs/job-1"]}>
-        <Routes>
-          <Route element={<ReaderPage />} path="/jobs/:jobId" />
-        </Routes>
-      </MemoryRouter>,
-    );
+  test("slider and typed value both update the live speed", async () => {
+    await openSettings();
 
-    await screen.findByText("Reader job");
-
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
     const input = screen.getByRole("textbox", { name: /playback speed value/i });
-
-    fireEvent.change(slider, { target: { value: "2" } });
-
+    fireEvent.change(screen.getByRole("slider", { name: /playback speed slider/i }), {
+      target: { value: "2" },
+    });
     expect(input).toHaveValue("2");
-  });
-
-  test("typing a speed in the input and pressing Enter updates the displayed speed", async () => {
-    render(
-      <MemoryRouter initialEntries={["/jobs/job-1"]}>
-        <Routes>
-          <Route element={<ReaderPage />} path="/jobs/:jobId" />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await screen.findByText("Reader job");
-
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
 
     fireEvent.change(input, { target: { value: "0.75" } });
     fireEvent.keyDown(input, { key: "Enter" });
-
     expect(input).toHaveValue("0.75");
   });
 
-  test("speed control co-exists with play/pause and clock", async () => {
-    render(
-      <MemoryRouter initialEntries={["/jobs/job-1"]}>
-        <Routes>
-          <Route element={<ReaderPage />} path="/jobs/:jobId" />
-        </Routes>
-      </MemoryRouter>,
-    );
+  test("a preset sets the speed, persists it, and badges the playbar", async () => {
+    await openSettings();
 
-    await screen.findByText("Reader job");
+    fireEvent.click(screen.getByRole("button", { name: "1.5×" }));
 
-    // All key player controls should be in the DOM together. `exact` matters:
-    // the chunk jump buttons are named "Jump playback to chunk N", so a loose
-    // /play/i match now hits those too.
-    expect(screen.getByRole("button", { name: "Play", exact: true })).toBeInTheDocument();
-    expect(screen.getByRole("slider", { name: /playback speed slider/i })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.5");
+    // Remembered per device, so the next reader opens at the same rate.
+    expect(getReaderSettings().playbackRate).toBe(1.5);
+    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent("1.5×");
+  });
+
+  test("adopts the remembered speed when the reader opens", async () => {
+    setReaderSettings({ playbackRate: 1.75 });
+
+    await openSettings();
+
+    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.75");
+    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent("1.75×");
   });
 
   test("invalid speed input reverts to the current value", async () => {
-    render(
-      <MemoryRouter initialEntries={["/jobs/job-1"]}>
-        <Routes>
-          <Route element={<ReaderPage />} path="/jobs/:jobId" />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await screen.findByText("Reader job");
+    await openSettings();
 
     const input = screen.getByRole("textbox", { name: /playback speed value/i });
 

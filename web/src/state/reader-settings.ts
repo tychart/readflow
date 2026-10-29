@@ -12,6 +12,14 @@
 export type MotionMode = "auto" | "reduced" | "always";
 export type ConveyorWindowSize = "auto" | 3 | 4 | 5;
 
+/**
+ * Bounds for the remembered playback speed. The player itself only clamps to a
+ * positive number; these are the values the reader UI is willing to persist, so
+ * a hand-edited or corrupt stored rate can never come back as 1e9×.
+ */
+export const PLAYBACK_RATE_MIN = 0.1;
+export const PLAYBACK_RATE_MAX = 4;
+
 export interface ReaderSettings {
   /** Whether the sub playbar animates, forces animation, or snaps. */
   motionMode: MotionMode;
@@ -21,6 +29,12 @@ export interface ReaderSettings {
   showChunkJumpButtons: boolean;
   /** Chunk slots visible in the conveyor; "auto" adapts to viewport width. */
   conveyorWindowSize: ConveyorWindowSize;
+  /**
+   * Remembered playback speed, applied when a reader opens. The player owns the
+   * live rate while the page is open; this is the value it starts from (and what
+   * "Reset to defaults" returns to).
+   */
+  playbackRate: number;
 }
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
@@ -28,12 +42,21 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   showConveyor: true,
   showChunkJumpButtons: true,
   conveyorWindowSize: "auto",
+  playbackRate: 1,
 };
 
 export const READER_SETTINGS_STORAGE_KEY = "readflow.reader-settings.v1";
 
 const MOTION_MODES: readonly MotionMode[] = ["auto", "reduced", "always"];
 const WINDOW_SIZES: readonly ConveyorWindowSize[] = ["auto", 3, 4, 5];
+
+/** Coerce a stored/untrusted playback speed into the supported range. */
+export function sanitizePlaybackRate(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return DEFAULT_READER_SETTINGS.playbackRate;
+  }
+  return Math.min(PLAYBACK_RATE_MAX, Math.max(PLAYBACK_RATE_MIN, raw));
+}
 
 /**
  * Coerce anything (corrupt storage, an older schema, a hand-edited value) into a
@@ -59,6 +82,7 @@ export function sanitizeReaderSettings(raw: unknown): ReaderSettings {
     conveyorWindowSize: WINDOW_SIZES.includes(value.conveyorWindowSize as ConveyorWindowSize)
       ? (value.conveyorWindowSize as ConveyorWindowSize)
       : DEFAULT_READER_SETTINGS.conveyorWindowSize,
+    playbackRate: sanitizePlaybackRate(value.playbackRate),
   };
 }
 

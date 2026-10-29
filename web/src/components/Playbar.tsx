@@ -5,7 +5,7 @@ import {
   resolvePlayerStateLabel,
   resolveShowSpinner,
 } from "../features/reader/transport";
-import { formatClock } from "../lib/format";
+import { formatClock, formatSpeed } from "../lib/format";
 import type { TimelineSlotData } from "../types/timeline";
 import { TransportControls } from "./TransportControls";
 import { WaveformTimeline } from "./WaveformTimeline";
@@ -69,19 +69,18 @@ export interface PlaybarProps {
   /** Number of chunks currently written/ready. */
   writtenChunks: number;
   /**
+   * Live playback speed. Shown as a small badge in the metadata row (only when
+   * it is not 1×); the control that changes it lives in the reader settings.
+   */
+  playbackRate: number;
+  /**
    * Reader settings control. Rendered outside the fading metadata row so it
    * stays reachable after the playbar compacts.
    */
   settingsSlot?: React.ReactNode;
   /**
-   * Playback speed control. Like the settings gear this lives in the top row,
-   * not the metadata row: that row fades out as the playbar compacts on scroll,
-   * and on main the speed control was always visible.
-   */
-  speedSlot?: React.ReactNode;
-  /**
    * Manual "render the rest of this job" action. Lives in the top row like the
-   * speed and settings controls, because the metadata row fades out on scroll.
+   * settings control, because the metadata row fades out on scroll.
    */
   renderAheadSlot?: React.ReactNode;
   /**
@@ -139,9 +138,9 @@ export function Playbar({
   isDownloading = false,
   totalChunks,
   writtenChunks,
+  playbackRate,
   settingsSlot,
   showTransport = true,
-  speedSlot,
   renderAheadSlot,
 }: PlaybarProps) {
   // ── Player state for display ──────────────────────────────
@@ -273,7 +272,6 @@ export function Playbar({
         {/* Reader settings and playback speed — outside the fading metadata row
             below so they stay reachable once the playbar has compacted. */}
         {renderAheadSlot ? <div className="shrink-0">{renderAheadSlot}</div> : null}
-        {speedSlot ? <div className="shrink-0">{speedSlot}</div> : null}
         {settingsSlot ? <div className="shrink-0">{settingsSlot}</div> : null}
       </div>
 
@@ -315,9 +313,24 @@ export function Playbar({
             >
               {playerStateLabel}
             </span>
+
+            {/* Playback speed — only worth surfacing when it is off the default.
+                It lives in the metadata row on purpose: that row fades away on
+                scroll, so the badge costs the compact bar no space. */}
+            {playbackRate !== 1 ? (
+              <span
+                className="ml-2 inline-block rounded-full bg-[var(--hover-bg)] px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--ink-secondary)]"
+                data-testid="playback-rate-indicator"
+                title={`Playback speed ${formatSpeed(playbackRate)}×`}
+              >
+                {formatSpeed(playbackRate)}×
+              </span>
+            ) : null}
           </div>
 
           {/* Right: chunk counter + download */}
+
+          {/* Chunk counter + download */}
           <div className="flex items-center gap-4">
             {/* Chunk counter — secondary detail, dropped on phone widths */}
             <span className="hidden tabular-nums sm:inline">

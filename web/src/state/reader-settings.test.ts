@@ -7,6 +7,8 @@ import {
   READER_SETTINGS_STORAGE_KEY,
   resetReaderSettings,
   resolveAnimatedMotion,
+  PLAYBACK_RATE_MAX,
+  PLAYBACK_RATE_MIN,
   sanitizeReaderSettings,
   setReaderSettings,
   subscribeReaderSettings,
@@ -42,15 +44,30 @@ describe("sanitizeReaderSettings", () => {
         showConveyor: false,
         showChunkJumpButtons: true,
         conveyorWindowSize: 5,
+        playbackRate: 1.5,
       }),
     ).toEqual({
       motionMode: "always",
       showConveyor: false,
       showChunkJumpButtons: true,
       conveyorWindowSize: 5,
+      playbackRate: 1.5,
     });
     expect(sanitizeReaderSettings({ conveyorWindowSize: 3 }).conveyorWindowSize).toBe(3);
     expect(sanitizeReaderSettings({ motionMode: "reduced" }).motionMode).toBe("reduced");
+  });
+
+  test("clamps a stored playback speed into the supported range", () => {
+    expect(sanitizeReaderSettings({ playbackRate: 1.75 }).playbackRate).toBe(1.75);
+    expect(sanitizeReaderSettings({ playbackRate: 99 }).playbackRate).toBe(PLAYBACK_RATE_MAX);
+    expect(sanitizeReaderSettings({ playbackRate: 0 }).playbackRate).toBe(PLAYBACK_RATE_MIN);
+    expect(sanitizeReaderSettings({ playbackRate: -2 }).playbackRate).toBe(PLAYBACK_RATE_MIN);
+    expect(sanitizeReaderSettings({ playbackRate: "fast" }).playbackRate).toBe(
+      DEFAULT_READER_SETTINGS.playbackRate,
+    );
+    expect(sanitizeReaderSettings({ playbackRate: Number.NaN }).playbackRate).toBe(
+      DEFAULT_READER_SETTINGS.playbackRate,
+    );
   });
 });
 

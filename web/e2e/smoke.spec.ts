@@ -703,3 +703,37 @@ test("the playbar shrinks continuously with scroll instead of flipping states", 
   expect(halfway.timeline.height).toBeLessThan(expanded.timeline.height);
   expect(compact.timeline.height).toBeLessThan(halfway.timeline.height);
 });
+
+test("playback speed lives in the reader settings sheet and badges the playbar", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(6, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(6) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByText("Playwright job")).toBeVisible();
+
+  // The playbar keeps its space: no speed control until the panel is opened.
+  await expect(page.getByRole("slider", { name: /playback speed slider/i })).toHaveCount(0);
+  await expect(page.getByTestId("playback-rate-indicator")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Reader settings" }).click();
+  const panel = page.getByRole("dialog", { name: "Reader settings" });
+  await expect(panel).toBeVisible();
+
+  // One tap on a preset, no dragging (the whole mobile point).
+  await panel.getByRole("button", { name: "1.5×", exact: true }).click();
+  await expect(panel.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.5");
+
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(page.getByTestId("playback-rate-indicator")).toHaveText("1.5×");
+});

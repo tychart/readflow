@@ -22,7 +22,6 @@ import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest } from "../../types/api";
 import type { TimelineSlotData } from "../../types/timeline";
 import { getChunkText, isTerminalStatus } from "./chunk-utils";
-import { PlaybackSpeedControl } from "./PlaybackSpeedControl";
 import {
   buildManifestFromPatch,
   buildStreamManifest,
@@ -741,6 +740,25 @@ export function ReaderPage() {
     setReaderSettings(patch);
   }, []);
 
+  /**
+   * Speed is applied to the player immediately and remembered for the next
+   * session. The player owns the live rate (it re-applies it every tick on
+   * Firefox MSE); the stored preference is what a reader starts from.
+   */
+  const handlePlaybackRateChange = useCallback(
+    (rate: number) => {
+      setPlaybackRate(rate);
+      setReaderSettings({ playbackRate: rate });
+    },
+    [setPlaybackRate],
+  );
+
+  // Adopt the remembered speed on open, and follow it back after a settings
+  // reset (which is the only other thing that can change it while mounted).
+  useEffect(() => {
+    setPlaybackRate(settings.playbackRate);
+  }, [setPlaybackRate, settings.playbackRate]);
+
   const handleDownload = useCallback(async () => {
     if (!job || downloadableChunks.length === 0) return;
     setDownloadError(null);
@@ -1028,14 +1046,14 @@ export function ReaderPage() {
               />
             }
             showTransport={!isPhoneViewport}
-            speedSlot={
-              <PlaybackSpeedControl value={playbackRate} onChange={setPlaybackRate} />
-            }
+            playbackRate={playbackRate}
             settingsSlot={
               <ReaderSettingsMenu
                 isOverlay={!isLargeScreen}
                 onChange={handleSettingsChange}
+                onPlaybackRateChange={handlePlaybackRateChange}
                 onReset={resetReaderSettings}
+                playbackRate={playbackRate}
                 settings={settings}
                 showConveyorControls
               />

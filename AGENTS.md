@@ -264,7 +264,7 @@ Key files:
 - `web/src/components/WaveformTimeline.tsx` (whole-document overview bar)
 - `web/src/components/ChunkConveyor.tsx` + `ReaderDock.tsx` (zoomed scrub strip; phone dock)
 - `web/src/components/Playbar.tsx` + `TransportControls.tsx` + `PlaybackButtons.tsx`
-- `web/src/features/reader/PlaybackSpeedControl.tsx` (speed slider + numeric input)
+- `web/src/features/reader/PlaybackSpeedControl.tsx` (speed presets + slider + numeric input, rendered inside the settings panel)
 - `web/src/components/ReaderSettingsMenu.tsx` + `web/src/state/reader-settings.ts`
 - `web/src/hooks/useChunkWaveforms.ts`, `useElementWidth.ts`, `useMediaQuery.ts`, `usePlaybackShortcuts.ts`, `useReaderSettings.ts`, `useScrollProgress.ts` (writes the bars' scroll progress as a CSS variable)
 - `server/app/media/peaks.py`
@@ -285,10 +285,32 @@ Important design rules:
 - real playback state comes from the hook and must stay synchronized with the custom controls
 - **the `<audio>` element is rendered in one stable wrapper for every reader state** (loading, error, loaded). `useMediaSourcePlayer` attaches its media event listeners from an effect guarded on the element existing, so a remount after loading silently drops `progress`/`seeking`/`playing` events for the rest of the session. This was a real bug: the element used to live only in the loaded branch, in a different tree shape, and got remounted once.
 
-### Playback speed (merged from `main`)
+### Playback speed (in the settings panel, not the playbar)
 
-`PlaybackSpeedControl` (slider 0.5–3× plus a text input for any positive value)
-drives `setPlaybackRate` on `useMediaSourcePlayer`.
+`PlaybackSpeedControl` (one-tap presets, a 0.5–3× slider and a text input for
+any supported value) drives `setPlaybackRate` on `useMediaSourcePlayer`.
+
+It lives **inside `ReaderSettingsMenu`**, as the panel's first section. It used
+to sit in the playbar's top row, where it was the widest fixed cost in the
+scarcest space — on a phone it squeezed the whole-document waveform down to
+~75px. Moving it out is what lets that row stay usable; do not put a speed
+control back into `Playbar`.
+
+- Presets are `PLAYBACK_SPEED_PRESETS` = 0.75, 1, 1.25, 1.5, 1.75, 2, rendered
+  as a 3-column grid (six thumb-sized targets, tidy on both the phone sheet and
+  the desktop popover). Slower/faster than the presets stays reachable through
+  the slider or the numeric input.
+- The rate is **persisted per device** as `ReaderSettings.playbackRate` (see
+  below) and applied when a reader opens; the live value is still player state,
+  so `ReaderSettingsMenu` receives `playbackRate` + `onPlaybackRateChange`
+  separately from the persisted `settings` patch.
+- `ReaderPage` owns the wiring: `handlePlaybackRateChange` calls the player and
+  stores the preference, and one effect re-applies `settings.playbackRate` so a
+  "Reset to defaults" also returns the live rate to 1×.
+- `Playbar` shows the rate only as a small badge in the **metadata row**, and
+  only when it is not 1× — that row fades away on scroll, so it costs the
+  compact bar no space. `formatSpeed` (`lib/format.ts`) is shared by the badge
+  and the control so they cannot round the same rate differently.
 
 The hook, not the component, owns applying the rate to the element, because the
 browser fights it:
@@ -306,9 +328,12 @@ Rules that are easy to break:
 - Both properties are always written together through `applyPlaybackRate`
 (`playbackRate` *and* `defaultPlaybackRate`); letting them drift was already a
 source of bugs, so do not set one without the other.
-- The rate starts at `DEFAULT_PLAYBACK_RATE` (1×). An earlier hardcoded 3× was a
-debugging leftover from chasing the Firefox bug — do not reintroduce a non-1×
-default.
+- The rate starts at `DEFAULT_PLAYBACK_RATE` (1×) and `DEFAULT_READER_SETTINGS.playbackRate`
+is 1. An earlier hardcoded 3× was a debugging leftover from chasing the Firefox
+bug — do not reintroduce a non-1× default.
+- A typed rate is clamped to `PLAYBACK_RATE_MIN`/`PLAYBACK_RATE_MAX` (0.1–4) by
+both the control and `sanitizeReaderSettings`, so the input, the stored
+preference and the player can never disagree.
 - The Firefox re-application is per tick and kept behind `enforcePlaybackRate`,
 which exits immediately at 1× so the common case costs nothing. It looks like
 redundant code and is not: deleting it breaks Firefox MSE playback speed.
@@ -564,6 +589,10 @@ accounts).
 - `sanitizeReaderSettings` validates **field by field**, so one corrupt or
 outdated value cannot reset everything else, and unreadable storage falls back to
 defaults rather than breaking the reader.
+- It also stores `playbackRate` (the remembered speed), clamped to
+`PLAYBACK_RATE_MIN`/`PLAYBACK_RATE_MAX`. Speed is the one setting the player also
+owns live, so the reader applies the stored value on open and persists every
+change — see “Playback speed”.
 - `resolveAnimatedMotion(mode, prefersReducedMotion)` is the single decision point
 combining the user's override with the OS preference; `useReaderMotion()` is its
 hook. Do not re-derive motion in a component.
@@ -574,9 +603,10 @@ keyboard behaviour with no custom ARIA. Keep the label and the description
 separate (`htmlFor` + `aria-describedby`) — wrapping both in one `<label>` made the
 accessible name swallow the description.
 - The gear lives in the playbar's top row, not the metadata row: the metadata row
-fades out as the playbar compacts, and settings must stay reachable. The speed
-control sits next to it for the same reason — on `main` it was always visible, and
-the metadata row would have hidden it after the redesign.
+fades out as the playbar compacts, and settings must stay reachable. Playback speed
+is inside the panel (its first section), which is why the gear is now the only
+extra control in that row; the playbar itself only carries a “1.5×” badge in the
+metadata row when the rate is off 1×.
 
 ### "Render rest now" (manual lookahead override)
 
@@ -1650,7 +1680,7 @@ Reader page:
 - support gap-aware playback and manual jump-to-later-ready chunks
 - a dismissable "rendering seems stalled" banner with a one-click Retry when the producer stops
 - keyboard control anywhere on the page (see the shortcuts guide in reader settings)
-- reader settings (motion, conveyor, jump buttons, window size) persisted per device
+- reader settings (playback speed, motion, conveyor, jump buttons, window size) persisted per device
 - a phone bottom dock with the transport and conveyor in the thumb zone
 - allow download of rendered contiguous audio
 
@@ -1974,6 +2004,20 @@ Scroll-compaction round:
    `pointer-events-none` (the compact brand link beside it is the single
    accessible home link), so no scroll-derived state is needed for its
    interactivity.
+
+Playback-speed round:
+
+1. **Speed moved off the playbar into the reader settings panel** (its first
+   section), which frees the top row — on a phone that row was squeezing the
+   whole-document waveform to ~75px.
+2. **One-tap presets** (0.75, 1, 1.25, 1.5, 1.75, 2) in a 3-column grid, for
+   thumb-sized selection on the phone sheet; the slider and numeric input stay
+   for arbitrary rates.
+3. **The rate is remembered per device** as `ReaderSettings.playbackRate`
+   (0.1–4, sanitized), applied when a reader opens and reset by “Reset to
+   defaults”.
+4. **The playbar only shows a badge**, and only when the rate is not 1×, in the
+   metadata row that already fades away on scroll.
 
 ## Agent Workflow Checklist
 

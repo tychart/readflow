@@ -130,7 +130,7 @@ describe("PlaybackSpeedControl", () => {
     expect(input).toHaveValue("0.1");
   });
 
-  test("text input accepts a large value above slider range", () => {
+  test("text input accepts a value above the slider range, clamped to the supported maximum", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
@@ -138,7 +138,9 @@ describe("PlaybackSpeedControl", () => {
     fireEvent.change(input, { target: { value: "10.0" } });
     fireEvent.blur(input);
 
-    expect(onChange).toHaveBeenCalledWith(10.0);
+    // 10× is not a rate the reader persists, so it lands on the ceiling instead
+    // of being stored and handed to the player.
+    expect(onChange).toHaveBeenCalledWith(4);
   });
 
   test("text input with leading whitespace is parsed correctly", () => {
@@ -164,10 +166,35 @@ describe("PlaybackSpeedControl", () => {
     expect(input).toHaveValue("1.5");
   });
 
-  test("renders the 'Speed' label", () => {
+  test("renders a one-tap preset for every common speed", () => {
     render(<PlaybackSpeedControl value={1.0} onChange={vi.fn()} />);
 
-    expect(screen.getByText("Speed")).toBeInTheDocument();
+    const presets = screen.getByTestId("speed-presets");
+    expect(presets).toBeInTheDocument();
+    for (const label of ["0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+  });
+
+  test("clicking a preset reports that speed", () => {
+    const onChange = vi.fn();
+    render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "1.5×" }));
+
+    expect(onChange).toHaveBeenCalledWith(1.5);
+  });
+
+  test("only the active speed is pressed, and a non-preset value presses nothing", () => {
+    const { unmount } = render(<PlaybackSpeedControl value={1.75} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "1.75×" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "1.5×" })).toHaveAttribute("aria-pressed", "false");
+    unmount();
+
+    render(<PlaybackSpeedControl value={1.1} onChange={vi.fn()} />);
+    for (const button of screen.getAllByRole("button")) {
+      expect(button).toHaveAttribute("aria-pressed", "false");
+    }
   });
 
   test("slider shows correct position at min boundary (0.5)", () => {
