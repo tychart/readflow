@@ -737,3 +737,144 @@ test("playback speed lives in the reader settings sheet and badges the playbar",
   await page.getByRole("button", { name: "Close settings" }).click();
   await expect(page.getByTestId("playback-rate-indicator")).toHaveText("1.5×");
 });
+
+test.describe("reader settings sheet gestures", () => {
+  test.use({ hasTouch: true });
+
+  /** Dispatch one real `TouchEvent` on the open settings sheet. */
+  async function fireTouch(
+    page: import("@playwright/test").Page,
+    type: "touchstart" | "touchmove" | "touchend",
+    clientY: number,
+  ) {
+    await page.evaluate(
+      ({ type, clientY }) => {
+        const panel = document.querySelector<HTMLElement>(
+          '[role="dialog"][aria-label="Reader settings"]',
+        );
+        if (!panel) throw new Error("settings sheet is not open");
+        const makeTouch = (y: number) =>
+          new Touch({ identifier: 1, target: panel, clientX: 180, clientY: y });
+        const active = type === "touchend" ? [] : [makeTouch(clientY)];
+        panel.dispatchEvent(
+          new TouchEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            changedTouches: [makeTouch(clientY)],
+            targetTouches: active,
+            touches: active,
+          }),
+        );
+      },
+      { type, clientY },
+    );
+  }
+
+  /**
+   * Swipe the sheet from `fromY` to `toY` (screen coordinates: larger Y is
+   * lower). Events are spaced out so the release velocity is realistic — a
+   * same-task burst would register as an infinite-speed flick.
+   */
+  async function swipeSheet(
+    page: import("@playwright/test").Page,
+    fromY: number,
+    toY: number,
+    { stepMs = 30, steps = 6 } = {},
+  ) {
+    await fireTouch(page, "touchstart", fromY);
+    for (let step = 1; step <= steps; step += 1) {
+      await page.waitForTimeout(stepMs);
+      await fireTouch(page, "touchmove", fromY + ((toY - fromY) * step) / steps);
+    }
+    await fireTouch(page, "touchend", toY);
+  }
+
+  test("the sheet paints over the phone dock and reaches the bottom of the screen", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.route("**/api/jobs/job-1", async (route) => {
+      await route.fulfill({ json: buildJob(6, "queued") });
+    });
+    await page.route("**/api/jobs/job-1/manifest", async (route) => {
+      await route.fulfill({ json: buildManifest(6) });
+    });
+    await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+      await route.fulfill({ body: "abc" });
+    });
+
+    await page.goto("/jobs/job-1");
+    await expect(page.getByTestId("reader-dock")).toBeVisible();
+
+    await page.getByRole("button", { name: "Reader settings" }).click();
+    const sheet = page.getByRole("dialog", { name: "Reader settings" });
+    await expect(sheet).toBeVisible();
+
+    // The sheet is portalled to <body>, so it covers the dock instead of being
+    // clipped behind it. Hit-testing the dock's centre is the real paint-order
+    // check: before the portal, the dock's own buttons answered here.
+    const dockCovered = await page.evaluate(() => {
+      const dock = document.querySelector('[data-testid="reader-dock"]')?.getBoundingClientRect();
+      if (!dock) throw new Error("reader dock is not rendered");
+      const hit = document.elementFromPoint(dock.left + dock.width / 2, dock.top + dock.height / 2);
+      return !hit?.closest('[data-testid="reader-dock"]');
+    });
+    expect(dockCovered).toBe(true);
+
+    // Anchored to the viewport bottom, and the last control is reachable.
+    const geometry = await sheet.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { bottom: rect.bottom, viewportHeight: window.innerHeight };
+    });
+    expect(Math.abs(geometry.bottom - geometry.viewportHeight)).toBeLessThanOrEqual(2);
+
+    await sheet.getByRole("button", { name: "Reset to defaults" }).scrollIntoViewIfNeeded();
+    await expect(sheet.getByRole("button", { name: "Reset to defaults" })).toBeVisible();
+  });
+
+  test("swiping down closes the sheet without scrolling the page behind it", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.route("**/api/jobs/job-1", async (route) => {
+      await route.fulfill({ json: buildJob(20, "queued") });
+    });
+    await page.route("**/api/jobs/job-1/manifest", async (route) => {
+      await route.fulfill({ json: buildManifest(20) });
+    });
+    await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+      await route.fulfill({ body: "abc" });
+    });
+
+    await page.goto("/jobs/job-1");
+    await expect(page.getByText("Playwright job")).toBeVisible();
+
+    // Scroll the reader first, so "the page moved" is detectable.
+    await page.evaluate(() => window.scrollTo({ top: 120, behavior: "instant" }));
+    await page.waitForTimeout(120);
+
+    await page.getByRole("button", { name: "Reader settings" }).click();
+    const sheet = page.getByRole("dialog", { name: "Reader settings" });
+    await expect(sheet).toBeVisible();
+
+    // A small downward swipe: the sheet follows the finger and springs back, and
+    // the reader behind it must not move at all.
+    await fireTouch(page, "touchstart", 300);
+    await page.waitForTimeout(30);
+    await fireTouch(page, "touchmove", 324);
+    expect(await sheet.evaluate((element) => (element as HTMLElement).style.transform)).toBe(
+      "translateY(24px)",
+    );
+    await fireTouch(page, "touchend", 324);
+    expect(await page.evaluate(() => window.scrollY)).toBe(120);
+    await expect(sheet).toBeVisible();
+    await expect(sheet).toHaveCSS("transform", "none");
+
+    // A real swipe dismisses it without tapping the close button.
+    await swipeSheet(page, 300, 520);
+    await expect(sheet).toHaveCount(0);
+    expect(await page.evaluate(() => window.scrollY)).toBe(120);
+    // The page is unlocked again once the sheet is gone.
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe("");
+  });
+});

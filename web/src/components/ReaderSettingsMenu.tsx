@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { PLAYBACK_SHORTCUT_GUIDE } from "../hooks/usePlaybackShortcuts";
+import { useSheetDismissGesture } from "../hooks/useSheetDismissGesture";
+import { sheetBackdropOpacity } from "../lib/sheet-gesture";
 import type { ConveyorWindowSize, MotionMode, ReaderSettings } from "../state/reader-settings";
 import { PlaybackSpeedControl } from "../features/reader/PlaybackSpeedControl";
 
@@ -139,6 +142,31 @@ export function ReaderSettingsMenu({
     if (restoreFocus) triggerRef.current?.focus();
   }, []);
 
+  const dismissSheet = useCallback(() => close(false), [close]);
+
+  /**
+   * Swipe-down-to-close for the phone sheet (see `useSheetDismissGesture`). It
+   * only arms at the panel's scroll top, so scrolling the settings still works.
+   */
+  const { offsetPx: sheetOffsetPx, isDragging: isDraggingSheet } = useSheetDismissGesture({
+    enabled: open && isOverlay,
+    onDismiss: dismissSheet,
+    panelRef,
+  });
+
+  // Lock the page behind the sheet. Without this, a swipe anywhere on the sheet
+  // or its backdrop scrolled the reader text underneath instead of moving the
+  // sheet — the sheet is a modal, so the page must not move at all.
+  useEffect(() => {
+    if (!open || !isOverlay) return undefined;
+    const { body } = document;
+    const previousOverflow = body.style.overflow;
+    body.style.overflow = "hidden";
+    return () => {
+      body.style.overflow = previousOverflow;
+    };
+  }, [isOverlay, open]);
+
   // Escape closes from anywhere; the trigger keeps focus so the user is not
   // dumped back at the top of the document.
   useEffect(() => {
@@ -248,6 +276,87 @@ export function ReaderSettingsMenu({
     </div>
   );
 
+  const dialog = open ? (
+    <div
+      aria-label="Reader settings"
+      className={
+        isOverlay
+          ? "fixed inset-x-0 bottom-0 z-[70] max-h-[70vh] touch-pan-y overflow-y-auto overscroll-contain rounded-t-2xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-2xl"
+          : "absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-2xl"
+      }
+      id={panelId}
+      ref={panelRef}
+      role="dialog"
+      style={
+        isOverlay
+          ? {
+              // `dvh` (when supported) tracks the URL bar collapsing; `70vh` above
+              // is the fallback. The bottom padding clears the home indicator so
+              // the last control is never under the system gesture area.
+              maxHeight: "70dvh",
+              paddingBottom: "max(1rem, env(safe-area-inset-bottom))",
+              transform: sheetOffsetPx > 0 ? `translateY(${sheetOffsetPx}px)` : undefined,
+              // No easing while a finger is on it; ease back when released.
+              transition: isDraggingSheet ? "none" : "transform 180ms ease-out",
+            }
+          : undefined
+      }
+      tabIndex={-1}
+    >
+      {isOverlay ? (
+        /* Grabber — advertises that the sheet can be pulled down. */
+        <div aria-hidden="true" className="mb-2 flex justify-center">
+          <span className="h-1 w-10 rounded-full bg-[var(--ink-secondary)]/40" />
+        </div>
+      ) : null}
+
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+          Reader settings
+        </h3>
+        <button
+          aria-label="Close settings"
+          className="-mr-1 -mt-1 flex h-6 w-6 items-center justify-center rounded text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)]"
+          onClick={() => close(true)}
+          type="button"
+        >
+          <svg
+            aria-hidden="true"
+            className="h-3.5 w-3.5"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+          >
+            <line x1="6" x2="18" y1="6" y2="18" />
+            <line x1="6" x2="18" y1="18" y2="6" />
+          </svg>
+        </button>
+      </div>
+      {body}
+    </div>
+  ) : null;
+
+  // The sheet is portalled to <body> on purpose. Inline it would inherit the
+  // sticky playbar wrapper's `z-30` stacking context, so the phone bottom dock
+  // (z-40, a sibling at the root) painted over the sheet and cut off its bottom
+  // controls — the reset button and shortcuts were unreachable. A portal puts the
+  // modal above the whole app, which is what a modal sheet is supposed to be.
+  const overlay = open && isOverlay ? (
+    <>
+      <div
+        // `touch-none overscroll-none`: a swipe that misses the sheet must not
+        // scroll (or chain to) the page behind it.
+        className="fixed inset-0 z-[60] touch-none overscroll-none bg-black/50"
+        data-testid="reader-settings-backdrop"
+        onClick={() => close(false)}
+        style={{ opacity: sheetBackdropOpacity(sheetOffsetPx) }}
+      />
+      {dialog}
+    </>
+  ) : null;
+
   return (
     <div className="relative" ref={containerRef}>
       <button
@@ -277,54 +386,7 @@ export function ReaderSettingsMenu({
         </svg>
       </button>
 
-      {open && isOverlay ? (
-        <div
-          className="fixed inset-0 z-40 bg-black/50"
-          data-testid="reader-settings-backdrop"
-          onClick={() => close(false)}
-        />
-      ) : null}
-
-      {open ? (
-        <div
-          aria-label="Reader settings"
-          className={
-            isOverlay
-              ? "fixed inset-x-0 bottom-0 z-50 max-h-[70vh] overflow-y-auto rounded-t-2xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-2xl"
-              : "absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-2xl"
-          }
-          id={panelId}
-          ref={panelRef}
-          role="dialog"
-          tabIndex={-1}
-        >
-          <div className="mb-3 flex items-start justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-              Reader settings
-            </h3>
-            <button
-              aria-label="Close settings"
-              className="-mr-1 -mt-1 flex h-6 w-6 items-center justify-center rounded text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)]"
-              onClick={() => close(true)}
-              type="button"
-            >
-              <svg
-                aria-hidden="true"
-                className="h-3.5 w-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeWidth="2"
-                viewBox="0 0 24 24"
-              >
-                <line x1="6" x2="18" y1="6" y2="18" />
-                <line x1="6" x2="18" y1="18" y2="6" />
-              </svg>
-            </button>
-          </div>
-          {body}
-        </div>
-      ) : null}
+      {overlay ? createPortal(overlay, document.body) : dialog}
     </div>
   );
 }

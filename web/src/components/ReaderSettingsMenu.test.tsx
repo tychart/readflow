@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { DEFAULT_READER_SETTINGS, type ReaderSettings } from "../state/reader-settings";
@@ -33,6 +33,41 @@ function buildProps(overrides: Partial<Parameters<typeof ReaderSettingsMenu>[0]>
     showConveyorControls: false,
     ...overrides,
   };
+}
+
+
+/**
+ * jsdom has no `TouchEvent`, so dispatch a touch event with the fields the sheet
+ * gesture reads (`touches` / `changedTouches` / `timeStamp`).
+ */
+function dispatchTouch(
+  target: Element,
+  type: "touchstart" | "touchmove" | "touchend",
+  clientY: number,
+  at: number,
+) {
+  const touch = { clientX: 0, clientY, identifier: 0, target };
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [touch] });
+  Object.defineProperty(event, "changedTouches", { value: [touch] });
+  Object.defineProperty(event, "timeStamp", { value: at });
+  // The gesture handler is a native listener, so flush React's work per event.
+  act(() => {
+    target.dispatchEvent(event);
+  });
+  return event;
+}
+
+/**
+ * Drag the sheet header from `startY` to `endY` in two samples `stepMs` apart, so
+ * the release velocity is (endY - startY) / (2 * stepMs).
+ */
+function swipeSheet(panel: Element, startY: number, endY: number, stepMs = 16) {
+  const midY = startY + (endY - startY) / 2;
+  dispatchTouch(panel, "touchstart", startY, 0);
+  dispatchTouch(panel, "touchmove", midY, stepMs);
+  dispatchTouch(panel, "touchmove", endY, stepMs * 2);
+  dispatchTouch(panel, "touchend", endY, stepMs * 2);
 }
 
 function openMenu(props: ReturnType<typeof buildProps>) {
@@ -171,5 +206,105 @@ describe("ReaderSettingsMenu", () => {
     // the menu itself only reports the reset.
     expect(props.onReset).toHaveBeenCalled();
     expect(props.onPlaybackRateChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReaderSettingsMenu phone sheet", () => {
+  function openSheet() {
+    openMenu(buildProps({ isOverlay: true }));
+    return screen.getByRole("dialog", { name: "Reader settings" });
+  }
+
+  test("locks the page behind the sheet and restores it on close", () => {
+    openSheet();
+    expect(document.body.style.overflow).toBe("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    expect(document.body.style.overflow).toBe("");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  test("the desktop popover leaves the page scrollable", () => {
+    openMenu(buildProps({ isOverlay: false }));
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  test("portals the sheet out of the playbar's stacking context", () => {
+    const panel = openSheet();
+
+    // Inline, the sheet inherited the sticky playbar's `z-30` context, so the
+    // phone dock (z-40) painted over it and cut off its bottom controls.
+    expect(panel.parentElement).toBe(document.body);
+    // The popover is anchored to its trigger, so it must stay put.
+    cleanup();
+    openMenu(buildProps({ isOverlay: false }));
+    expect(screen.getByRole("dialog").parentElement).not.toBe(document.body);
+  });
+
+  test("reserves the phone safe area and a dynamic viewport height", () => {
+    const panel = openSheet();
+
+    expect(panel.style.paddingBottom).toContain("safe-area-inset-bottom");
+    expect(panel.style.maxHeight).toBe("70dvh");
+  });
+
+  test("dragging down moves the sheet with the finger", () => {
+    const panel = openSheet();
+
+    dispatchTouch(panel, "touchstart", 400, 0);
+    dispatchTouch(panel, "touchmove", 460, 16);
+
+    expect(panel.style.transform).toBe("translateY(60px)");
+  });
+
+  test("a long downward swipe closes the sheet without touching the close button", () => {
+    const panel = openSheet();
+
+    swipeSheet(panel, 400, 520, 120);
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  test("a short slow nudge springs back and keeps the sheet open", () => {
+    const panel = openSheet();
+
+    // 30px over ~320ms is neither far nor fast enough.
+    swipeSheet(panel, 400, 430, 160);
+
+    expect(panel.style.transform).toBe("");
+    expect(screen.getByRole("dialog", { name: "Reader settings" })).toBeInTheDocument();
+  });
+
+  test("a short fast flick closes the sheet", () => {
+    const panel = openSheet();
+
+    // 48px in ~32ms: under the distance threshold, but thrown.
+    swipeSheet(panel, 400, 448, 16);
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  test("the sheet's own scrolling is untouched when it is not at the top", () => {
+    const panel = openSheet();
+    panel.scrollTop = 40;
+
+    dispatchTouch(panel, "touchstart", 400, 0);
+    dispatchTouch(panel, "touchmove", 520, 16);
+    dispatchTouch(panel, "touchend", 520, 32);
+
+    expect(panel.style.transform).toBe("");
+    expect(screen.getByRole("dialog", { name: "Reader settings" })).toBeInTheDocument();
+  });
+
+  test("an upward drag is left to the panel instead of dismissing", () => {
+    const panel = openSheet();
+
+    dispatchTouch(panel, "touchstart", 400, 0);
+    dispatchTouch(panel, "touchmove", 340, 16);
+    dispatchTouch(panel, "touchmove", 300, 32);
+    dispatchTouch(panel, "touchend", 300, 32);
+
+    expect(panel.style.transform).toBe("");
+    expect(screen.getByRole("dialog", { name: "Reader settings" })).toBeInTheDocument();
   });
 });

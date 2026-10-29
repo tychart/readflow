@@ -607,6 +607,33 @@ fades out as the playbar compacts, and settings must stay reachable. Playback sp
 is inside the panel (its first section), which is why the gear is now the only
 extra control in that row; the playbar itself only carries a “1.5×” badge in the
 metadata row when the rate is off 1×.
+- **The phone sheet is modal.** While it is open the reader page is scroll-locked
+  (`body.style.overflow = "hidden"`, restored on close), the backdrop is
+  `touch-none overscroll-none` and the panel `overscroll-contain`. Without those,
+  a swipe on the sheet or its backdrop scrolled the reader text underneath — the
+  sheet felt like it was floating over a live page.
+- **The sheet is portalled to `<body>`** (`createPortal`), and that is required, not
+  stylistic. Rendered inline it inherited the sticky playbar wrapper's `z-30`
+  stacking context, so the phone dock (root, `z-40`) painted over it and cut off
+  the bottom of the panel — the shortcuts and the reset button were unreachable.
+  The portal puts the backdrop at `z-[60]` and the sheet at `z-[70]`, above the
+  header (`z-50`), the dock and the sidebar. The anchored desktop popover stays
+  inline because it must remain positioned against its trigger.
+- The sheet sizes with `70dvh` (inline, with the `max-h-[70vh]` class as the
+  fallback) and pads its bottom with `max(1rem, env(safe-area-inset-bottom))`, so
+  the URL bar collapsing and the home indicator cannot clip the last control.
+- **Swipe down dismisses the sheet** (`useSheetDismissGesture` +
+  `lib/sheet-gesture.ts`). It is a touch-listener implementation on purpose: the
+  panel is scrollable, so a downward pan normally belongs to the browser, and only
+  a non-passive `touchmove` that calls `preventDefault()` can take the gesture
+  back. It arms only when the panel is at `scrollTop === 0`, so scrolling long
+  settings content is untouched, and an upward move abandons the drag and hands
+  the gesture back to native scrolling. Release dismisses on distance
+  (`max(80px, 25% of the sheet)`) **or** a flick (≥0.5 px/ms with ≥40px of
+  travel); velocity is measured sample-to-sample because the finger does not move
+  between the last `touchmove` and `touchend`. Pure thresholds live in
+  `sheet-gesture.test.ts`; the Playwright test swipes with real `TouchEvent`s and
+  asserts the page behind does not scroll.
 
 ### "Render rest now" (manual lookahead override)
 
@@ -1680,7 +1707,8 @@ Reader page:
 - support gap-aware playback and manual jump-to-later-ready chunks
 - a dismissable "rendering seems stalled" banner with a one-click Retry when the producer stops
 - keyboard control anywhere on the page (see the shortcuts guide in reader settings)
-- reader settings (playback speed, motion, conveyor, jump buttons, window size) persisted per device
+- reader settings (playback speed, motion, conveyor, jump buttons, window size) persisted per device,
+  in a phone bottom sheet that closes on a downward swipe
 - a phone bottom dock with the transport and conveyor in the thumb zone
 - allow download of rendered contiguous audio
 
@@ -2004,6 +2032,15 @@ Scroll-compaction round:
    `pointer-events-none` (the compact brand link beside it is the single
    accessible home link), so no scroll-derived state is needed for its
    interactivity.
+
+Reader-settings sheet round:
+
+1. **The phone sheet no longer scrolls the page behind it.** Body scroll is locked
+   while it is open (restored on close), the backdrop is `touch-none`, and the
+   panel is `overscroll-contain`, so swipes move the sheet instead of the reader.
+2. **Swipe down to dismiss**, with a grabber to advertise it. The gesture arms only
+   at the panel's scroll top, so the settings list still scrolls; distance **or**
+   flick closes it (`lib/sheet-gesture.ts`, `useSheetDismissGesture`).
 
 Playback-speed round:
 
