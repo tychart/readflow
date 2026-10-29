@@ -44,6 +44,8 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
         else QwenProvider(
             default_language=settings.runtime.default_language,
             device=settings.runtime.device,
+            estimated_chars_per_second=settings.runtime.estimated_chars_per_second,
+            synthesis_token_headroom=settings.runtime.synthesis_token_headroom,
         )
     )
     provider.validate_environment()

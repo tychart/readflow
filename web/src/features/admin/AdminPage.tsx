@@ -161,6 +161,9 @@ function AdminOverview() {
     formState.idle_unload_seconds !== adminState.config.idle_unload_seconds ||
     formState.max_prebuffer_seconds !== adminState.config.max_prebuffer_seconds ||
     formState.target_buffer_seconds !== adminState.config.target_buffer_seconds ||
+    formState.render_ahead_seconds !== adminState.config.render_ahead_seconds ||
+    formState.active_listener_timeout_seconds !==
+      adminState.config.active_listener_timeout_seconds ||
     formState.plan_ahead_chunks !== adminState.config.plan_ahead_chunks ||
     formState.vram_soft_limit_mb !== adminState.config.vram_soft_limit_mb ||
     formState.vram_hard_limit_mb !== adminState.config.vram_hard_limit_mb ||
@@ -249,7 +252,7 @@ function AdminOverview() {
           </label>
 
           <label className={labelClass()}>
-            Max prebuffer (seconds)
+            Comfortable buffer (seconds)
             <input
               className={`${inputClass()} mt-1.5`}
               type="number"
@@ -257,6 +260,48 @@ function AdminOverview() {
               value={formState.max_prebuffer_seconds}
               onChange={(e) => setFormState({ ...formState, max_prebuffer_seconds: Number(e.target.value) })}
             />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              Priority threshold: above this an active listener shares the lowest band with
+              background work. It never stops rendering.
+            </span>
+          </label>
+
+          <label className={labelClass()}>
+            Render-ahead cap (seconds, 0 = render everything)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="0"
+              value={formState.render_ahead_seconds}
+              onChange={(e) =>
+                setFormState({ ...formState, render_ahead_seconds: Number(e.target.value) })
+              }
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              0 (default) renders every job to the end; only pausing stops it. A positive value
+              stops planning new chunks once a job has this much audio buffered (chunks already
+              planned still finish).
+            </span>
+          </label>
+
+          <label className={labelClass()}>
+            Listener timeout (seconds)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="0"
+              value={formState.active_listener_timeout_seconds}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  active_listener_timeout_seconds: Number(e.target.value),
+                })
+              }
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              How long a job stays "actively listened" without a playback report. The reader syncs
+              every ~3s while playing.
+            </span>
           </label>
 
           <label className={labelClass()}>

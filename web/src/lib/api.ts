@@ -109,6 +109,16 @@ export const api = {
     request<JobSummary>(apiPath(`/jobs/${jobId}/resume`), { method: "POST" }),
 
   /**
+   * Lets this job ignore the scheduler's lookahead cap so it renders its whole
+   * text (the reader's "Render rest now" action). Pausing still stops it.
+   */
+  renderJobToEnd: (jobId: string, enabled = true) =>
+    request<JobSummary>(apiPath(`/jobs/${jobId}/render-to-end`), {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  /**
    * Changes the voice for chunks that are not rendered yet.
    *
    * `rerenderWritten` invalidates the whole job for one consistent take, which

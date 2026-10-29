@@ -145,6 +145,65 @@ async def test_admin_config_exposes_residency_knobs(client, services):
     assert services.settings.runtime.model_residency_batches == 4
 
 
+async def test_admin_config_exposes_render_ahead_policy(client, services):
+    initial = await client.get("/api/admin/config")
+
+    assert initial.status_code == 200
+    # 0 = render every job to the end (the default); only pause stops rendering.
+    assert initial.json()["render_ahead_seconds"] == 0
+    assert initial.json()["active_listener_timeout_seconds"] == 60.0
+
+    updated = await client.post(
+        "/api/admin/config",
+        json={"render_ahead_seconds": 900, "active_listener_timeout_seconds": 30},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["render_ahead_seconds"] == 900
+    assert services.settings.runtime.render_ahead_seconds == 900
+    assert services.settings.runtime.active_listener_timeout_seconds == 30
+
+
+async def test_render_to_end_endpoint_overrides_the_lookahead_cap(client, services):
+    created = await client.post(
+        "/api/jobs",
+        data={"text": "A sentence that is long enough to plan a chunk. " * 40, "voice_id": "suzy"},
+    )
+    job_id = created.json()["job"]["id"]
+    assert created.json()["job"]["render_to_end"] is False
+
+    response = await client.post(f"/api/jobs/{job_id}/render-to-end", json={"enabled": True})
+
+    assert response.status_code == 200
+    assert response.json()["render_to_end"] is True
+    assert services.job_manager.get_job(job_id).render_to_end is True
+
+    missing = await client.post("/api/jobs/does-not-exist/render-to-end", json={"enabled": True})
+    assert missing.status_code == 404
+
+
+async def test_playback_updates_keep_active_listener_status_honest(client, services):
+    created = await client.post(
+        "/api/jobs", data={"text": "Short text for playback.", "voice_id": "suzy"}
+    )
+    job_id = created.json()["job"]["id"]
+
+    await client.post(f"/api/jobs/{job_id}/activate")
+    stale = services.job_manager.get_job(job_id)
+    stale.playback_state.last_event_at = 0.0
+    await services.scheduler._expire_stale_listeners()
+    assert services.job_manager.get_job(job_id).is_active_listening is False
+
+    synced = await client.post(
+        f"/api/jobs/{job_id}/playback",
+        json={"current_time_seconds": 12.5, "is_playing": True},
+    )
+
+    assert synced.status_code == 200
+    assert synced.json()["is_active_listening"] is True
+    assert services.job_manager.get_job(job_id).completed_seconds == 12.5
+
+
 async def test_admin_state_reports_scheduler_liveness(client, services):
     response = await client.get("/api/admin/state")
 

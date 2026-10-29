@@ -133,9 +133,14 @@ The scheduler operates on chunk tasks, not whole jobs.
 Today it prioritizes work in this order:
 
 1. active listening jobs under the target buffer
-2. active listening jobs with healthy buffer
+2. active listening jobs with healthy buffer (they still render to the end)
 3. queued inactive jobs
 4. paused jobs are excluded
+
+By default every non-paused job renders its **whole text**; only `pause` stops
+production. An Admin can opt into a lookahead cap with `render_ahead_seconds`
+(0 = unlimited), and a single job can opt out of that cap from the reader
+("Render rest now").
 
 Batch construction is grouped by:
 
@@ -578,7 +583,9 @@ The admin page can change runtime scheduling knobs such as:
 
 - idle unload seconds
 - target buffer seconds
-- max prebuffer seconds
+- comfortable buffer seconds (priority only; it never stops rendering)
+- render-ahead cap (0 = render every job to the end; this is the default)
+- listener timeout seconds
 - VRAM soft limit
 
 These changes are in memory only. They are not persisted across restarts.
@@ -622,6 +629,7 @@ Key HTTP endpoints:
 - `POST /api/jobs/{job_id}/activate` (returns a job summary)
 - `POST /api/jobs/{job_id}/pause` (returns a job summary)
 - `POST /api/jobs/{job_id}/resume` (returns a job summary)
+- `POST /api/jobs/{job_id}/render-to-end` (per-job lookahead-cap override)
 - `POST /api/jobs/{job_id}/voice`
 - `POST /api/jobs/{job_id}/playback`
 - `GET /api/voices`
@@ -664,7 +672,8 @@ Reasonable next steps for the project are:
 If you want the shortest mental model for this repo, it is this:
 
 - the backend owns everything important
-- the scheduler tries to keep listeners buffered
+- the scheduler tries to keep listeners buffered, and renders every non-paused
+  job to the end (a lookahead cap is opt-in)
 - the GPU path is centralized and batched
 - the browser plays appended fMP4 segments through `MediaSource`
 - the fake provider keeps daily development and CI fast

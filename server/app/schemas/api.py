@@ -30,6 +30,8 @@ class JobSummaryResponse(BaseModel):
     voice_id: str
     model_id: str
     is_active_listening: bool
+    # Per-job opt-out of the lookahead cap (reader action "Render rest now").
+    render_to_end: bool = False
     total_chunks_emitted: int
     total_chunks_completed: int
     buffered_seconds: float
@@ -82,8 +84,16 @@ class ChunkVersionRequest(BaseModel):
 
 
 class PlaybackUpdateRequest(BaseModel):
+    # Job-timeline seconds (0 = start of the first chunk), not the player's
+    # stream-normalized clock; the reader adds its anchor offset.
     current_time_seconds: float = 0.0
     is_playing: bool = True
+
+
+class RenderToEndRequest(BaseModel):
+    """Per-job opt-out of the scheduler's lookahead cap ("render the rest now")."""
+
+    enabled: bool = True
 
 
 class AdminConfigResponse(BaseModel):
@@ -91,6 +101,8 @@ class AdminConfigResponse(BaseModel):
     idle_unload_seconds: int
     max_prebuffer_seconds: int
     target_buffer_seconds: int
+    render_ahead_seconds: int
+    active_listener_timeout_seconds: float
     plan_ahead_chunks: int
     batch_candidates_small_model: list[int]
     batch_candidates_large_model: list[int]
@@ -108,6 +120,8 @@ class AdminConfigUpdateRequest(BaseModel):
     idle_unload_seconds: int | None = None
     max_prebuffer_seconds: int | None = None
     target_buffer_seconds: int | None = None
+    render_ahead_seconds: int | None = None
+    active_listener_timeout_seconds: float | None = None
     plan_ahead_chunks: int | None = None
     batch_candidates_small_model: list[int] | None = None
     batch_candidates_large_model: list[int] | None = None
@@ -327,6 +341,7 @@ def job_to_summary(job: Job) -> JobSummaryResponse:
         voice_id=job.voice_id,
         model_id=job.model_id,
         is_active_listening=job.is_active_listening,
+        render_to_end=job.render_to_end,
         total_chunks_emitted=job.total_chunks_emitted,
         total_chunks_completed=job.total_chunks_completed,
         buffered_seconds=job.buffered_seconds,

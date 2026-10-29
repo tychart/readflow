@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from time import monotonic
 
@@ -18,6 +19,8 @@ from app.synthesis.provider import (
 )
 from app.telemetry.service import TelemetryService
 from app.voices.registry import VoicePrompt, VoiceRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -70,6 +73,21 @@ class SynthesisWorker:
         await self._broadcast_model_state()
         try:
             results, chunks = await self._synthesize_with_oom_retry(model_id, chunks, prompts)
+            clipped = [
+                chunk.index
+                for chunk, result in zip(chunks, results, strict=True)
+                if result.truncated
+            ]
+            if clipped:
+                # The provider retried these alone; getting here means even a
+                # fresh single-chunk sample ran into the token budget, so the
+                # audio is probably clipped. Surface it instead of shipping it
+                # silently.
+                logger.warning(
+                    "Chunk(s) %s hit the generation budget again; audio may be clipped",
+                    clipped,
+                )
+                self._telemetry.record_event("synthesis_truncated", {"chunk_indices": clipped})
             packaged: list[RenderedChunkResult] = []
             for chunk, result in zip(chunks, results, strict=True):
                 stored = self._media_store.package_wav_chunk(

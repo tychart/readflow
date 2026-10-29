@@ -208,6 +208,7 @@ class SchedulerService:
 
     async def run_once(self) -> None:
         self._last_tick_at = time()
+        await self._expire_stale_listeners()
         if self._model_manager.state == ModelState.ERROR:
             # A load or synthesis previously timed out; the worker thread may
             # still be stuck. Do not dispatch into it — wait for an operator to
@@ -220,10 +221,11 @@ class SchedulerService:
         self._telemetry.set_queue_depth(self._job_manager.queue_depth())
         if renderable:
             await self._render_next_batch(renderable)
-        # Keep the model resident while there is work to do; only let it idle
-        # out once the queue is genuinely empty.
+        # Keep the model resident while there is dispatchable work; only let it
+        # idle out once the queue is genuinely empty. Paused jobs do not count:
+        # they keep plan-ahead chunks in `PLANNED` but nothing will render them.
         await self._model_manager.maybe_unload_idle(
-            has_pending_work=self._job_manager.queue_depth() > 0
+            has_pending_work=self._job_manager.has_renderable_chunks()
         )
         await self._broadcast_scheduler_state()
 
@@ -278,9 +280,33 @@ class SchedulerService:
         )
         if active_planned >= self._config.plan_ahead_chunks:
             return False
-        if job.is_active_listening and job.buffered_seconds >= self._config.max_prebuffer_seconds:
+        # The default is to render every job to the end: an explicit pause is the
+        # only intentional stop. `render_ahead_seconds` is an opt-in lookahead cap
+        # (0 = unlimited) and `render_to_end` is a per-job opt-out of it.
+        lookahead_seconds = self._config.render_ahead_seconds
+        if (
+            lookahead_seconds > 0
+            and not job.render_to_end
+            and job.buffered_seconds >= lookahead_seconds
+        ):
             return False
         return True
+
+    async def _expire_stale_listeners(self) -> None:
+        """Drop active-listener status for jobs that stopped reporting.
+
+        Without this the flag was sticky for the life of the process, so a tab
+        that was closed mid-book kept its job in the urgent band.
+        """
+        expired = self._job_manager.expire_stale_listeners(
+            self._config.active_listener_timeout_seconds
+        )
+        for job in expired:
+            await self._hub.broadcast(
+                WsEnvelope(
+                    type="job_updated", payload={"job": job_to_summary(job).model_dump()}
+                ).model_dump()
+            )
 
     def _rank_renderable_chunks(self) -> list[ChunkRecord]:
         chunks = list(self._job_manager.renderable_chunks())
@@ -359,13 +385,17 @@ class SchedulerService:
 
         - 0: an active listener below `target_buffer_seconds` \u2014 about to run
           dry, preempts everything else.
-        - 1: an active listener between the target and the ideal buffer
+        - 1: an active listener between the target and the comfortable buffer
           (`max_prebuffer_seconds`). It is not about to dry up, but keeping it
           comfortably ahead is what lets the user raise playback speed or skip
           without hitting the render ceiling.
         - 2: background work \u2014 queued jobs and listeners already at or above
-          the ideal buffer. These round-robin together, so a fully-prebuffered
-          listener stops monopolising the GPU.
+          the comfortable buffer. These round-robin together, so a
+          fully-prebuffered listener stops monopolising the GPU.
+
+        These bands are *priority only*. Rendering is bounded by
+        `render_ahead_seconds` (0 = unlimited), never by the band threshold, so
+        being above the comfortable buffer cannot stop a job from finishing.
         - 99: paused, excluded.
         """
         if job.status == JobStatus.PAUSED:
@@ -396,14 +426,15 @@ class SchedulerService:
                 band,
                 "Filling",
                 f"Active listener with {job.buffered_seconds:.1f}s buffered "
-                f"(target {target}s met, below the {ideal}s ideal buffer).",
+                f"(target {target}s met, below the {ideal}s comfortable buffer).",
             )
         if job.is_active_listening:
             return (
                 band,
                 "Buffered",
                 f"Active listener with {job.buffered_seconds:.1f}s buffered "
-                f"(ideal {ideal}s met) \u2014 shares the lowest band with background work.",
+                f"(comfortable buffer {ideal}s met) \u2014 shares the lowest band with "
+                "background work; still renders to the end.",
             )
         return band, "Background", "Queued job with no active listener."
 

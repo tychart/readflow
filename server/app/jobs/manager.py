@@ -95,6 +95,15 @@ class JobManager:
         return job
 
     def update_playback(self, job_id: str, current_time_seconds: float, is_playing: bool) -> Job:
+        """Record the listener's position.
+
+        `current_time_seconds` is in **job-timeline** seconds (0 = the start of
+        the first chunk), not the player's stream-normalized MSE clock. The
+        buffer is derived from the same timeline, and subtracting a stream
+        position after a seek/reload made `buffered_seconds` look permanently
+        full (it is what kept a lookahead cap from ever being released), so the
+        reader adds its anchor offset before reporting.
+        """
         job = self.get_job(job_id)
         if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
             return job
@@ -105,10 +114,52 @@ class JobManager:
         job.buffered_seconds = max(
             0.0, self._contiguous_written_seconds(job) - current_time_seconds
         )
-        if is_playing and job.status != JobStatus.PAUSED and job.status != JobStatus.COMPLETED:
+        if is_playing and job.status != JobStatus.PAUSED:
+            # A position report while playing is proof of an active listener, so
+            # the flag does not depend on the reader hitting /activate after a
+            # reload. Explicit pause still wins: that path sets PAUSED first.
+            job.is_active_listening = True
             job.status = JobStatus.PLAYING
         job.updated_at = time()
         return job
+
+    def set_render_to_end(self, job_id: str, enabled: bool = True) -> Job:
+        """Opt this job out of (or back into) the scheduler's lookahead cap.
+
+        The manual escape hatch for "keep rendering this book": it only affects
+        `render_ahead_seconds`. A paused job still does not render, because pause
+        is the one intentional stop.
+        """
+        job = self.get_job(job_id)
+        job.render_to_end = enabled
+        job.updated_at = time()
+        return job
+
+    def expire_stale_listeners(self, timeout_seconds: float) -> list[Job]:
+        """Forget listeners that stopped reporting playback positions.
+
+        `is_active_listening` used to be sticky until an explicit pause or job
+        completion, so a closed tab kept its job in the urgent priority band
+        (and, with a lookahead cap configured, frozen at that cap forever).
+        Returns the jobs that changed so the caller can broadcast them.
+        """
+        if timeout_seconds <= 0:
+            return []
+        now = time()
+        expired: list[Job] = []
+        for job in self._jobs.values():
+            if not job.is_active_listening:
+                continue
+            if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED, JobStatus.FAILED}:
+                continue
+            if now - job.playback_state.last_event_at <= timeout_seconds:
+                continue
+            job.is_active_listening = False
+            if job.status == JobStatus.PLAYING:
+                job.status = JobStatus.QUEUED
+            job.updated_at = now
+            expired.append(job)
+        return expired
 
     def set_voice(self, job_id: str, voice_id: str, *, rerender_written: bool = False) -> Job:
         """Re-voice the chunks that have not been rendered yet.
@@ -243,7 +294,8 @@ class JobManager:
         chunk.status = ChunkStatus.RENDERING
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
-        job.status = JobStatus.RENDERING
+        if job.status != JobStatus.PAUSED:
+            job.status = JobStatus.RENDERING
         job.updated_at = time()
 
     def mark_chunk_planned(self, chunk: ChunkRecord) -> None:
@@ -304,6 +356,10 @@ class JobManager:
         if job.planner_cursor.exhausted and not job.has_unfinished_chunks():
             job.status = JobStatus.COMPLETED
             job.is_active_listening = False
+        elif job.status == JobStatus.PAUSED:
+            # Pause is sticky. Finishing an in-flight batch used to rewrite the
+            # status to QUEUED/PLAYING, which silently resumed the job.
+            job.status = JobStatus.PAUSED
         elif job.is_active_listening:
             job.status = JobStatus.PLAYING
         else:
@@ -328,7 +384,16 @@ class JobManager:
         return job
 
     def renderable_chunks(self) -> Iterable[ChunkRecord]:
+        """Planned chunks the scheduler may dispatch.
+
+        Paused jobs are skipped here, not merely deprioritised. A paused job
+        normally still has plan-ahead chunks sitting in `PLANNED`, and sending
+        those to the GPU silently undid the pause (finishing the batch then
+        rewrote the job status). Pause is the one intentional stop.
+        """
         for job in self.list_jobs():
+            if job.status == JobStatus.PAUSED:
+                continue
             for chunk in job.chunks:
                 if (
                     chunk.status == ChunkStatus.PLANNED
@@ -336,6 +401,10 @@ class JobManager:
                     and not chunk.deprecated
                 ):
                     yield chunk
+
+    def has_renderable_chunks(self) -> bool:
+        """True when the scheduler has dispatchable work (paused jobs excluded)."""
+        return any(True for _ in self.renderable_chunks())
 
     def queue_depth(self) -> int:
         return sum(

@@ -105,6 +105,10 @@ class Job:
     audio_epoch: int = 0
     status: JobStatus = JobStatus.QUEUED
     is_active_listening: bool = False
+    # Per-job opt-out of the scheduler's lookahead cap (`render_ahead_seconds`).
+    # Set by the reader's "Render rest now" action. It deliberately does not
+    # override a pause: pause remains the only intentional stop.
+    render_to_end: bool = False
     submitted_at: float = field(default_factory=time)
     updated_at: float = field(default_factory=time)
     planner_cursor: PlannerCursor = field(default_factory=PlannerCursor)

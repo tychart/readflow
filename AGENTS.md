@@ -366,6 +366,13 @@ fill previews the pointer position via local `dragPreviewSeconds` (standard
 scrubber behavior). Do not add per-pointer-move `onSeek` calls — that used to
 trigger a backend activation HTTP call on every drag frame.
 
+The same rule applies to **playback reports**. `syncPlaybackState` sends
+`seekOverride ?? audio.currentTime + anchorOffset` (job-timeline seconds) to
+`/playback` and the `playback_sync` socket message, because the backend derives
+`buffered_seconds`/`completed_seconds` against the job timeline. Reporting the
+raw stream clock inflated the buffer by the anchor offset, which made a
+configured lookahead cap look permanently unreachable after a seek or reload.
+
 ### Pending-seek ownership (player hook, not the reader)
 
 Applying a timeline seek is owned by `useMediaSourcePlayer` via the
@@ -460,6 +467,24 @@ accessible name swallow the description.
 fades out as the playbar compacts, and settings must stay reachable. The speed
 control sits next to it for the same reason — on `main` it was always visible, and
 the metadata row would have hidden it after the redesign.
+
+### "Render rest now" (manual lookahead override)
+
+`web/src/features/reader/RenderToEndButton.tsx`, rendered through `Playbar`'s
+`renderAheadSlot` in the top row (icon-only below `sm`).
+
+- The scheduler renders every job to the end by default, so this is only
+  load-bearing when an operator configured `render_ahead_seconds` (or a job was
+  created while a cap was active). It calls
+  `POST /api/jobs/{id}/render-to-end` with `{enabled: true}`, which sets
+  `Job.render_to_end`; the scheduler reads that flag in `_needs_more_planning`.
+- It is **not** a resume button. It never clears `PAUSED` and never touches
+  playback: pause stays the one intentional stop. Do not "helpfully" reactivate
+  the job here.
+- It is idempotent and reflects server state (`render_to_end` is on the job
+  summary, so every reader sees it), which is why the button goes inert rather
+  than toggling back off. Showing it only while work remains would need the
+  planner cursor, which the summary intentionally does not carry.
 
 ### Chunk conveyor (the sub playbar)
 
@@ -729,13 +754,20 @@ High-level pipeline:
 Important behavior:
 
 - jobs are containers; chunk tasks are what actually get scheduled
-- paused jobs are excluded from future scheduling
+- paused jobs are excluded from **dispatch**, not just deprioritised:
+  `JobManager.renderable_chunks()` skips them (a paused job always has
+  plan-ahead chunks in `PLANNED`) and `mark_chunk_written` preserves `PAUSED`
+  instead of rewriting it to `QUEUED`/`PLAYING`. **Pause is the only intentional
+  stop**: by default every other job renders its whole text, and being far
+  ahead of the listener never idles the GPU.
 - priority bands: `0` an active listener below `target_buffer_seconds` (60s)
-  preempts everything; `1` an active listener between the target and the ideal
-  buffer (`max_prebuffer_seconds`, 300s) \u2014 keeps the listener ahead enough to
-  raise speed or skip; `2` background jobs **and** listeners already at/above the
-  ideal buffer (they round-robin together); `99` paused. Planning for an active
-  job stops at the ideal buffer, which is what drops it into band 2.
+  preempts everything; `1` an active listener between the target and the
+  comfortable buffer (`max_prebuffer_seconds`, 300s) \u2014 keeps the listener ahead
+  enough to raise speed or skip; `2` background jobs **and** listeners already
+  at/above the comfortable buffer (they round-robin together); `99` paused.
+  These bands are priority only; they do not stop planning.
+- ordering is by **turn, not completion**: within band 2 an ahead-of-the-listener
+  job renders alongside background jobs instead of stalling.
 - jobs are scheduled fairly in **turns by amount of work**, not by absolute
   chunk index: the dispatch sort key uses a **per-job ordinal** (0 = that job's
   next chunk), so a job at chunk 500 and one at chunk 10 each contribute their
@@ -748,7 +780,17 @@ Important behavior:
   order of their best `(band, submission time)`; `_ordered_for_dispatch` owns
   this and both dispatch and the admin queue ranking use it.
 - scheduling is buffer-aware
-- per-job prebuffer is capped
+- the render-ahead cap is **opt-in and off by default** (`render_ahead_seconds`,
+  0 = unlimited). A positive value stops *planning* new chunks for a job once it
+  has that much rendered audio buffered, bounded per job by `Job.render_to_end`
+  (the reader's "Render rest now" action, `POST /api/jobs/{id}/render-to-end`).
+  The plan-ahead window already in flight still finishes, so the cap is soft by
+  up to `plan_ahead_chunks` chunks. Do not reattach the cap to
+  `max_prebuffer_seconds`: that made simply listening stop production.
+- `is_active_listening` **expires** (`active_listener_timeout_seconds`, 60s)
+  without a playback report; `update_playback(is_playing=True)` re-arms it. It
+  used to be sticky until pause/completion, so a closed tab kept a job in the
+  urgent band (and frozen at the cap) forever.
 - batch size is dynamic: it is sized from the **measured marginal allocated VRAM
   per chunk** (peak allocated minus the idle baseline, from the last completed
   batch) against the configured VRAM soft limit. Do **not** size from
@@ -845,13 +887,44 @@ Voice prompts are cached by `voice_id`.
 
 Current batch generation path:
 
-- `model.generate_voice_clone(text=text_batch, language=language, voice_clone_prompt=prompt_batch)`
+- `model.generate_voice_clone(text=text_batch, language=language, voice_clone_prompt=prompt_batch, max_new_tokens=<budget>)`
 
 The provider intentionally requires:
 
 - all chunks in a batch share one language
 - all chunks in a batch share one voice
 - prompt list shape follows the validated benchmark usage
+
+#### Generation budget (`max_new_tokens`) — load-bearing
+
+Qwen's own default is `max_new_tokens=2048` ≈ 170s of audio **per sequence**, and
+`generate_voice_clone` only returns when the *slowest* sequence stops. One
+sample that never emits EOS (sampling is stochastic: `do_sample=True`) therefore
+held the whole batch — and the single-worker GPU thread — for minutes, produced
+`SynthesisTimeoutError` after 300s, flipped the model to `ERROR`, and left the
+reader spinning. That was the real cause of "rendering sat there for five
+minutes and never produced a chunk".
+
+So `QwenProvider._generation_budget()` derives the cap from the **longest chunk
+in the batch**:
+
+```
+tokens = max(600, chars / estimated_chars_per_second * 12 * synthesis_token_headroom)
+```
+
+- `12` is the codec rate (`CODEC_TOKENS_PER_SECOND`): Qwen3-TTS is 12 Hz.
+- `synthesis_token_headroom` (default 1.4) is the safety margin; observed real
+  chunks land at ~1.05-1.1× the character-based estimate.
+- Small budget also means a small KV cache, which is what made an 8-chunk batch
+  hit CUDA OOM on a 12 GB card.
+
+A chunk that **hits** the budget is detected from the waveform length
+(`_truncated_indices`) and re-asked **alone** with double the budget (capped at
+2048). Only that chunk is re-generated, so the repair costs one short generation
+instead of repeating the batch. Anything still truncated is flagged through
+`RawSynthesisResult.truncated`, and the worker logs a warning plus records a
+`synthesis_truncated` telemetry event — do not drop that signal, it is how a
+clipped chunk becomes visible instead of shipping silently.
 
 If you change this behavior, do it only with clear justification and updated tests.
 
@@ -1686,7 +1759,7 @@ Reliability / throughput / stall round (three workstreams):
    scheduler liveness in `/api/admin/state`.
 2. **Throughput and priority.** `plan_ahead_chunks` (16) replaces the old
    one-chunk inactive window; priority bands give an active listener top
-   priority until its ideal buffer, then let it share the lowest band with
+   priority until its comfortable buffer, then let it share the lowest band with
    background work; the VRAM soft/hard limits actually do something; idle unload
    waits for an empty queue. OOM handling now halves the batch until it fits
    instead of shrinking once.
@@ -1721,6 +1794,39 @@ Container distribution round (two passes):
    `scripts/compose-smoke.sh` is the seconds-long image check.
 6. **CI publishing.** `.github/workflows/images.yml` builds and pushes all
    variants to GHCR with buildx caches on main, tags, and manual dispatch.
+
+Render-ahead / stall round:
+
+1. **Listening no longer stops production.** The 300s active-listener prebuffer
+   stop is gone; a job renders its whole text and only `pause` stops it. The
+   lookahead is now an opt-in `render_ahead_seconds` cap (0 = unlimited) with a
+   per-job `render_to_end` override (`POST /jobs/{id}/render-to-end`, reader
+   "Render rest now"). `max_prebuffer_seconds` is now only a priority threshold.
+2. **Buffer accounting in job coordinates.** The reader reports job-timeline
+   seconds (`audio.currentTime + anchorOffset`), so `buffered_seconds` stops
+   being inflated by the anchor offset and a cap can actually be released after
+   a seek/reload.
+3. **Stale listeners expire.** `active_listener_timeout_seconds` (60s) drops a
+   job that stopped sending playback reports back to background priority;
+   `update_playback(is_playing=True)` re-arms it.
+4. **Pause now actually stops rendering.** `renderable_chunks()` excludes
+   `PAUSED` jobs (they always have plan-ahead chunks, so merely deprioritising
+   them kept the GPU busy) and `mark_chunk_written` no longer rewrites a paused
+   job's status back to `QUEUED`/`PLAYING`. Idle model unload uses
+   `has_renderable_chunks()`, so a paused job cannot pin VRAM.
+
+Generation-budget round:
+
+1. **Bounded `max_new_tokens` per batch.** The model default (2048 tokens ≈ 170s
+   of audio *per sequence*) meant one degenerate sample stalled the whole batch
+   for minutes, then hit the 300s synthesis timeout and froze the scheduler in
+   `ERROR`. The budget now comes from the longest chunk's expected duration ×
+   `synthesis_token_headroom` (see "Generation budget" under the Qwen contract),
+   which also shrank the KV cache enough to stop the 8-chunk OOM on a 12 GB GPU.
+2. **Targeted repair of a truncated chunk.** A chunk that hits the budget is
+   re-generated alone (double budget, capped at 2048) instead of repeating the
+   batch; a chunk that still truncates is surfaced via
+   `RawSynthesisResult.truncated` → warning + `synthesis_truncated` telemetry.
 
 ## Agent Workflow Checklist
 

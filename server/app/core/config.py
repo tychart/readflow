@@ -10,8 +10,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class RuntimeConfig(BaseModel):
     device: Literal["auto", "cpu", "gpu"] = "auto"
     idle_unload_seconds: int = 300
+    # Priority threshold, not a stop: an active listener with at least this much
+    # audio buffered shares the lowest priority band with background work.
     max_prebuffer_seconds: int = 300
     target_buffer_seconds: int = 60
+    # Opt-in lookahead cap. 0 (the default) means a job renders its whole text
+    # and only an explicit pause stops it. A positive value stops *planning* new
+    # chunks once the job has that many seconds of rendered audio buffered; the
+    # plan-ahead window already in flight still finishes, so the real lookahead
+    # overshoots by up to `plan_ahead_chunks` chunks. A job can opt out of the
+    # cap for itself via `render_to_end` (reader: "Render rest now").
+    render_ahead_seconds: int = 0
+    # How long a job keeps counting as "actively listened" without a playback
+    # position report. The reader syncs every ~3s while playing, so this only
+    # expires a tab that was closed or stopped reporting; the job drops back to
+    # background priority and keeps rendering.
+    active_listener_timeout_seconds: float = 60.0
     planning_tick_seconds: float = 0.2
     # How many chunks the planner keeps ready per schedulable job. Must be at
     # least the largest batch candidate, otherwise no single job can fill a
@@ -27,6 +41,12 @@ class RuntimeConfig(BaseModel):
     # Failed render attempts before a chunk is marked failed and skipped. The
     # job keeps rendering its other chunks; only the chunk is abandoned.
     chunk_max_attempts: int = 3
+    # Size the per-batch generation budget from the longest chunk's estimated
+    # duration times this headroom. It is a safety margin, not a quality knob:
+    # Qwen's own default (2048 tokens ≈ 170s of audio) is what a single
+    # degenerate sample used to consume, and a batch runs until its slowest
+    # sequence, so one bad sample stalled the GPU for minutes.
+    synthesis_token_headroom: float = 1.4
     # Deadlines for the provider's single worker thread. A model load can
     # legitimately include a first-time download, so it gets a much larger
     # budget than a synthesis batch. A timeout flags the model as errored and

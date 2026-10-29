@@ -72,6 +72,8 @@ function seedStore() {
         device: "auto",
         idle_unload_seconds: 300,
         max_prebuffer_seconds: 300,
+    render_ahead_seconds: 0,
+    active_listener_timeout_seconds: 60,
         target_buffer_seconds: 60,
         plan_ahead_chunks: 16,
         batch_candidates_small_model: [8, 7, 6, 5],

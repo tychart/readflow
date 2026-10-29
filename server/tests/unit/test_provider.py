@@ -114,16 +114,36 @@ class _FakeQwenModel:
         return {"voice": ref_audio, "text": ref_text}
 
     def generate_voice_clone(
-        self, *, text: list[str], language: str, voice_clone_prompt: list[object]
+        self,
+        *,
+        text: list[str],
+        language: str,
+        voice_clone_prompt: list[object],
+        **kwargs: object,
     ) -> tuple[list[object], int]:
         self.generate_calls.append(
             {
                 "text": text,
                 "language": language,
                 "voice_clone_prompt": voice_clone_prompt,
+                **kwargs,
             }
         )
         return (["wave-1", "wave-2"], 22050)
+
+
+class _LongWave:
+    """Stand-in waveform with a controlled token length.
+
+    The provider measures generated audio to detect a sequence that ran into the
+    token budget instead of emitting EOS, so a fake just needs `len()`.
+    """
+
+    def __init__(self, seconds: float, sample_rate: int = 22050) -> None:
+        self._length = int(seconds * sample_rate)
+
+    def __len__(self) -> int:
+        return self._length
 
 
 class _FakeQwenFactory:
@@ -441,3 +461,110 @@ def test_validate_environment_auto_without_cuda_passes(monkeypatch):
     provider = _setup_provider(monkeypatch, device="auto")
 
     provider.validate_environment()  # should not raise
+
+
+def _chunk(index: int, text: str) -> ChunkRecord:
+    return ChunkRecord(
+        job_id="job-1",
+        index=index,
+        text=text,
+        voice_id="suzy",
+        plan_version=1,
+        char_start=0,
+        char_end=len(text),
+        language="English",
+    )
+
+
+def test_generation_budget_tracks_expected_chunk_duration():
+    """The token budget is an upper bound on audio length, not the model default.
+
+    Qwen's default (2048 tokens ≈ 170s per sequence) let one degenerate sample
+    hold a whole batch — the multi-minute stall that looked like a dead
+    scheduler.
+    """
+    provider = QwenProvider(estimated_chars_per_second=18.0, synthesis_token_headroom=1.4)
+
+    long_chunk = _chunk(0, "x" * 700)
+    short_chunk = _chunk(1, "Hi.")
+
+    # 700 chars ≈ 38.9s of audio ≈ 467 codec tokens, times the 1.4 headroom.
+    assert provider._generation_budget([long_chunk, short_chunk]) == int(700 / 18 * 12 * 1.4)
+    # Tiny chunks still get a usable floor rather than a single-digit budget.
+    assert provider._generation_budget([short_chunk]) == 600
+
+
+def test_provider_regenerates_only_the_chunk_that_hit_the_budget(monkeypatch):
+    _make_provider_module_cuda(monkeypatch)
+    provider = _setup_provider(monkeypatch)
+    asyncio.run(provider.load_model("Qwen/Qwen3-TTS-12Hz-0.6B-Base"))
+    model = _FakeQwenFactory.created_models[-1]
+
+    def generate(*, text, language, voice_clone_prompt, **kwargs):
+        model.generate_calls.append(
+            {
+                "text": text,
+                "language": language,
+                "voice_clone_prompt": voice_clone_prompt,
+                **kwargs,
+            }
+        )
+        if len(text) > 1:
+            # The second sequence never emitted EOS and ran into the budget.
+            return ([_LongWave(1.0), _LongWave(999.0)], 22050)
+        return ([_LongWave(1.0)], 22050)
+
+    model.generate_voice_clone = generate  # type: ignore[method-assign]
+
+    prompt = VoicePrompt(
+        voice_id="suzy",
+        reference_text="Reference text",
+        reference_audio_path="/tmp/suzy.wav",
+    )
+    chunks = [_chunk(0, "Hello there."), _chunk(1, "General Kenobi.")]
+
+    results = asyncio.run(
+        provider.synthesize_batch("Qwen/Qwen3-TTS-12Hz-0.6B-Base", chunks, [prompt, prompt])
+    )
+
+    # The batch is asked with the derived budget, not the model default.
+    assert model.generate_calls[0]["max_new_tokens"] == 600
+    # Only the degenerate chunk is re-asked, alone, with a single prompt and
+    # double the budget (capped at the model default).
+    assert model.generate_calls[1]["text"] == ["General Kenobi."]
+    assert model.generate_calls[1]["max_new_tokens"] == 1200
+    assert len(cast(list[object], model.generate_calls[1]["voice_clone_prompt"])) == 1
+    assert all(result.truncated is False for result in results)
+
+
+def test_provider_flags_a_chunk_that_is_still_truncated_after_the_retry(monkeypatch):
+    _make_provider_module_cuda(monkeypatch)
+    provider = _setup_provider(monkeypatch)
+    asyncio.run(provider.load_model("Qwen/Qwen3-TTS-12Hz-0.6B-Base"))
+    model = _FakeQwenFactory.created_models[-1]
+
+    def generate(*, text, language, voice_clone_prompt, **kwargs):
+        model.generate_calls.append(
+            {
+                "text": text,
+                "language": language,
+                "voice_clone_prompt": voice_clone_prompt,
+                **kwargs,
+            }
+        )
+        return ([_LongWave(999.0) for _ in text], 22050)
+
+    model.generate_voice_clone = generate  # type: ignore[method-assign]
+
+    prompt = VoicePrompt(
+        voice_id="suzy",
+        reference_text="Reference text",
+        reference_audio_path="/tmp/suzy.wav",
+    )
+    chunks = [_chunk(0, "Hello there."), _chunk(1, "General Kenobi.")]
+
+    results = asyncio.run(
+        provider.synthesize_batch("Qwen/Qwen3-TTS-12Hz-0.6B-Base", chunks, [prompt, prompt])
+    )
+
+    assert [result.truncated for result in results] == [True, True]

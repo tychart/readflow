@@ -39,6 +39,7 @@ export function buildJobDetail(overrides: Partial<JobDetail> = {}): JobDetail {
     voice_id: "suzy",
     model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     is_active_listening: false,
+    render_to_end: false,
     total_chunks_emitted: chunks.length,
     total_chunks_completed: chunks.filter((chunk) => chunk.status === "written").length,
     buffered_seconds: chunks.reduce((total, chunk) => total + chunk.duration_seconds, 0),

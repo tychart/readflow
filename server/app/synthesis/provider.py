@@ -3,14 +3,27 @@ from __future__ import annotations
 import asyncio
 import gc
 import io
+import logging
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
+from time import perf_counter
 from typing import Any, Protocol
 
 from app.jobs.models import ChunkRecord
 from app.voices.registry import VoicePrompt
+
+logger = logging.getLogger(__name__)
+
+# Qwen3-TTS streams a 12 Hz codec, so one second of audio is 12 codec tokens.
+CODEC_TOKENS_PER_SECOND = 12
+# Floor for the per-batch generation budget. Estimates are character-based, so a
+# very short chunk still gets room for a full sentence.
+MIN_SYNTHESIS_TOKENS = 600
+# The model's own default cap (2048 tokens ≈ 170s of audio). Used as the upper
+# bound when a retry needs more room than the first estimate allowed.
+MAX_SYNTHESIS_TOKENS = 2048
 
 
 class SynthesisOOMError(RuntimeError):
@@ -40,6 +53,10 @@ class RawSynthesisResult:
     wav_bytes: bytes
     reserved_vram_mb: int
     allocated_vram_mb: int
+    # True when generation stopped at the token budget instead of emitting EOS.
+    # The audio is probably clipped (or the sample degenerated), so the worker
+    # surfaces it instead of silently shipping it.
+    truncated: bool = False
 
 
 class SynthesisProvider(Protocol):
@@ -127,9 +144,13 @@ class QwenProvider:
         self,
         default_language: str = "English",
         device: str = "auto",
+        estimated_chars_per_second: float = 18.0,
+        synthesis_token_headroom: float = 1.4,
     ) -> None:
         self._default_language = default_language
         self._device = device
+        self._estimated_chars_per_second = estimated_chars_per_second
+        self._synthesis_token_headroom = synthesis_token_headroom
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readflow-qwen")
         self._model: Any | None = None
         self._loaded_model_id: str | None = None
@@ -337,10 +358,44 @@ class QwenProvider:
             raise RuntimeError("Mixed voices in one synthesis batch are not supported")
         base_prompt = self._get_or_create_voice_clone_prompt(prompts[0])
         prompt_batch = self._repeat_voice_clone_prompt(base_prompt, len(text_batch))
+        max_new_tokens = self._generation_budget(chunks)
+        started = perf_counter()
         wavs, sample_rate = model.generate_voice_clone(
             text=text_batch,
             language=language or self._default_language,
             voice_clone_prompt=prompt_batch,
+            max_new_tokens=max_new_tokens,
+        )
+        generate_seconds = perf_counter() - started
+        truncated = self._truncated_indices(wavs, sample_rate, max_new_tokens)
+        if truncated:
+            # Batched generation runs until the *slowest* sequence stops, so a
+            # sample that never emits EOS used to hold the whole batch for the
+            # model's full default budget. Now it is cut off here and only that
+            # chunk is asked again on its own.
+            logger.warning(
+                "Generation hit the %d-token budget for chunk(s) %s (batch of %d); "
+                "regenerating those alone",
+                max_new_tokens,
+                [chunks[index].index for index in truncated],
+                len(chunks),
+            )
+            wavs, truncated = self._regenerate_truncated(
+                model=model,
+                chunks=chunks,
+                prompt_batch=prompt_batch,
+                language=language or self._default_language,
+                wavs=wavs,
+                truncated=truncated,
+                max_new_tokens=max_new_tokens,
+            )
+        audio_seconds = sum(len(wav) / sample_rate for wav in wavs) if sample_rate else 0.0
+        logger.info(
+            "Batch of %d chunk(s): %.1fs audio in %.1fs generation (budget %d tokens)",
+            len(chunks),
+            audio_seconds,
+            generate_seconds,
+            max_new_tokens,
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -358,9 +413,72 @@ class QwenProvider:
                 wav_bytes=self._waveform_to_wav_bytes(wav, sample_rate),
                 reserved_vram_mb=reserved,
                 allocated_vram_mb=allocated,
+                truncated=index in truncated,
             )
-            for wav in wavs
+            for index, wav in enumerate(wavs)
         ]
+
+    def _generation_budget(self, chunks: list[ChunkRecord]) -> int:
+        """Upper bound on the codec tokens one batch may generate.
+
+        Qwen's default is 2048 tokens ≈ 170s of audio *per sequence*, and a
+        batched call only returns when every sequence stops. A single sample
+        that fails to emit EOS therefore burned minutes of GPU time — and the
+        growing KV cache is also what made a large batch run out of VRAM. Budget
+        the longest chunk's expected duration plus headroom instead.
+        """
+        longest_chars = max(len(chunk.text) for chunk in chunks)
+        expected_seconds = max(0.5, longest_chars / self._estimated_chars_per_second)
+        budget = int(expected_seconds * CODEC_TOKENS_PER_SECOND * self._synthesis_token_headroom)
+        return max(MIN_SYNTHESIS_TOKENS, budget)
+
+    @staticmethod
+    def _truncated_indices(wavs: Any, sample_rate: int, max_new_tokens: int) -> set[int]:
+        """Indices whose waveform ran into the token budget (no EOS emitted)."""
+        if not sample_rate:
+            return set()
+        limit = max_new_tokens - 2
+        return {
+            index
+            for index, wav in enumerate(wavs)
+            if round(len(wav) / sample_rate * CODEC_TOKENS_PER_SECOND) >= limit
+        }
+
+    def _regenerate_truncated(
+        self,
+        *,
+        model: Any,
+        chunks: list[ChunkRecord],
+        prompt_batch: Any,
+        language: str,
+        wavs: Any,
+        truncated: set[int],
+        max_new_tokens: int,
+    ) -> tuple[list[Any], set[int]]:
+        """Re-ask for the chunks that hit the budget, one at a time.
+
+        A fresh sample almost always terminates normally, and generating a single
+        chunk is cheap next to repeating the whole batch. The retry gets double
+        the budget (capped at the model default) so a chunk whose duration was
+        genuinely underestimated is not clipped a second time. Whatever still
+        runs into the budget is reported through `RawSynthesisResult.truncated`.
+        """
+        retry_budget = min(MAX_SYNTHESIS_TOKENS, max_new_tokens * 2)
+        repaired = list(wavs)
+        still_truncated: set[int] = set()
+        for index in sorted(truncated):
+            retry_wavs, retry_rate = model.generate_voice_clone(
+                text=[chunks[index].text],
+                language=language,
+                voice_clone_prompt=self._repeat_voice_clone_prompt(prompt_batch[index], 1),
+                max_new_tokens=retry_budget,
+            )
+            retried = self._truncated_indices(retry_wavs, retry_rate, retry_budget)
+            if retry_wavs and 0 not in retried:
+                repaired[index] = retry_wavs[0]
+            else:
+                still_truncated.add(index)
+        return repaired, still_truncated
 
     def _get_or_create_voice_clone_prompt(self, prompt: VoicePrompt) -> Any:
         if prompt.voice_id not in self._prompt_cache:

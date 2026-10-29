@@ -340,3 +340,27 @@ def test_mark_chunk_failed_leaves_the_job_alive():
     assert updated.chunks[0].status == ChunkStatus.FAILED
     assert updated.status != JobStatus.FAILED
     assert updated.has_unfinished_chunks() is True
+
+
+def test_pause_excludes_planned_chunks_from_dispatch_and_stays_paused():
+    """Pause must actually stop rendering, including the plan-ahead window.
+
+    A paused job always has planned chunks sitting there, so merely
+    deprioritising it kept the GPU busy and the batch write then rewrote the
+    status back to QUEUED — pause never held.
+    """
+    manager, job, chunks = _job_with_chunks(1)
+    manager.pause_job(job.id)
+
+    assert list(manager.renderable_chunks()) == []
+    assert manager.has_renderable_chunks() is False
+
+    manager.mark_chunk_rendering(chunks[0])
+    manager.mark_chunk_written(
+        chunks[0],
+        duration_seconds=1.0,
+        segment_path="/tmp/one.m4s",
+        wav_path="/tmp/one.wav",
+    )
+
+    assert manager.get_job(job.id).status == JobStatus.PAUSED

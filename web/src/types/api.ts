@@ -31,6 +31,8 @@ export interface JobSummary {
   voice_id: string;
   model_id: string;
   is_active_listening: boolean;
+  /** This job ignores the scheduler's lookahead cap ("Render rest now"). */
+  render_to_end: boolean;
   total_chunks_emitted: number;
   total_chunks_completed: number;
   buffered_seconds: number;
@@ -67,6 +69,10 @@ export interface AdminConfig {
   idle_unload_seconds: number;
   max_prebuffer_seconds: number;
   target_buffer_seconds: number;
+  /** Opt-in lookahead cap in seconds; 0 (default) renders every job to the end. */
+  render_ahead_seconds: number;
+  /** Seconds without a playback report before a job stops counting as listened. */
+  active_listener_timeout_seconds: number;
   plan_ahead_chunks: number;
   batch_candidates_small_model: number[];
   batch_candidates_large_model: number[];

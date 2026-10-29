@@ -1,4 +1,5 @@
 import asyncio
+from time import time
 
 from app.jobs.models import JobStatus, ModelState
 from app.synthesis.worker import RenderedChunkResult
@@ -266,12 +267,12 @@ def test_priority_info_labels_and_reasons(services):
     band, label, reason = services.scheduler._priority_info(current, chunk)
     assert (band, label) == (1, "Filling")
     assert "target 60s met" in reason
-    assert "ideal" in reason
+    assert "comfortable" in reason
 
     current.buffered_seconds = 400.0
     band, label, reason = services.scheduler._priority_info(current, chunk)
     assert (band, label) == (2, "Buffered")
-    assert "ideal 300s met" in reason
+    assert "comfortable buffer 300s met" in reason
 
     current.buffered_seconds = 3.5
     band, label, reason = services.scheduler._priority_info(current, chunk)
@@ -652,6 +653,136 @@ def test_plan_ahead_window_controls_planning(services):
     assert len(planned) == 3
 
 
+def _long_planning_job(services, *, title: str):
+    return services.job_manager.create_job(
+        source_text="A sufficiently long sentence for planning. " * 200,
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title=title,
+    )
+
+
+def _planned_count(services, job_id: str) -> int:
+    from app.jobs.models import ChunkStatus
+
+    job = services.job_manager.get_job(job_id)
+    return sum(1 for chunk in job.chunks if chunk.status == ChunkStatus.PLANNED)
+
+
+def test_comfortable_buffer_does_not_stop_planning(services):
+    """Being far ahead of the listener must not stop the book from rendering.
+
+    `max_prebuffer_seconds` is a priority threshold only. Previously an active
+    listener above it stopped the planner, so the queue drained and the GPU sat
+    idle until the listener caught up (or, for a closed tab, forever).
+    """
+    job = _long_planning_job(services, title="render past the buffer")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.plan_ahead_chunks = 3
+    services.job_manager.get_job(job.id).buffered_seconds = 10_000.0
+
+    services.scheduler._ensure_planned_chunks()
+
+    assert _planned_count(services, job.id) == 3
+
+
+def test_render_ahead_cap_is_opt_in_and_render_to_end_overrides_it(services):
+    job = _long_planning_job(services, title="lookahead cap")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.plan_ahead_chunks = 3
+    services.settings.runtime.render_ahead_seconds = 300
+    services.job_manager.get_job(job.id).buffered_seconds = 400.0
+
+    services.scheduler._ensure_planned_chunks()
+    assert _planned_count(services, job.id) == 0
+
+    services.job_manager.set_render_to_end(job.id)
+    services.scheduler._ensure_planned_chunks()
+    assert _planned_count(services, job.id) == 3
+
+
+def test_pause_still_stops_planning_even_when_render_to_end_is_set(services):
+    job = _long_planning_job(services, title="paused wins")
+    services.job_manager.set_render_to_end(job.id)
+    services.job_manager.pause_job(job.id)
+
+    services.scheduler._ensure_planned_chunks()
+
+    assert _planned_count(services, job.id) == 0
+
+
+def test_paused_job_does_not_dispatch_its_planned_chunks(services):
+    """Pause is the one intentional stop, including the plan-ahead window."""
+    from app.jobs.models import ChunkStatus
+
+    job = _long_planning_job(services, title="pause holds")
+    services.job_manager.activate_job(job.id)
+    asyncio.run(services.scheduler.run_once())
+
+    services.job_manager.pause_job(job.id)
+    written_before = sum(
+        1
+        for chunk in services.job_manager.get_job(job.id).chunks
+        if chunk.status == ChunkStatus.WRITTEN
+    )
+
+    for _ in range(3):
+        asyncio.run(services.scheduler.run_once())
+
+    current = services.job_manager.get_job(job.id)
+    written_after = sum(1 for chunk in current.chunks if chunk.status == ChunkStatus.WRITTEN)
+    assert written_after == written_before
+    assert current.status == JobStatus.PAUSED
+
+
+def test_stale_listener_expires_back_to_background_priority(services):
+    """A closed tab used to keep its job in the urgent band forever."""
+    job = _long_planning_job(services, title="closed tab")
+    services.job_manager.activate_job(job.id)
+    current = services.job_manager.get_job(job.id)
+    current.playback_state.last_event_at = time() - 120.0
+
+    asyncio.run(services.scheduler.run_once())
+
+    current = services.job_manager.get_job(job.id)
+    assert current.is_active_listening is False
+    assert current.status == JobStatus.QUEUED
+    assert services.scheduler._priority_band(current) == 2
+
+
+def test_playback_report_reactivates_an_expired_listener(services):
+    job = _long_planning_job(services, title="came back")
+    services.job_manager.activate_job(job.id)
+    services.job_manager.get_job(job.id).playback_state.last_event_at = time() - 120.0
+    asyncio.run(services.scheduler.run_once())
+    assert services.job_manager.get_job(job.id).is_active_listening is False
+
+    services.job_manager.update_playback(job.id, current_time_seconds=5.0, is_playing=True)
+
+    current = services.job_manager.get_job(job.id)
+    assert current.is_active_listening is True
+    assert current.status == JobStatus.PLAYING
+    assert services.scheduler._priority_band(current) == 0
+
+
+def test_buffer_seconds_use_job_timeline_coordinates(services):
+    """A stream-normalized position made the buffer look permanently full."""
+    from app.jobs.models import ChunkStatus
+
+    job = _create_job(services, title="coordinates")
+    for index in range(3):
+        chunk = _add_chunk(services, job, f"chunk {index}")
+        chunk.status = ChunkStatus.WRITTEN
+        chunk.duration_seconds = 10.0
+
+    services.job_manager.update_playback(job.id, current_time_seconds=25.0, is_playing=True)
+
+    current = services.job_manager.get_job(job.id)
+    assert current.buffered_seconds == 5.0
+    assert current.completed_seconds == 25.0
+
+
 # ── Reliability: the loop must survive anything a single tick throws ──
 
 
@@ -980,7 +1111,7 @@ def test_filling_listener_outranks_background_work(services):
 
 
 def test_fully_buffered_listener_shares_band_with_background(services):
-    """At/above the ideal buffer the listener drops into the background band."""
+    """At/above the comfortable buffer the listener drops into the background band."""
     listener = _create_job(services, title="fully buffered listener")
     background = _create_job(services, title="background two", voice_id="howard")
     services.job_manager.activate_job(listener.id)

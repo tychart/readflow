@@ -80,6 +80,11 @@ export interface PlaybarProps {
    */
   speedSlot?: React.ReactNode;
   /**
+   * Manual "render the rest of this job" action. Lives in the top row like the
+   * speed and settings controls, because the metadata row fades out on scroll.
+   */
+  renderAheadSlot?: React.ReactNode;
+  /**
    * Whether this bar renders the −10s / play-pause / +10s controls. Phones move
    * them into the bottom dock and keep this bar as the whole-document overview.
    */
@@ -122,6 +127,7 @@ export function Playbar({
   settingsSlot,
   showTransport = true,
   speedSlot,
+  renderAheadSlot,
 }: PlaybarProps) {
   // ── Player state for display ──────────────────────────────
   const playerStateLabel = useMemo(
@@ -249,6 +255,7 @@ export function Playbar({
 
         {/* Reader settings and playback speed — outside the fading metadata row
             below so they stay reachable once the playbar has compacted. */}
+        {renderAheadSlot ? <div className="shrink-0">{renderAheadSlot}</div> : null}
         {speedSlot ? <div className="shrink-0">{speedSlot}</div> : null}
         {settingsSlot ? <div className="shrink-0">{settingsSlot}</div> : null}
       </div>

@@ -44,6 +44,7 @@ import {
 } from "./ReaderText";
 import { ReaderSidebar } from "./ReaderSidebar";
 import { RenderingStallBanner } from "./RenderingStallBanner";
+import { RenderToEndButton } from "./RenderToEndButton";
 import { isRenderingStalled } from "./transport";
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -101,6 +102,7 @@ export function ReaderPage() {
 
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isRenderingToEnd, setIsRenderingToEnd] = useState(false);
   const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<number | null>(null);
@@ -354,7 +356,14 @@ export function ReaderPage() {
       lastPlaybackSyncAtRef.current = now;
       const isPlaying =
         isPlayingOverride ?? (playIntent && (!audioRef.current.paused || isWaitingForData));
-      const currentTime = audioRef.current.currentTime ?? 0;
+      // The backend derives `buffered_seconds`/`completed_seconds` from the
+      // job timeline, but the media stream restarts at 0 every time the reader
+      // re-anchors (seek, reload). Reporting the raw stream clock made the
+      // buffer look permanently full after a seek, which kept a configured
+      // lookahead cap from ever being released. Add the anchor offset — and
+      // report the pending seek target while the stream is rebuilding.
+      const currentTime =
+        seekOverride ?? (audioRef.current.currentTime ?? 0) + anchorOffset;
       const sent = liveClient.sendPlaybackSync(job.id, currentTime, isPlaying);
       if (sent) {
         setLastPlaybackSyncError(null);
@@ -371,7 +380,7 @@ export function ReaderPage() {
           });
       }
     },
-    [audioRef, isJobTerminal, isWaitingForData, job, playIntent],
+    [anchorOffset, audioRef, isJobTerminal, isWaitingForData, job, playIntent, seekOverride],
   );
 
   /**
@@ -709,6 +718,26 @@ export function ReaderPage() {
     }
   }, [downloadableChunks.length, job]);
 
+  /** Manual "render the rest of this job now" — ignores a configured lookahead cap.
+   *  It never un-pauses a paused job: pause stays the only intentional stop. */
+  const handleRenderToEnd = useCallback(async () => {
+    if (!job) return;
+    setIsRenderingToEnd(true);
+    try {
+      const nextJob = await api.renderJobToEnd(job.id, true);
+      applyJobPatch(nextJob);
+      setError(null);
+    } catch (renderError) {
+      setError(
+        renderError instanceof Error
+          ? renderError.message
+          : "Unable to render the rest of the job",
+      );
+    } finally {
+      setIsRenderingToEnd(false);
+    }
+  }, [applyJobPatch, job]);
+
   const handleVoiceChange = async (voiceId: string, rerenderWritten = false) => {
     if (!job) return;
     try {
@@ -950,6 +979,14 @@ export function ReaderPage() {
             onSeekToChunk={handleSeekToChunkWithScroll}
             onSkip={handleSkip}
             renderedDurationSeconds={renderedDurationSeconds}
+            renderAheadSlot={
+              <RenderToEndButton
+                enabled={job?.render_to_end === true}
+                isPending={isRenderingToEnd}
+                isTerminal={isJobTerminal}
+                onRenderToEnd={handleRenderToEnd}
+              />
+            }
             showTransport={!isPhoneViewport}
             speedSlot={
               <PlaybackSpeedControl value={playbackRate} onChange={setPlaybackRate} />

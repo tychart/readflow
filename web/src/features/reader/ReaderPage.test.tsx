@@ -52,6 +52,7 @@ function buildReaderJob(
     voice_id: "suzy",
     model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     is_active_listening: status === "playing",
+    render_to_end: false,
     total_chunks_emitted: chunkCount,
     total_chunks_completed: chunkCount,
     buffered_seconds: chunkCount * 4,
@@ -112,6 +113,7 @@ function buildReaderJobWithChunks(
     ...buildReaderJob(0, status),
     status,
     is_active_listening: status === "playing",
+    render_to_end: false,
     total_chunks_emitted: chunks.length,
     total_chunks_completed: writtenChunkCount,
     buffered_seconds: chunks
@@ -365,6 +367,45 @@ test("re-render all can be chosen later without changing the voice", async () =>
     voice_id: "suzy",
     rerender_written: true,
   });
+});
+
+test("asks the backend to render the rest of the job", async () => {
+  const user = userEvent.setup();
+  seedStore();
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(2) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(2) };
+    }
+    if (url.endsWith("/render-to-end")) {
+      return { ok: true, json: async () => ({ ...buildReaderJob(2), render_to_end: true }) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  });
+  global.fetch = fetchMock as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
+  await user.click(screen.getByRole("button", { name: /Render the rest of this job now/ }));
+
+  const renderCall = fetchMock.mock.calls.find(([input]) =>
+    String(input).endsWith("/api/jobs/job-1/render-to-end"),
+  );
+  expect(JSON.parse(String(renderCall?.[1]?.body))).toEqual({ enabled: true });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /already renders to the end/ })).toBeDisabled(),
+  );
 });
 
 test("redirects to the jobs page when the job id does not exist", async () => {

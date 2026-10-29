@@ -28,6 +28,7 @@ from app.schemas.api import (
     JobManifestResponse,
     JobSummaryResponse,
     PlaybackUpdateRequest,
+    RenderToEndRequest,
     RuntimeStatusResponse,
     SchedulerStateResponse,
     UpdateVoiceRequest,
@@ -171,6 +172,8 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             idle_unload_seconds=runtime.idle_unload_seconds,
             max_prebuffer_seconds=runtime.max_prebuffer_seconds,
             target_buffer_seconds=runtime.target_buffer_seconds,
+            render_ahead_seconds=runtime.render_ahead_seconds,
+            active_listener_timeout_seconds=runtime.active_listener_timeout_seconds,
             plan_ahead_chunks=runtime.plan_ahead_chunks,
             batch_candidates_small_model=runtime.batch_candidates_small_model,
             batch_candidates_large_model=runtime.batch_candidates_large_model,
@@ -446,6 +449,28 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     ) -> JobSummaryResponse:
         try:
             job = app_services.job_manager.resume_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        summary = job_to_summary(job)
+        await app_services.hub.broadcast(
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
+        )
+        return summary
+
+    @router.post("/jobs/{job_id}/render-to-end", response_model=JobSummaryResponse)
+    async def render_to_end(
+        job_id: str,
+        request: RenderToEndRequest | None = None,
+        app_services: AppServices = Depends(services),
+    ) -> JobSummaryResponse:
+        """Lift the scheduler's lookahead cap for one job ("render the rest now").
+
+        Pausing still stops rendering; this only ignores `render_ahead_seconds`.
+        """
+        try:
+            job = app_services.job_manager.set_render_to_end(
+                job_id, True if request is None else request.enabled
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job)

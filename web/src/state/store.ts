@@ -86,6 +86,7 @@ function toSummary(job: JobSummary): JobSummary {
     voice_id: job.voice_id,
     model_id: job.model_id,
     is_active_listening: job.is_active_listening,
+    render_to_end: job.render_to_end,
     total_chunks_emitted: job.total_chunks_emitted,
     total_chunks_completed: job.total_chunks_completed,
     buffered_seconds: job.buffered_seconds,
