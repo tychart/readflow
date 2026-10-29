@@ -616,3 +616,90 @@ test("the now-playing marker only moves while audio is actually running", async 
   const running = await sampleFrames();
   expect(new Set(running).size).toBeGreaterThan(1);
 });
+
+test("the playbar shrinks continuously with scroll instead of flipping states", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(40, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(40) });
+  });
+  await page.route("**/api/jobs/job-1/activate", async (route) => {
+    await route.fulfill({ json: buildJob(40, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/playback", async (route) => {
+    await route.fulfill({ json: buildJob(40, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByText(/40\/40 chunks/i)).toBeVisible();
+
+  /**
+   * Reads the compacting geometry the browser actually resolved. Scroll
+   * progress is a CSS custom property, so this is also the assertion that the
+   * `calc()` interpolation is wired up (jsdom cannot check it).
+   */
+  const measure = async () =>
+    page.evaluate(() => {
+      const pick = (selector: string) => {
+        const element = document.querySelector(selector);
+        if (!element) throw new Error(`missing ${selector}`);
+        const style = getComputedStyle(element);
+        return {
+          height: Number.parseFloat(style.height),
+          opacity: Number.parseFloat(style.opacity),
+          padding: Number.parseFloat(style.paddingTop),
+        };
+      };
+      return {
+        meta: pick('[data-testid="playbar-meta"]'),
+        scrollY: window.scrollY,
+        timeline: pick('[aria-label="Audio waveform timeline"]'),
+        topRow: pick('[data-testid="playbar-top-row"]'),
+      };
+    });
+
+  const scrollTo = async (top: number) => {
+    await page.evaluate((value) => window.scrollTo({ top: value, behavior: "instant" }), top);
+    // The write is rAF-coalesced, so wait for the next frame.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(0))));
+  };
+
+  await scrollTo(0);
+  const expanded = await measure();
+  expect(expanded.topRow.padding).toBe(20);
+  expect(expanded.timeline.height).toBe(80);
+  expect(expanded.meta.opacity).toBe(1);
+
+  // Halfway through the 220px range → halfway between expanded and compact.
+  // A threshold-based implementation would still be fully expanded here.
+  await scrollTo(110);
+  const halfway = await measure();
+  // Scroll anchoring must not drag the page back up as the bar shrinks: that
+  // correction is what used to oscillate the bar between expanded and compact.
+  expect(halfway.scrollY).toBe(110);
+  expect(halfway.topRow.padding).toBeGreaterThan(0);
+  expect(halfway.topRow.padding).toBeLessThan(20);
+  expect(halfway.timeline.height).toBeGreaterThan(40);
+  expect(halfway.timeline.height).toBeLessThan(80);
+  expect(halfway.meta.opacity).toBeGreaterThan(0);
+  expect(halfway.meta.opacity).toBeLessThan(1);
+
+  await scrollTo(220);
+  const compact = await measure();
+  expect(compact.scrollY).toBe(220);
+  expect(compact.topRow.padding).toBe(0);
+  expect(compact.timeline.height).toBe(40);
+  expect(compact.meta.opacity).toBe(0);
+
+  // Monotonic shrink: no state flips, so no value may grow again on the way down.
+  expect(halfway.topRow.padding).toBeLessThan(expanded.topRow.padding);
+  expect(compact.topRow.padding).toBeLessThan(halfway.topRow.padding);
+  expect(halfway.timeline.height).toBeLessThan(expanded.timeline.height);
+  expect(compact.timeline.height).toBeLessThan(halfway.timeline.height);
+});

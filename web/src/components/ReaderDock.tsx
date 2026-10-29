@@ -62,12 +62,12 @@ export function ReaderDock({
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-2">
         <div className="flex justify-center">
           <TransportControls
-            gapPx={12}
+            gap="12px"
             onPause={onPause}
             onPlay={onPlay}
             onSkip={onSkip}
-            playButtonSizePx={52}
-            playIconSizePx={18}
+            playButtonSize="52px"
+            playIconSize="18px"
             playLabel={resolvePlayButtonLabel({ isAutoplayBlocked, playIntent })}
             showPauseIcon={isPlaying || playIntent}
             showSpinner={resolveShowSpinner({
@@ -77,8 +77,8 @@ export function ReaderDock({
               isWaitingForData,
               playIntent,
             })}
-            skipButtonSizePx={40}
-            skipIconSizePx={16}
+            skipButtonSize="40px"
+            skipIconSize="16px"
           />
         </div>
         <ChunkConveyor

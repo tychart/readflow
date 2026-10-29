@@ -49,8 +49,12 @@ export interface WaveformSlotProps {
   playheadSeconds: number;
   /** End of the playable range; bars past it stay muted. */
   renderedDurationSeconds: number;
-  /** Drops labels/separators in the compact (scrolled) playbar. */
-  compact: boolean;
+  /**
+   * Fade the chunk label and separator out as the sticky playbar compacts. The
+   * main timeline opts in; the conveyor and the phone dock do not (they are
+   * outside the collapsing wrapper and keep their labels).
+   */
+  fadeLabels?: boolean;
   /** Renders the vertical separator after this slot. */
   showSeparator: boolean;
   /**
@@ -78,7 +82,7 @@ export function WaveformSlot({
   slotStartSeconds,
   playheadSeconds,
   renderedDurationSeconds,
-  compact,
+  fadeLabels = false,
   showSeparator,
   interactive = true,
   style,
@@ -87,6 +91,8 @@ export function WaveformSlot({
   const nonFill = isNonFillState(slot.state);
   const isGap = slot.state === "ready_after_gap";
   const dimmed = isSlotDimmed(slot, slotStartSeconds, playheadSeconds);
+  /** Labels fade out (and end up fully transparent) as the playbar compacts. */
+  const labelOpacity = fadeLabels ? "calc(1 - var(--scroll-progress, 0) * 2)" : 1;
 
   return (
     <div
@@ -209,21 +215,22 @@ export function WaveformSlot({
         })}
       </div>
 
-      {/* Chunk index label — hidden in compact mode */}
-      {!compact && (
-        <div
-          aria-hidden="true"
-          className="absolute bottom-1 left-1/2 z-20 -translate-x-1/2 text-[9px] font-semibold tracking-wider text-white/40"
-        >
-          {slot.chunkIndex + 1}
-        </div>
-      )}
+      {/* Chunk index label — fades out as the playbar compacts. Always mounted so
+          no DOM churn happens while scrolling; absolute, so it owns no layout. */}
+      <div
+        aria-hidden="true"
+        className="absolute bottom-1 left-1/2 z-20 -translate-x-1/2 text-[9px] font-semibold tracking-wider text-white/40"
+        style={{ opacity: labelOpacity }}
+      >
+        {slot.chunkIndex + 1}
+      </div>
 
-      {/* Separator line — hidden in compact mode */}
-      {!compact && showSeparator ? (
+      {/* Separator line — fades with the labels */}
+      {showSeparator ? (
         <div
           aria-hidden="true"
           className="absolute inset-y-2 right-0 z-20 w-px bg-[var(--waveform-sep)]"
+          style={{ opacity: labelOpacity }}
         />
       ) : null}
     </div>

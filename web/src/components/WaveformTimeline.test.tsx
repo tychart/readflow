@@ -95,7 +95,6 @@ describe("WaveformTimeline playhead coordinates", () => {
         onSeek={vi.fn()}
         playheadSeconds={9}
         renderedDurationSeconds={12}
-        scrollProgress={0}
       />,
     );
 
@@ -114,7 +113,6 @@ describe("WaveformTimeline playhead coordinates", () => {
         onSeek={vi.fn()}
         playheadSeconds={0}
         renderedDurationSeconds={12}
-        scrollProgress={0}
       />,
     );
 
@@ -134,7 +132,6 @@ describe("WaveformTimeline drag seeking", () => {
         onSeek={onSeek}
         playheadSeconds={0}
         renderedDurationSeconds={12}
-        scrollProgress={0}
       />,
     );
 
@@ -171,7 +168,6 @@ describe("WaveformTimeline drag seeking", () => {
         onSeek={onSeek}
         playheadSeconds={0}
         renderedDurationSeconds={12}
-        scrollProgress={0}
       />,
     );
 

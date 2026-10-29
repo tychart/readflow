@@ -6,11 +6,15 @@ export interface TransportControlsProps {
   playLabel: string;
   showSpinner: boolean;
   showPauseIcon: boolean;
-  playButtonSizePx: number;
-  playIconSizePx: number;
-  skipButtonSizePx: number;
-  skipIconSizePx: number;
-  gapPx: number;
+  /**
+   * Button/icon sizes and gap as CSS lengths. The playbar passes `calc()` values
+   * so they shrink continuously with scroll; the phone dock passes fixed px.
+   */
+  playButtonSize: string;
+  playIconSize: string;
+  skipButtonSize: string;
+  skipIconSize: string;
+  gap: string;
   onPlay: () => void;
   onPause: () => void;
   onSkip: (deltaSeconds: number) => void;
@@ -26,41 +30,41 @@ export function TransportControls({
   playLabel,
   showSpinner,
   showPauseIcon,
-  playButtonSizePx,
-  playIconSizePx,
-  skipButtonSizePx,
-  skipIconSizePx,
-  gapPx,
+  playButtonSize,
+  playIconSize,
+  skipButtonSize,
+  skipIconSize,
+  gap,
   onPlay,
   onPause,
   onSkip,
 }: TransportControlsProps) {
   return (
-    <div className="flex shrink-0 items-center" style={{ gap: gapPx }}>
+    <div className="flex shrink-0 items-center" style={{ gap }}>
       <SkipButton
         direction="back"
-        iconSizePx={skipIconSizePx}
+        iconSize={skipIconSize}
         onClick={() => onSkip(-SKIP_STEP_SECONDS)}
         seconds={SKIP_STEP_SECONDS}
         shortcut="←"
-        sizePx={skipButtonSizePx}
+        size={skipButtonSize}
       />
       <PlayButton
-        iconSizePx={playIconSizePx}
+        iconSize={playIconSize}
         label={playLabel}
         onClick={showPauseIcon ? onPause : onPlay}
         showPauseIcon={showPauseIcon}
         showSpinner={showSpinner}
-        sizePx={playButtonSizePx}
+        size={playButtonSize}
         title={`${playLabel} (Space or K)`}
       />
       <SkipButton
         direction="forward"
-        iconSizePx={skipIconSizePx}
+        iconSize={skipIconSize}
         onClick={() => onSkip(SKIP_STEP_SECONDS)}
         seconds={SKIP_STEP_SECONDS}
         shortcut="→"
-        sizePx={skipButtonSizePx}
+        size={skipButtonSize}
       />
     </div>
   );

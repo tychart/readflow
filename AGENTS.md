@@ -266,7 +266,7 @@ Key files:
 - `web/src/components/Playbar.tsx` + `TransportControls.tsx` + `PlaybackButtons.tsx`
 - `web/src/features/reader/PlaybackSpeedControl.tsx` (speed slider + numeric input)
 - `web/src/components/ReaderSettingsMenu.tsx` + `web/src/state/reader-settings.ts`
-- `web/src/hooks/useChunkWaveforms.ts`, `useElementWidth.ts`, `useMediaQuery.ts`, `usePlaybackShortcuts.ts`, `useReaderSettings.ts`
+- `web/src/hooks/useChunkWaveforms.ts`, `useElementWidth.ts`, `useMediaQuery.ts`, `usePlaybackShortcuts.ts`, `useReaderSettings.ts`, `useScrollProgress.ts` (writes the bars' scroll progress as a CSS variable)
 - `server/app/media/peaks.py`
 
 Current architecture:
@@ -343,6 +343,50 @@ Do **not** reintroduce a live Web Audio analyser for the playbar visualization �
 `useWaveformAnalyser.ts` was intentionally deleted. If playback visuals drift,
 the fix belongs in the peaks pipeline or the timeline rendering, not in live
 capture.
+
+### Scroll-linked compaction (playbar + app navbar)
+
+Both sticky bars collapse as the page scrolls. The progress value is a CSS custom
+property written straight to the DOM by `web/src/hooks/useScrollProgress.ts`
+(`--scroll-progress` on the reader's sticky wrapper, `--navbar-progress` on the
+header) — **not** React state — and every size/opacity is a `calc()` on it.
+
+This is load-bearing, not a style preference. The previous version kept
+`scrollProgress` in `useState` and computed px values in JS, so every scroll
+frame re-rendered the page (the shell's state re-rendered the route too) *and*
+re-laid-out the whole document, because the collapsing bar is a sticky box in
+normal flow. On Android the bar stuttered and visibly flickered while shrinking.
+
+Rules and the traps behind them:
+
+- Never route scroll progress back through state. Write the variable; let CSS
+  interpolate. `scrollProgressFor` is pure and unit-tested, and `attachRef` writes
+  immediately so a late-mounted bar (the reader renders a loader first) is correct.
+- No threshold booleans in the compaction path. There used to be three
+  (`compact = progress > 0.95` dropping waveform labels/separators,
+  `maxHeight: 50px | 0px` on the metadata row, `border`/`boxShadow` presence).
+  Each was an on/off blink whenever scrollY sat near its threshold, which is
+  exactly where a fling or the mobile URL-bar collapse leaves it. Labels stay
+  mounted and fade with opacity (`WaveformSlot`'s `fadeLabels`; the conveyor and
+  phone dock opt out), and rows collapse with an interpolated `max-height`.
+- Never animate `backdrop-filter` (or `transition-all`) from a continuously
+  changing value. The reader's background layer did, restarting a 300ms blur
+  transition on a full-bleed layer every frame — a phone-GPU flicker generator.
+  It is now a static surface faded by opacity, which costs nothing because the
+  surface is 0.95 opaque anyway.
+- `html { overflow-anchor: none }` in `styles.css` is required. The bars' heights
+  are functions of scroll position, so Chrome's scroll anchoring “corrected” the
+  shrink by scrolling back up, which changed the progress, which re-expanded the
+  bar: a feedback loop that flipped it between sizes mid-shrink. Disabling it is
+  safe here because nothing is inserted above the viewport (chunks append below).
+- Sizes travel as CSS length strings (`shrink(48, 36)`) through
+  `TransportControls` / `PlayButton` / `SkipButton`; the phone dock passes fixed px.
+  `shrink()` lives in `Playbar.tsx` and keeps the tunable endpoints in one block
+  (20→0 padding, 80→40 timeline height, 48→36 play, 36→28 skip, 12→8 gaps).
+- `e2e/smoke.spec.ts` → “the playbar shrinks continuously with scroll instead of
+  flipping states” pins the scroll offset (anchoring), the half-way geometry and
+  the fully compact geometry. jsdom cannot check `calc()`, so that test is the real
+  guard; do not replace it with a unit assertion.
 
 ### Playhead coordinate rule (protect against a seek-position bug)
 
@@ -1909,6 +1953,27 @@ Generation-budget round:
    re-generated alone (double budget, capped at 2048) instead of repeating the
    batch; a chunk that still truncates is surfaced via
    `RawSynthesisResult.truncated` → warning + `synthesis_truncated` telemetry.
+
+Scroll-compaction round:
+
+1. **The sticky bars are now CSS-driven.** `useScrollProgress` writes
+   `--scroll-progress` / `--navbar-progress` onto the sticky element and every
+   collapsing size is a `calc()` on it, so scrolling no longer re-renders React or
+   re-lays-out the document per frame (see “Scroll-linked compaction”).
+2. **No threshold flips left.** Waveform labels/separators fade instead of being
+   unmounted above `progress > 0.95`, and the metadata row's `max-height`
+   interpolates instead of snapping 50px → 0px.
+3. **The animated backdrop blur is gone** from the reader's playbar background
+   (static surface + opacity), which was re-rastering a full-bleed blurred layer
+   every scroll frame on phones.
+4. **`html { overflow-anchor: none }`** stops Chrome from “compensating” for the
+   intentional shrink by scrolling back up — the feedback loop that made the bar
+   flicker between expanded and compact, reproduced and then pinned by a new e2e
+   test.
+5. The navbar's expanded brand lockup is now decorative and
+   `pointer-events-none` (the compact brand link beside it is the single
+   accessible home link), so no scroll-derived state is needed for its
+   interactivity.
 
 ## Agent Workflow Checklist
 

@@ -13,8 +13,9 @@ export interface PlayButtonProps {
   label: string;
   /** Tooltip text, including the keyboard shortcut. */
   title: string;
-  sizePx: number;
-  iconSizePx: number;
+  /** Button and icon sizes as CSS lengths (the playbar passes `calc()` so they shrink with scroll). */
+  size: string;
+  iconSize: string;
   showSpinner: boolean;
   showPauseIcon: boolean;
   onClick: () => void;
@@ -23,14 +24,14 @@ export interface PlayButtonProps {
 export function PlayButton({
   label,
   title,
-  sizePx,
-  iconSizePx,
+  size,
+  iconSize,
   showSpinner,
   showPauseIcon,
   onClick,
 }: PlayButtonProps) {
-  const style: CSSProperties = { width: sizePx, height: sizePx };
-  const iconStyle: CSSProperties = { width: iconSizePx, height: iconSizePx };
+  const style: CSSProperties = { width: size, height: size };
+  const iconStyle: CSSProperties = { width: iconSize, height: iconSize };
 
   return (
     <button
@@ -70,10 +71,17 @@ export interface SkipButtonProps {
   seconds: number;
   /** Shortcut hint shown in the tooltip, e.g. "←" or "→". */
   shortcut: string;
-  sizePx: number;
-  iconSizePx: number;
+  /** Button and icon sizes as CSS lengths (the playbar passes `calc()` so they shrink with scroll). */
+  size: string;
+  iconSize: string;
   onClick: () => void;
 }
+
+/**
+ * The ±N label is a fixed 8px: it is the smallest legible size, and both button
+ * sizes (36px expanded, 28px compact) clamp to it anyway.
+ */
+const SKIP_LABEL_FONT_PX = 8;
 
 /**
  * Seek ±N seconds. Doubled chevrons plus the step count, which is the shape
@@ -83,8 +91,8 @@ export function SkipButton({
   direction,
   seconds,
   shortcut,
-  sizePx,
-  iconSizePx,
+  size,
+  iconSize,
   onClick,
 }: SkipButtonProps) {
   const label = `${direction === "back" ? "Back" : "Forward"} ${seconds} seconds`;
@@ -94,7 +102,7 @@ export function SkipButton({
       aria-label={label}
       className="flex shrink-0 items-center justify-center gap-0.5 rounded-full text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)]"
       onClick={onClick}
-      style={{ width: sizePx, height: sizePx }}
+      style={{ width: size, height: size }}
       title={`${label} (${shortcut})`}
       type="button"
     >
@@ -105,7 +113,7 @@ export function SkipButton({
         strokeLinecap="round"
         strokeLinejoin="round"
         strokeWidth="1.6"
-        style={{ width: iconSizePx, height: iconSizePx }}
+        style={{ width: iconSize, height: iconSize }}
         viewBox="0 0 12 12"
       >
         {direction === "back" ? (
@@ -123,7 +131,7 @@ export function SkipButton({
       <span
         aria-hidden="true"
         className="font-bold tabular-nums"
-        style={{ fontSize: Math.max(8, Math.round(iconSizePx * 0.6)) }}
+        style={{ fontSize: SKIP_LABEL_FONT_PX }}
       >
         {seconds}
       </span>

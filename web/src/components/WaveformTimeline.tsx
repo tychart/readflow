@@ -54,12 +54,6 @@ export interface WaveformTimelineProps {
   onSeek: (chunkIndex: number, seekSeconds: number) => void;
   /** Called when a slot is clicked (not a seek). */
   onClickChunk?: (chunkIndex: number) => void;
-  /**
-   * Scroll progress from 0 to 1.
-   * 0 = full height with labels/separators
-   * 1 = compact height, no labels/separators
-   */
-  scrollProgress: number;
 }
 
 /* ── Component ────────────────────────────────────────────── */
@@ -80,9 +74,7 @@ export function WaveformTimeline({
   renderedDurationSeconds,
   onSeek,
   onClickChunk,
-  scrollProgress,
 }: WaveformTimelineProps) {
-  const compact = scrollProgress > 0.95;
   const seekingPointerIdRef = useRef<number | null>(null);
   const suppressClickRef = useRef<number | null>(null);
   const { attachRef, elementRef: containerRef, width: containerWidth } =
@@ -193,8 +185,11 @@ export function WaveformTimeline({
     [handleActivate, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp],
   );
 
-  // Smooth height interpolation: 80px (h-20) → 40px (h-10)
-  const timelineHeight = Math.round(80 - scrollProgress * 40);
+  // Smooth height interpolation driven by the sticky bar's scroll progress
+  // (80px → 40px). Kept in CSS so no React render happens per scroll frame, and
+  // so there is no threshold at which the height flips.
+  const timelineHeight =
+    "calc(80px - var(--scroll-progress, 0) * 40px)";
   const barStep = barStepPx(BAR_WIDTH_PX, BAR_GAP_PX);
   // The fill follows the pointer during a drag; otherwise it tracks the real
   // playback position (both in job-timeline coordinates).
@@ -232,7 +227,7 @@ export function WaveformTimeline({
           <WaveformSlot
             barCount={barCount}
             bars={waveformForSlot(waveforms.get(slot.chunkIndex), slot, barCount)}
-            compact={compact}
+            fadeLabels
             interaction={interaction}
             key={slot.chunkIndex}
             playheadSeconds={effectivePlayheadSeconds}

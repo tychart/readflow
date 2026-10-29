@@ -35,7 +35,6 @@ function buildProps(overrides: Partial<PlaybarProps> = {}): PlaybarProps {
     onDownload: vi.fn(),
     totalChunks: 3,
     writtenChunks: 3,
-    scrollProgress: 0,
     ...overrides,
   };
 }
@@ -117,15 +116,18 @@ describe("Playbar timeline and metadata", () => {
     expect(screen.getByRole("button", { name: /download/i })).toBeInTheDocument();
   });
 
-  test("renders the settings slot so it survives the compact fade", () => {
+  test("keeps the settings slot out of the row that fades away on scroll", () => {
+    // The metadata row is the element that fades/collapses (`playbar-meta`), so
+    // the gear must not live inside it or it would become unreachable once the
+    // bar compacts.
     render(
       <Playbar
-        {...buildProps({
-          scrollProgress: 1,
-          settingsSlot: <span data-testid="settings-control">gear</span>,
-        })}
+        {...buildProps({ settingsSlot: <span data-testid="settings-control">gear</span> })}
       />,
     );
-    expect(screen.getByTestId("settings-control")).toBeInTheDocument();
+
+    const gear = screen.getByTestId("settings-control");
+    expect(gear).toBeInTheDocument();
+    expect(screen.getByTestId("playbar-meta")).not.toContainElement(gear);
   });
 });

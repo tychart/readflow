@@ -79,6 +79,26 @@ body {
   min-height: 100vh;
 }
 
+/**
+ * Scroll anchoring is deliberately OFF.
+ *
+ * The sticky header and playbar shrink as a *function of* the scroll position,
+ * which means scrolling them makes the document shorter. Chrome's scroll
+ * anchoring treats that as content moving under the user and compensates by
+ * scrolling back up — which lowers the scroll offset, which expands the bar
+ * again, which pushes the content back down. That feedback loop is what made the
+ * reader playbar flip between expanded and compact repeatedly mid-shrink, and it
+ * is far more visible on phones, where a fling generates a long stream of those
+ * corrections.
+ *
+ * Nothing in this app is inserted above the viewport (chunks append below), so
+ * anchoring buys nothing here and only fights the intended scroll-linked
+ * collapse. Pinned by the "playbar shrinks continuously" e2e test.
+ */
+html {
+  overflow-anchor: none;
+}
+
 .app-shell {
   min-height: 100vh;
 }

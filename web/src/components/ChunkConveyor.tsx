@@ -293,7 +293,6 @@ export function ChunkConveyor({
       <WaveformSlot
         barCount={barCount}
         bars={waveformForSlot(waveforms.get(slot.chunkIndex), slot, barCount)}
-        compact={false}
         interaction={CONVEYOR_INTERACTION}
         interactive={false}
         key={slot.chunkIndex}

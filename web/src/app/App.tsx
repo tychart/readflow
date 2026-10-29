@@ -8,6 +8,7 @@ import { ReaderPage } from "../features/reader/ReaderPage";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useAppStore } from "../state/store";
 import { useTheme } from "../hooks/useTheme";
+import { useScrollProgressVar } from "../hooks/useScrollProgress";
 import type { WebSocketStatus } from "../types/events";
 import readflowIcon from "../assets/brand/readflow-icon.svg";
 import readflowLockupDark from "../assets/brand/readflow-lockup-dark.svg";
@@ -95,8 +96,6 @@ function ConnectionBadge() {
 
 /* ── Navbar scroll shrink ─────────────────────────────────────── */
 
-/** Scroll range (px) over which the expanded jobs-page navbar collapses. Mirrors the reader playbar. */
-const NAVBAR_SHRINK_SCROLL_RANGE = 220;
 /** Expanded (top of jobs page) and compact (scrolled / other pages) navbar heights in px. */
 const NAVBAR_EXPANDED_HEIGHT = 96;
 const NAVBAR_COMPACT_HEIGHT = 56;
@@ -109,19 +108,19 @@ function Shell() {
   // Periodically re-render to update the "seconds ago" display
   const [, forceUpdate] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [scrollProgress, setScrollProgress] = useState(0);
 
-  // Collapse the expanded navbar progressively as the user scrolls, mirroring
-  // the reader playbar's scroll-linked shrinking behavior.
-  useEffect(() => {
-    const handleScroll = () => {
-      const y = window.scrollY || 0;
-      setScrollProgress(Math.min(1, Math.max(0, y / NAVBAR_SHRINK_SCROLL_RANGE)));
-    };
-    handleScroll();
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, []);
+  // The expanded brand (lockup + tagline) only appears at the top of the jobs
+  // page; every other route keeps the compact navbar.
+  const isJobsPage = location.pathname === "/";
+
+  // Collapse the navbar as the user scrolls by writing progress into a CSS
+  // custom property instead of component state: a scroll-rate re-render of the
+  // whole shell (and the page inside it) is pure waste. Routes other than the
+  // jobs page pin the value at 1, i.e. fully compact.
+  const attachNavbarProgress = useScrollProgressVar<HTMLElement>({
+    variable: "--navbar-progress",
+    forced: isJobsPage ? undefined : 1,
+  });
 
   useEffect(() => {
     timerRef.current = setInterval(() => forceUpdate((n) => n + 1), 10_000);
@@ -130,19 +129,6 @@ function Shell() {
     };
   }, []);
 
-  // The expanded brand (lockup + tagline) only appears at the top of the jobs
-  // page; every other route keeps the compact navbar.
-  const isJobsPage = location.pathname === "/";
-  const progress = isJobsPage ? scrollProgress : 1;
-  const navbarHeight = Math.round(
-    NAVBAR_EXPANDED_HEIGHT - progress * (NAVBAR_EXPANDED_HEIGHT - NAVBAR_COMPACT_HEIGHT),
-  );
-  const lockupOpacity = isJobsPage ? 1 - progress : 0;
-  const brandRowOpacity = isJobsPage ? progress : 1;
-  const lockupVisible = isJobsPage && progress < 1;
-  // Only intercept pointer events while the lockup is the dominant element;
-  // once it fades below half, clicks should reach the nav/brand beneath.
-  const lockupInteractive = lockupOpacity >= 0.5;
   const lockupSrc = theme === "dark" ? readflowLockupDark : readflowLockupLight;
 
   return (
@@ -151,39 +137,44 @@ function Shell() {
       <header
         className="sticky top-0 z-50 bg-[var(--surface)]/80 backdrop-blur-md"
         data-testid="navbar"
+        ref={attachNavbarProgress}
         style={{
-          height: `${navbarHeight}px`,
-          borderBottom: progress > 0.05 ? "1px solid var(--line)" : "1px solid transparent",
+          height: `calc(${NAVBAR_EXPANDED_HEIGHT}px - var(--navbar-progress, 1) * ${
+            NAVBAR_EXPANDED_HEIGHT - NAVBAR_COMPACT_HEIGHT
+          }px)`,
         }}
       >
+        {/* Hairline border — fades in with the collapse instead of being toggled
+            on a threshold (a toggle repainted the header mid-scroll). */}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-[var(--line)]"
+          style={{ opacity: "var(--navbar-progress, 1)" }}
+        />
         <div className="relative mx-auto flex h-full max-w-7xl items-center justify-between px-4 md:px-6">
-          {/* Expanded brand link — the full lockup overlays the compact brand
-              while visible, so it never pushes the layout around. Hidden on
-              small screens where it would crowd the nav. */}
-          <Link
-            aria-hidden={!lockupVisible}
-            aria-label="ReadFlow home"
-            className={`absolute left-0 top-1/2 hidden h-12 w-auto -translate-y-1/2 md:block md:h-16 ${
-              lockupInteractive ? "" : "pointer-events-none"
-            }`}
-            style={{ opacity: lockupOpacity }}
-            tabIndex={lockupInteractive ? undefined : -1}
-            to="/"
+          {/* Expanded brand lockup — a decorative overlay behind the compact
+              brand link (which is the real, always-present home link), so it
+              never pushes layout around and needs no interactivity of its own.
+              Hidden on small screens where it would crowd the nav. */}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 top-1/2 hidden h-12 w-auto -translate-y-1/2 md:block md:h-16"
+            data-testid="navbar-lockup"
+            style={{ opacity: "calc(1 - var(--navbar-progress, 1))" }}
           >
             <img
-              alt="ReadFlow — Turn your reading into listening"
+              alt=""
               className="h-full w-auto"
               draggable={false}
               src={lockupSrc}
             />
-          </Link>
+          </span>
 
           {/* Compact brand — always present; cross-fades under the lockup */}
           <Link
-            aria-hidden={lockupVisible}
             aria-label="ReadFlow home"
             className="flex items-center transition hover:opacity-80"
-            style={{ opacity: brandRowOpacity }}
+            style={{ opacity: "var(--navbar-progress, 1)" }}
             to="/"
           >
             <img

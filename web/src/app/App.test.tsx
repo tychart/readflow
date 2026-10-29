@@ -55,12 +55,20 @@ function setScrollY(value: number) {
   });
 }
 
-/** The expanded-brand link that contains the lockup image. */
-function lockupBrandLink(): HTMLElement {
-  const lockup = screen.getByAltText(/turn your reading into listening/i);
-  const link = lockup.closest("a");
-  expect(link).not.toBeNull();
-  return link as HTMLElement;
+/**
+ * The expanded brand lockup. It is decorative (the compact brand link beside it
+ * is the real, always-present home link), so it is always aria-hidden.
+ */
+function navbarLockup(): HTMLElement {
+  return screen.getByTestId("navbar-lockup");
+}
+
+/**
+ * Collapse progress the navbar is currently rendering, read off the custom
+ * property `useScrollProgressVar` writes (the geometry itself is a CSS calc).
+ */
+function navbarProgress(): string {
+  return screen.getByTestId("navbar").style.getPropertyValue("--navbar-progress");
 }
 
 function seedStore() {
@@ -264,8 +272,13 @@ test("jobs page navbar is expanded with the full lockup at the top", async () =>
     await Promise.resolve();
   });
 
-  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "96px" });
-  expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "false");
+  // Height is a CSS calc driven by the progress variable, so nothing re-renders
+  // per scroll frame and no size flips at a threshold.
+  expect(navbarProgress()).toBe("0.000");
+  expect(screen.getByTestId("navbar").style.height).toBe(
+    "calc(96px - var(--navbar-progress, 1) * 40px)",
+  );
+  expect(navbarLockup()).toHaveAttribute("aria-hidden", "true");
   // Nav tabs stay visible even while the navbar is expanded.
   expect(screen.getByRole("link", { name: "Jobs" })).toBeVisible();
   expect(screen.getByRole("link", { name: "Admin" })).toBeVisible();
@@ -277,20 +290,23 @@ test("navbar shrinks smoothly with scroll and collapses to icon + wordmark", asy
     await Promise.resolve();
   });
 
-  // Halfway through the shrink range → lerped intermediate height.
+  // Halfway through the shrink range → lerped intermediate progress.
   setScrollY(110);
   act(() => {
     window.dispatchEvent(new Event("scroll"));
   });
-  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "76px" });
+  await waitFor(() => expect(navbarProgress()).toBe("0.500"));
 
-  // Fully scrolled → compact height; lockup hidden, compact row announced.
+  // Fully scrolled → fully compact: the lockup has faded out and the compact
+  // brand row (icon + wordmark) is the visible home link.
   setScrollY(300);
   act(() => {
     window.dispatchEvent(new Event("scroll"));
   });
-  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "56px" });
-  expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "true");
+  await waitFor(() => expect(navbarProgress()).toBe("1.000"));
+  // Exactly one accessible home link remains (the compact brand row); the lockup
+  // is decorative, so it never competes for the name or for clicks.
+  expect(screen.getByRole("link", { name: "ReadFlow home" })).toBeInTheDocument();
   expect(screen.getByText("ReadFlow")).toBeInTheDocument();
 });
 
@@ -302,6 +318,7 @@ test("non-jobs pages keep the compact navbar", async () => {
     await Promise.resolve();
   });
 
-  expect(screen.getByTestId("navbar")).toHaveStyle({ height: "56px" });
-  expect(lockupBrandLink()).toHaveAttribute("aria-hidden", "true");
+  // Pinned at 1 regardless of scroll: the value is forced, not scroll-derived.
+  expect(navbarProgress()).toBe("1.000");
+  expect(navbarLockup()).toHaveAttribute("aria-hidden", "true");
 });

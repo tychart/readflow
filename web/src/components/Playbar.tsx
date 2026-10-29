@@ -69,13 +69,6 @@ export interface PlaybarProps {
   /** Number of chunks currently written/ready. */
   writtenChunks: number;
   /**
-   * Scroll progress from 0 to 1.
-   * 0 = fully expanded (at top of page)
-   * 1 = fully compact (scrolled past playbar)
-   * Drives smooth inline-style transitions on padding, sizes, opacity.
-   */
-  scrollProgress: number;
-  /**
    * Reader settings control. Rendered outside the fading metadata row so it
    * stays reachable after the playbar compacts.
    */
@@ -97,6 +90,21 @@ export interface PlaybarProps {
    */
   showTransport?: boolean;
 }
+
+/* ── Scroll-linked geometry ───────────────────────────────── */
+
+/**
+ * A CSS length that interpolates between the expanded (top of page) value and
+ * the compact (scrolled) one.
+ *
+ * Progress arrives as the `--scroll-progress` custom property, written onto the
+ * sticky wrapper by `useScrollProgressVar`. Keeping the interpolation in CSS is
+ * intentional: this value changes on every scroll frame, and computing it in
+ * React (or routing it through state) re-rendered the page per frame. It also
+ * means there are no hard thresholds left to flip a size on and off.
+ */
+const shrink = (expandedPx: number, compactPx: number) =>
+  `calc(${expandedPx}px - var(--scroll-progress, 0) * ${expandedPx - compactPx}px)`;
 
 /* ── Component ────────────────────────────────────────────── */
 
@@ -131,7 +139,6 @@ export function Playbar({
   isDownloading = false,
   totalChunks,
   writtenChunks,
-  scrollProgress,
   settingsSlot,
   showTransport = true,
   speedSlot,
@@ -199,31 +206,30 @@ export function Playbar({
   // the top bar and the phone dock cannot disagree.
 
   // ── Smooth interpolated values ────────────────────────────
-  // All animate linearly as scrollProgress goes 0 → 1
-  const containerPad = Math.round(20 - scrollProgress * 20); // 20px → 0px
-  const btnSize = Math.round(48 - scrollProgress * 12); // 48px → 36px
-  const iconSize = Math.round(16 - scrollProgress * 4); // 16px → 12px
-  const skipSize = Math.round(36 - scrollProgress * 8); // 36px → 28px
-  const skipIconSize = Math.round(14 - scrollProgress * 3); // 14px → 11px
-  const transportGap = Math.max(2, Math.round(8 - scrollProgress * 4)); // 8px → 4px
-  const gap = 12 - scrollProgress * 4;                      // 12px → 8px
-  const metaOpacity = Math.max(0, 1 - scrollProgress * 1.2); // fades out by ~0.83
-  // Fade the card border/background out as compact approaches
-  const cardVisibility = 1 - Math.min(1, scrollProgress * 1.5);
+  // All interpolate linearly as --scroll-progress goes 0 → 1, in CSS, so no
+  // React render is needed per scroll frame.
+  const containerPad = shrink(20, 0); // 20px → 0px
+  const btnSize = shrink(48, 36); // 48px → 36px
+  const iconSize = shrink(16, 12); // 16px → 12px
+  const skipSize = shrink(36, 28); // 36px → 28px
+  const skipIconSize = shrink(14, 11); // 14px → 11px
+  const transportGap = shrink(8, 4); // 8px → 4px
+  const gap = shrink(12, 8); // 12px → 8px
 
   return (
     <div
       aria-label="Playback controls"
       className="relative flex w-full flex-col"
       role="toolbar"
-      style={{ gap: `${gap}px` }}
+      style={{ gap }}
       tabIndex={-1}
     >
-      {/* Card background/border — fades out as scrollProgress increases */}
+      {/* Card background/border — fades out as the bar compacts. Absolute, so it
+          never contributes layout. */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 rounded-xl border border-[var(--line)] bg-[var(--surface)]"
-        style={{ opacity: cardVisibility }}
+        style={{ opacity: "calc(1 - var(--scroll-progress, 0) * 1.5)" }}
       />
 
       {/* Top row: transport + timeline + settings.
@@ -231,30 +237,30 @@ export function Playbar({
           the metadata row below, which is a sibling stacking context at z-10. */}
       <div
         className="relative z-20 flex items-center gap-3"
-        style={{ padding: `${containerPad}px` }}
+        data-testid="playbar-top-row"
+        style={{ padding: containerPad }}
       >
         {/* Transport: −10s / play-pause / +10s. Phones render these in the
             bottom dock instead, so this bar stays the overview. */}
         {showTransport ? (
           <TransportControls
-            gapPx={transportGap}
+            gap={transportGap}
             onPause={onPause}
             onPlay={onPlay}
             onSkip={onSkip}
-            playButtonSizePx={btnSize}
-            playIconSizePx={iconSize}
+            playButtonSize={btnSize}
+            playIconSize={iconSize}
             playLabel={playButtonLabel}
             showPauseIcon={isPlaying || playIntent}
             showSpinner={showSpinner}
-            skipButtonSizePx={skipSize}
-            skipIconSizePx={skipIconSize}
+            skipButtonSize={skipSize}
+            skipIconSize={skipIconSize}
           />
         ) : null}
 
         {/* Waveform Timeline */}
         <div className="min-w-0 flex-1">
           <WaveformTimeline
-            scrollProgress={scrollProgress}
             playheadSeconds={displayTimeSeconds}
             onClickChunk={handleTimelineClick}
             onSeek={handleTimelineSeek}
@@ -271,16 +277,19 @@ export function Playbar({
         {settingsSlot ? <div className="shrink-0">{settingsSlot}</div> : null}
       </div>
 
-      {/* Bottom row: metadata + controls — fades out progressively */}
+      {/* Bottom row: metadata + controls — fades out and collapses progressively.
+          The max-height interpolation replaces the old hard 50px→0px snap, which
+          flipped the row in and out of layout at one scroll offset. */}
       <div
         className="relative z-10 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-[var(--ink-secondary)]"
+        data-testid="playbar-meta"
         style={{
-          opacity: metaOpacity,
-          maxHeight: metaOpacity > 0 ? '50px' : '0px',
-          overflow: 'hidden',
-          paddingLeft: `${containerPad}px`,
-          paddingRight: `${containerPad}px`,
-          paddingBottom: `${containerPad > 0 ? containerPad : 0}px`,
+          opacity: "calc(1 - var(--scroll-progress, 0) * 1.2)",
+          maxHeight: shrink(50, 0),
+          overflow: "hidden",
+          paddingLeft: containerPad,
+          paddingRight: containerPad,
+          paddingBottom: containerPad,
         }}
       >
         {/* Left: time display — uses original timeline coords, fixed-width */}

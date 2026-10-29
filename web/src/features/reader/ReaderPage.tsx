@@ -11,6 +11,7 @@ import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
 import { useReaderSettings, useReaderMotion } from "../../hooks/useReaderSettings";
+import { useScrollProgressVar } from "../../hooks/useScrollProgress";
 import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
 import { ApiError, api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
@@ -897,20 +898,12 @@ export function ReaderPage() {
     }
   }, [activeProgress.activeChunkIndex]);
 
-  // ── Scroll-triggered progressive playbar shrink — must be before early returns ──
-  const [scrollProgress, setScrollProgress] = useState(0);
-
-  useEffect(() => {
-    // Progressively shrink the playbar as the user scrolls down.
-    // At 0px scroll: fully expanded. At ~220px scroll: fully compact.
-    const handleScroll = () => {
-      const progress = Math.min(1, Math.max(0, window.scrollY / 220));
-      setScrollProgress(progress);
-    };
-    handleScroll();
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, []);
+  // ── Scroll-linked playbar compaction — must be before early returns ──
+  // The progress value is written as the `--scroll-progress` custom property on
+  // the sticky wrapper below, NOT held in state: it changes on every scroll
+  // frame, and re-rendering (and re-laying-out) the page per frame is what made
+  // the bar stutter and flicker mid-shrink on a phone.
+  const attachScrollProgress = useScrollProgressVar();
 
   // ── Reader text layout — must be before early returns ─────
   // Slicing the document is memoized so playback ticks (which re-render the
@@ -981,33 +974,34 @@ export function ReaderPage() {
 
     content = (
       <>
-      {/* Sticky playbar wrapper — flush against the app header */}
-      <div className="sticky top-[56px] z-30 w-full">
-        {/* Background layer — fades in smoothly with scroll progress */}
+      {/* Sticky playbar wrapper — flush against the app header. Owns the
+          `--scroll-progress` value every collapsing part below interpolates on. */}
+      <div className="sticky top-[56px] z-30 w-full" ref={attachScrollProgress}>
+        {/* Background layer — a static surface whose opacity follows scroll.
+            Deliberately no CSS transition and no backdrop blur: the value is
+            already continuous, a transition would just lag behind and restart
+            every frame, and animating `backdrop-filter` forces the phone GPU to
+            re-blur a full-width layer on every scroll frame (the flicker). */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 transition-all duration-300"
+          className="pointer-events-none absolute inset-0"
           style={{
             background: "var(--surface)",
-            opacity: scrollProgress * 0.95,
-            backdropFilter:
-              scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : "none",
-            WebkitBackdropFilter:
-              scrollProgress > 0.05 ? `blur(${Math.round(scrollProgress * 12)}px)` : "none",
-            borderBottom: scrollProgress > 0.05 ? "1px solid var(--line)" : "1px solid transparent",
-            boxShadow: scrollProgress > 0.5 ? "0 1px 3px rgba(0,0,0,0.3)" : "none",
+            opacity: "calc(var(--scroll-progress, 0) * 0.95)",
+            borderBottom: "1px solid var(--line)",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
           }}
         />
         {/* Content — padding shrinks progressively */}
         <div
           className="relative z-10 mx-auto w-full"
           style={{
-            padding: `${Math.round(20 - scrollProgress * 12)}px ${Math.round(16 - scrollProgress * 4)}px`,
+            padding:
+              "calc(20px - var(--scroll-progress, 0) * 12px) calc(16px - var(--scroll-progress, 0) * 4px)",
           }}
         >
           <Playbar
             canDownload={canDownloadRenderedAudio}
-            scrollProgress={scrollProgress}
             displayDurationSeconds={displayDurationSeconds}
             displayRenderedDurationSeconds={displayRenderedDurationSeconds}
             displayTimeSeconds={displayTimeSeconds}
