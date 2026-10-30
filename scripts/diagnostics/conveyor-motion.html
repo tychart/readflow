@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReadFlow — minimal motion diagnostic</title>
+  <style>
+    :root { color-scheme: dark; font: 14px system-ui; background: #101018; color: #ddd; }
+    body { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+    h1 { font-size: 22px; }
+    button, select { font: inherit; padding: 7px 12px; margin: 0 5px 6px 0; }
+    label { display: inline-block; margin: 0 12px 8px 0; }
+    .strip { height: 64px; position: relative; overflow: hidden; background: #1b1b24; margin: 6px 0 14px; }
+    .track { position: absolute; inset: 0; will-change: transform; }
+    .shape { position: absolute; }
+    .title { margin: 12px 0 0; font-weight: 600; }
+    .marker { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: #fff8; }
+    canvas, svg { display: block; width: 100%; height: 100%; }
+    #status { color: #ffd080; }
+  </style>
+</head>
+<body>
+  <h1>Minimal movement test — no app or player</h1>
+  <p>Five strips share one constant-speed clock. Compare which objects shimmer or move unevenly.
+    The intentional reset every 77 seconds is not a dropped frame.</p>
+  <label>Renderer <select id="renderer"><option value="dom">DOM rectangles</option><option value="canvas">Canvas vectors</option><option value="svg">SVG vectors</option></select></label>
+  <label><input id="filter" type="checkbox" checked> DOM identity filter</label>
+  <label><input id="mask" type="checkbox"> Edge fade</label>
+  <label>Speed <select id="speed"><option value="5.2">5.2 px/s (reader)</option><option value="20">20 px/s</option><option value="60">60 px/s</option></select></label>
+  <button id="pause">Pause</button>
+  <p id="status"></p>
+  <main id="strips"></main>
+  <script>
+    // Standalone intentionally: no framework, imports, audio, network or smoothing.
+    const names = ['1 — One solid block', '2 — Chunk backgrounds only', '3 — Square waveform bars', '4 — Rounded waveform bars', '5 — Rounded bars + chunk labels'];
+    const rows = names.map((name) => {
+      const title = document.createElement('p'); title.className = 'title'; title.textContent = name;
+      const strip = document.createElement('div'); strip.className = 'strip';
+      document.querySelector('#strips').append(title, strip);
+      return { strip, width: 0 };
+    });
+    const renderer = document.querySelector('#renderer');
+    const filter = document.querySelector('#filter');
+    const mask = document.querySelector('#mask');
+    const speed = document.querySelector('#speed');
+    const status = document.querySelector('#status');
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const widths = [220.3, 197.7, 240.4, 212.6, 230.2, 203.8, 217.1, 239.6, 220.3];
+    const state = window.__minimal = { events: [], frames: [], paused: false, seconds: 0, x: 0 };
+    function shapes(level) {
+      if (level === 0) return [{ x: 400, y: 12, w: 180, h: 40, color: '#f59e0b', radius: 0 }];
+      const result = [];
+      let left = 0;
+      widths.forEach((width, chunk) => {
+        result.push({ x: left, y: 0, w: width - 1, h: 64, color: chunk % 2 ? '#30303a' : '#242430', radius: 0 });
+        if (level >= 2) {
+          const count = Math.floor((width - 8) / 5);
+          for (let i = 0; i < count; i++) {
+            const height = 5 + 46 * (0.5 + 0.5 * Math.sin(i * 1.71 + chunk * 2.3));
+            result.push({ x: left + 4 + i * 5, y: 60 - height, w: 3, h: height, color: chunk % 2 ? '#72727d' : '#f59e0b', radius: level >= 3 ? 1.5 : 0 });
+          }
+        }
+        if (level >= 4) result.push({ x: left + width / 2, y: 56, text: String(chunk + 1), color: '#ffffff90' });
+        left += width;
+      });
+      return result;
+    }
+    const geometry = names.map((_, i) => shapes(i));
+    function build() {
+      state.events.push({ t: performance.now(), renderer: renderer.value, filter: filter.checked, mask: mask.checked, speed: speed.value });
+      rows.forEach((row, level) => {
+        row.strip.replaceChildren();
+        row.strip.style.maskImage = mask.checked ? 'linear-gradient(to right, transparent, black 8%, black 92%, transparent)' : 'none';
+        row.track = null; row.ctx = null; row.svg = null;
+        if (renderer.value === 'canvas') {
+          const canvas = document.createElement('canvas'); row.strip.append(canvas);
+          row.canvas = canvas; row.ctx = canvas.getContext('2d');
+        } else if (renderer.value === 'svg') {
+          const svg = document.createElementNS(svgNS, 'svg');
+          const group = document.createElementNS(svgNS, 'g'); svg.append(group); row.strip.append(svg); row.svg = group;
+          for (const shape of geometry[level]) {
+            const node = document.createElementNS(svgNS, shape.text ? 'text' : 'rect');
+            node.setAttribute('x', shape.x); node.setAttribute('y', shape.y); node.setAttribute('fill', shape.color);
+            if (shape.text) { node.textContent = shape.text; node.setAttribute('text-anchor', 'middle'); node.setAttribute('font-size', '9'); }
+            else { node.setAttribute('width', shape.w); node.setAttribute('height', shape.h); node.setAttribute('rx', shape.radius); }
+            group.append(node);
+          }
+        } else {
+          const track = document.createElement('div'); track.className = 'track';
+          track.style.filter = filter.checked ? 'opacity(1)' : 'none'; row.strip.append(track); row.track = track;
+          for (const shape of geometry[level]) {
+            const node = document.createElement('div'); node.className = 'shape';
+            node.style.cssText = `left:${shape.x}px;top:${shape.y}px;`;
+            if (shape.text) { node.textContent = shape.text; node.style.cssText += `color:${shape.color};font-size:9px;transform:translate(-50%,-100%)`; }
+            else node.style.cssText += `width:${shape.w}px;height:${shape.h}px;background:${shape.color};border-radius:${shape.radius}px`;
+            track.append(node);
+          }
+        }
+        const marker = document.createElement('div'); marker.className = 'marker'; row.strip.append(marker);
+      });
+    }
+    for (const control of [renderer, filter, mask, speed]) control.addEventListener('change', build);
+    document.querySelector('#pause').onclick = (event) => { state.paused = !state.paused; event.target.textContent = state.paused ? 'Resume' : 'Pause'; };
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) rows.find(row => row.strip === entry.target).width = entry.contentRect.width;
+    });
+    for (const row of rows) observer.observe(row.strip);
+    build();
+    let last = performance.now();
+    requestAnimationFrame(function tick(now) {
+      const dt = (now - last) / 1000; last = now;
+      if (!state.paused) state.seconds += Math.min(0.1, dt);
+      const x = -((state.seconds * Number(speed.value)) % 400); state.x = x;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.track) row.track.style.transform = `translate3d(${x}px,0,0)`;
+        if (row.svg) row.svg.setAttribute('transform', `translate(${x},0)`);
+        if (row.ctx) {
+          const dpr = devicePixelRatio;
+          if (row.canvas.width !== Math.round(row.width * dpr) || row.canvas.height !== Math.round(64 * dpr)) {
+            row.canvas.width = Math.round(row.width * dpr); row.canvas.height = Math.round(64 * dpr);
+          }
+          const ctx = row.ctx; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, row.width, 64); ctx.translate(x, 0);
+          for (const shape of geometry[i]) {
+            ctx.fillStyle = shape.color;
+            if (shape.text) { ctx.font = '9px system-ui'; ctx.textAlign = 'center'; ctx.fillText(shape.text, shape.x, shape.y); }
+            else { ctx.beginPath(); ctx.roundRect(shape.x, shape.y, shape.w, shape.h, shape.radius); ctx.fill(); }
+          }
+        }
+      }
+      if (state.frames.length < 100000) state.frames.push({ t: now, dt, x, renderer: renderer.value, dpr: devicePixelRatio, visible: document.visibilityState });
+      // Avoid making readout text a second continuously repainted animation.
+      const description = `${renderer.value} · device scale ${devicePixelRatio} · ${speed.value} px/s`;
+      if (status.textContent !== description) status.textContent = description;
+      requestAnimationFrame(tick);
+    });
+  </script>
+</body>
+</html>

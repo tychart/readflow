@@ -279,8 +279,13 @@ export interface ReaderTextBodyProps {
 /**
  * The document body: one memoized block per chunk segment plus dimmed tail
  * blocks, or an empty-state message before any chunk exists.
+ *
+ * Memoized as a whole: its props are the chunk *states*, which change only when
+ * the playhead crosses a chunk boundary. The reader re-renders 20x/s while
+ * playing, and walking every chunk block in a book-length document on each of
+ * those ticks is what made long documents drop frames.
  */
-export function ReaderTextBody({
+export const ReaderTextBody = memo(function ReaderTextBody({
   segments,
   activeChunkIndex,
   playedIndexes,
@@ -316,4 +321,4 @@ export function ReaderTextBody({
       )}
     </>
   );
-}
+});

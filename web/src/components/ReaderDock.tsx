@@ -11,6 +11,8 @@ export interface ReaderDockProps {
   maxSeekSeconds: number;
   motion: "animated" | "reduced";
   windowSizeSetting: ConveyorWindowSize;
+  /** Playback rate, so the conveyor slides at the same speed as the audio. */
+  playbackRate: number;
   isAutoplayBlocked: boolean;
   /** The client is still fetching/priming the requested audio. */
   isLoadingAudio: boolean;
@@ -40,6 +42,7 @@ export function ReaderDock({
   maxSeekSeconds,
   motion,
   windowSizeSetting,
+  playbackRate,
   isAutoplayBlocked,
   isLoadingAudio,
   isPlaying,
@@ -82,9 +85,11 @@ export function ReaderDock({
           />
         </div>
         <ChunkConveyor
+          isPlaying={isPlaying}
           maxSeekSeconds={maxSeekSeconds}
           motion={motion}
           onSeek={onSeek}
+          playbackRate={playbackRate}
           playheadSeconds={playheadSeconds}
           slots={slots}
           stripHeightPx={56}

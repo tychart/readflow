@@ -1,8 +1,39 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { createConveyorScene, paintConveyor } from "../lib/conveyor-canvas";
 import type { TimelineSlotData } from "../types/timeline";
 import { ChunkConveyor } from "./ChunkConveyor";
+
+vi.mock("../lib/conveyor-canvas", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/conveyor-canvas")>();
+  return {
+    ...actual,
+    createConveyorScene: vi.fn(actual.createConveyorScene),
+    paintConveyor: vi.fn(),
+  };
+});
+
+beforeEach(() => {
+  vi.stubGlobal("matchMedia", vi.fn((media: string) => ({
+    media,
+    matches: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })));
+  vi.mocked(createConveyorScene).mockClear();
+  vi.mocked(paintConveyor).mockClear();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    setTransform: vi.fn(),
+  } as unknown as CanvasRenderingContext2D);
+});
+
+/** Last vector draw, not a CSS transform or a synthetic DOM playhead. */
+function lastPaint() {
+  const call = vi.mocked(paintConveyor).mock.calls.at(-1);
+  if (!call) throw new Error("Expected the conveyor to paint");
+  return { scene: call[1], viewport: call[2] };
+}
 
 /* jsdom has no PointerEvent; the strip is driven entirely by pointer input. */
 class TestPointerEvent extends MouseEvent {
@@ -48,6 +79,8 @@ function buildProps(overrides: Partial<Parameters<typeof ChunkConveyor>[0]> = {}
     playheadSeconds: 6,
     maxSeekSeconds: 16,
     motion: "animated" as const,
+    isPlaying: false,
+    playbackRate: 1,
     windowSizeSetting: "auto" as const,
     onSeek: vi.fn(),
     stripHeightPx: 64,
@@ -93,25 +126,17 @@ describe("ChunkConveyor rendering", () => {
     expect(screen.getByTestId("conveyor-playhead")).toBeInTheDocument();
   });
 
-  test("renders the strip as one group with decorative slots, not nested sliders", () => {
+  test("draws decorative vectors in one fixed canvas, not translated DOM slots", () => {
     mockLayout();
     const { container } = render(<ChunkConveyor {...buildProps()} />);
-
+    const canvas = screen.getByTestId("conveyor-canvas");
     expect(strip()).toHaveAttribute("role", "group");
-    expect(container.querySelectorAll('[role="slider"]')).toHaveLength(0);
-    // The slots are still drawn, just without their own semantics.
-    expect(container.querySelectorAll("[data-slot-state]").length).toBeGreaterThan(0);
-  });
-
-  test("draws the chunks in timeline order on a sliding track", () => {
-    mockLayout();
-    const { container } = render(<ChunkConveyor {...buildProps({ playheadSeconds: 0 })} />);
-
-    const rendered = Array.from(container.querySelectorAll<HTMLElement>("[data-waveform-slot]"));
-    const indexes = rendered.map((element) => Number(element.dataset.waveformSlot));
-    expect(indexes).toEqual([...indexes].sort((a, b) => a - b));
-    // The whole strip is one translated track.
-    expect(screen.getByTestId("conveyor-track").style.transform).toContain("translate3d");
+    expect(canvas.tagName).toBe("CANVAS");
+    expect(canvas).toHaveAttribute("aria-hidden", "true");
+    expect(canvas.style.transform).toBe("");
+    expect(canvas.style.filter).toBe("");
+    expect(container.querySelectorAll('[role="slider"], [data-waveform-slot]')).toHaveLength(0);
+    expect(lastPaint().scene.slots.map(slot => slot.chunkIndex)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   test("shows an empty state before any chunk is planned", () => {
@@ -127,21 +152,11 @@ describe("ChunkConveyor rendering", () => {
     const { unmount } = render(
       <ChunkConveyor {...buildProps({ playheadSeconds: 8, windowSizeSetting: 3 })} />,
     );
-    const wideSlot = screen.getByTestId("chunk-conveyor").querySelector<HTMLElement>(
-      '[data-waveform-slot="1"]',
-    );
-    const wideWidth = wideSlot?.style.width;
+    const wideScale = lastPaint().scene.pxPerSecond;
     unmount();
 
     render(<ChunkConveyor {...buildProps({ playheadSeconds: 8, windowSizeSetting: 5 })} />);
-    const narrowSlot = screen.getByTestId("chunk-conveyor").querySelector<HTMLElement>(
-      '[data-waveform-slot="1"]',
-    );
-
-    // 3 chunks in 800px is wider per chunk than 5 chunks in 800px.
-    expect(parseFloat(wideWidth ?? "0")).toBeGreaterThan(
-      parseFloat(narrowSlot?.style.width ?? "0"),
-    );
+    expect(wideScale).toBeGreaterThan(lastPaint().scene.pxPerSecond);
   });
 
   test("reduced motion snaps the strip to the chunk boundary instead of sliding", () => {
@@ -394,5 +409,134 @@ describe("ChunkConveyor tapping beyond gaps", () => {
 
     await waitFor(() => expect(onSeek).toHaveBeenCalledTimes(1));
     expect(onSeek).toHaveBeenCalledWith(1, 4);
+  });
+});
+
+/* ── Idle slide ───────────────────────────────────────────── */
+
+describe("ChunkConveyor idle slide", () => {
+  /**
+   * Deterministic frames, like the drag tests. The strip owns its own clock
+   * while playing, so the transform must keep moving *between* playhead
+   * reports instead of waiting for the next ~20Hz prop update.
+   */
+  let nowMs = 1000;
+  let pendingFrame: FrameRequestCallback | null = null;
+
+  function useDeterministicFrames() {
+    nowMs = 1000;
+    pendingFrame = null;
+    vi.spyOn(performance, "now").mockImplementation(() => nowMs);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      pendingFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {
+      pendingFrame = null;
+    });
+    return {
+      frame(ms = 1000 / 60) {
+        nowMs += ms;
+        const callback = pendingFrame;
+        pendingFrame = null;
+        if (callback) act(() => callback(nowMs));
+      },
+    };
+  }
+
+  /** Current painted origin in CSS px (the canvas itself never moves). */
+  function trackX(): number {
+    const { scene, viewport } = lastPaint();
+    return viewport.width / 2 - viewport.centerSeconds * scene.pxPerSecond;
+  }
+
+  test("advances on every animation frame between playhead reports", () => {
+    mockLayout();
+    const clock = useDeterministicFrames();
+    const props = buildProps({ isPlaying: true, playheadSeconds: 8 });
+    const { rerender } = render(<ChunkConveyor {...props} />);
+
+    // 800px / (4 chunks x 4s) = 50px per second.
+    const start = trackX();
+    clock.frame();
+    clock.frame();
+    clock.frame();
+    const afterThreeFrames = trackX();
+    // Three frames at 1x is 50ms of timeline = 2.5px. A prop-driven strip would
+    // still be sitting still here (the next report is ~50ms away).
+    expect(start - afterThreeFrames).toBeCloseTo(2.5, 0);
+
+    // A new report that is *behind* the predicted clock must not yank the strip
+    // back: it is the stale sample, and the strip has already travelled past it.
+    // The next frame still advances by roughly the normal 16.7ms (0.83px).
+    rerender(<ChunkConveyor {...props} playheadSeconds={8.02} />);
+    clock.frame();
+    // 50px/s for one 60Hz frame is 0.83px.
+    expect(afterThreeFrames - trackX()).toBeCloseTo(50 / 60, 1);
+  });
+
+  test("snaps to a seek instead of easing across the jump", () => {
+    mockLayout();
+    const clock = useDeterministicFrames();
+    const props = buildProps({ isPlaying: true, playheadSeconds: 8 });
+    const { rerender } = render(<ChunkConveyor {...props} />);
+    clock.frame();
+
+    // Centre at 12s with 50px/s: the track origin is 400 - 12 * 50 = -200px.
+    rerender(<ChunkConveyor {...props} playheadSeconds={12} />);
+    clock.frame();
+    expect(trackX()).toBeCloseTo(-200, 0);
+  });
+
+  test("stops driving frames when playback pauses", () => {
+    mockLayout();
+    const clock = useDeterministicFrames();
+    const props = buildProps({ isPlaying: true, playheadSeconds: 8 });
+    const { rerender } = render(<ChunkConveyor {...props} />);
+    clock.frame();
+    clock.frame();
+
+    rerender(<ChunkConveyor {...props} isPlaying={false} playheadSeconds={8} />);
+    const paused = trackX();
+    clock.frame();
+    clock.frame();
+    expect(trackX()).toBe(paused);
+  });
+});
+
+/* ── Tick cost ────────────────────────────────────────────── */
+
+describe("ChunkConveyor playback ticks", () => {
+  test("does not prepare geometry or paint from a playback report while the frame loop owns it", () => {
+    mockLayout();
+    const props = buildProps({ playheadSeconds: 6, isPlaying: true });
+    const { rerender } = render(<ChunkConveyor {...props} />);
+    vi.mocked(createConveyorScene).mockClear();
+    vi.mocked(paintConveyor).mockClear();
+
+    rerender(<ChunkConveyor {...props} playheadSeconds={6.1} />);
+
+    expect(createConveyorScene).not.toHaveBeenCalled();
+    expect(paintConveyor).not.toHaveBeenCalled();
+  });
+
+  test("redraws a paused seek without starting a frame loop", () => {
+    mockLayout();
+    const props = buildProps({ playheadSeconds: 6 });
+    const { rerender } = render(<ChunkConveyor {...props} />);
+    rerender(<ChunkConveyor {...props} playheadSeconds={9} />);
+    expect(lastPaint().viewport.centerSeconds).toBe(9);
+  });
+
+  test("updates backing pixels even when monitor density changes while paused", () => {
+    mockLayout();
+    vi.stubGlobal("devicePixelRatio", 1);
+    render(<ChunkConveyor {...buildProps()} />);
+    const canvas = screen.getByTestId("conveyor-canvas");
+    expect(canvas).toHaveAttribute("width", "800");
+    vi.stubGlobal("devicePixelRatio", 2);
+    fireEvent(window, new Event("resize"));
+    expect(canvas).toHaveAttribute("width", "1600");
+    expect(canvas).toHaveAttribute("height", "128");
   });
 });

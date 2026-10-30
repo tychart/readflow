@@ -10,7 +10,9 @@ import {
   generatePlaceholderWaveform,
   isNonFillState,
   isSlotDimmed,
+  playheadForSlot,
   pointerRatio,
+  SLOT_EDGE_EPSILON_SECONDS,
   secondsAtRatio,
   slotIndexAtSeconds,
   slotWidthPx,
@@ -160,5 +162,40 @@ describe("waveform sources", () => {
     expect(Array.from(waveformForSlot(undefined, { chunkIndex: 2, state: "ready" }, 16))).toEqual(
       Array.from(placeholder),
     );
+  });
+});
+
+describe("playheadForSlot", () => {
+  test("is constant outside the slot, so memoized slots skip playback ticks", () => {
+    // A slot at 10s..14s: before it, at it, and after it, the clamped value only
+    // depends on the slot — not on where playback actually is.
+    const before = [0, 4, 9.9].map((p) => playheadForSlot(p, 10, 4));
+    expect(new Set(before)).toEqual(new Set([10]));
+
+    const after = [14.1, 20, 500].map((p) => playheadForSlot(p, 10, 4));
+    expect(new Set(after)).toEqual(new Set([14 + SLOT_EDGE_EPSILON_SECONDS]));
+  });
+
+  test("passes the live playhead through while the slot is being played", () => {
+    expect(playheadForSlot(11.25, 10, 4)).toBe(11.25);
+    expect(playheadForSlot(10, 10, 4)).toBe(10);
+  });
+
+  test("lands just past the end so a played slot is still dimmed", () => {
+    const slot = { state: "played" as const, durationSeconds: 4 };
+    // Exactly at the boundary is *inside* the slot; just after it is past it.
+    expect(isSlotDimmed(slot, 10, playheadForSlot(14, 10, 4))).toBe(true);
+    expect(isSlotDimmed(slot, 10, playheadForSlot(13.9, 10, 4))).toBe(false);
+  });
+
+  test("still fills every bar of a slot that is entirely behind the playhead", () => {
+    const clamped = playheadForSlot(99, 10, 4);
+    expect(barFillFraction(clamped, 10, 12, 100)).toBe(1);
+    expect(barFillFraction(clamped, 12, 14, 100)).toBe(1);
+  });
+
+  test("fills nothing for a slot the playhead has not reached", () => {
+    const clamped = playheadForSlot(5, 10, 4);
+    expect(barFillFraction(clamped, 10, 12, 100)).toBe(0);
   });
 });

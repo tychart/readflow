@@ -262,7 +262,7 @@ Key files:
   media-speed extensions cannot discover or re-rate it)
 - `web/src/lib/media-window.ts` (pure: streaming-window thresholds, eviction range, buffered-range checks)
 - `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
-- `web/src/components/WaveformSlot.tsx` (the shared waveform look, used by both bars)
+- `web/src/components/WaveformSlot.tsx` (overview DOM bars), `web/src/lib/waveform-style.ts` (shared bar geometry), `web/src/lib/conveyor-canvas.ts` (conveyor vector painter)
 - `web/src/components/WaveformTimeline.tsx` (whole-document overview bar)
 - `web/src/components/ChunkConveyor.tsx` + `ReaderDock.tsx` (zoomed scrub strip; phone dock)
 - `web/src/components/Playbar.tsx` + `TransportControls.tsx` + `PlaybackButtons.tsx`
@@ -784,19 +784,38 @@ chunk at a time instead.
 
 Rendering rules:
 
-- The track is one `translate3d` on a single element and the **only** thing that
-animates: no layout changes per frame. The idle slide is smoothed by a 60ms linear
-transform transition because the playhead prop only updates at ~20Hz; the
-transition is switched off during a gesture so the track tracks the finger exactly.
-- `touch-action: pan-y` so vertical page scrolling still works over the strip.
-- The conveyor passes `interactive={false}` to `WaveformSlot`: gestures are handled
-at strip level (it needs the tap position, not the slot), and nesting ARIA sliders
-inside a slider is invalid. The chunk states are already exposed as real sliders by
-the main timeline.
-- Scale is duration-proportional at one global px/second from the average chunk
-duration, so scroll speed is constant and a 30s chunk draws wider than a 3s one.
-Do not re-derive priority or state in the conveyor; it consumes the same
-`TimelineSlotData[]` as the main bar.
+- **One stationary canvas, directly drawn vectors.** `conveyor-canvas.ts` draws
+  rounded bars, backgrounds, labels and fill at fractional coordinates. No DOM
+  slot translation, moving bitmap, identity filter, SVG fallback or UA sniff.
+  The overview still uses `WaveformSlot`; geometry is in `waveform-style.ts`.
+- Standalone reproduction: `scripts/diagnostics/conveyor-motion.html`. Open it
+  directly in a browser; no server or dependencies are needed.
+- Chosen by a **user-visible minimal reproduction**: at 5.2px/s every DOM shape
+  jittered, even a single rectangle; SVG rectangles were smooth but rounded
+  bars jittered; **all canvas vector rows were smooth**. At 20/60px/s the DOM
+  problem became imperceptible. The user confirmed the real canvas reader's
+  movement was perfectly smooth on the affected low-DPI display. The old
+  `filter: opacity(1)` improved probe scores but not the actual symptom.
+- **One painter/clock.** The playing rAF loop advances `advanceSmoothedPlayhead`
+  (rate-aware, slowly corrected to ~20Hz reports). A layout effect paints
+  paused, gesture and reduced-motion positions instead. Motion and fill use
+  the same position. React reports must not repaint over the frame loop.
+- Backing pixels follow `devicePixelRatio`, including monitor moves while
+  paused. CSS viewport size never animates. Read CSS palette colors on theme
+  changes, not every frame. The existing waveform peaks remain the source.
+- Binary search finds visible slots; peaks are lazily pooled/cached per scene
+  (slots/peaks/scale). Never scan a book or resample peaks per frame.
+- **One fill per pill.** Partial fill is a split-color gradient, not an amber
+  overlay on a muted pill; overlapping antialiased edges were removed.
+- **Open at this checkpoint:** the user STILL reports slight rapid pulsing of
+  already-played orange bars after the single-fill change. Motion is confirmed
+  smooth, fill pulsing is NOT resolved. Investigate it separately without
+  reverting the successful canvas motion architecture.
+- Canvas content is decorative (`aria-hidden`); group/readout and main timeline
+  keep their semantics. Gestures remain strip-level with touch-action pan-y;
+  grabbing starts at the painted position, and seeking commits only at rest.
+- Scale stays duration-proportional from average chunk duration; the reader
+  still supplies the states/priority. No frontend scheduling derivations.
 
 ### Phone bottom dock
 
@@ -811,6 +830,21 @@ first render would otherwise disagree with the CSS breakpoints.
 bottom padding so the dock cannot cover the last text block.
 - `ReaderSidebar` takes `overlayTogglePositionClassName` to lift its floating toggle
 above the dock. Without it the two controls overlap on a phone.
+
+### Playback ticks must not re-render the document
+
+The player reports at ~20Hz. Only the active overview slot may re-render:
+
+- `TimelineSlotItem` is memoized on primitives and receives `playheadForSlot`,
+  constant for every slot except the one under playback.
+- `ReaderPage` keys `timelineSlots` / `playedIndexes` on chunk states, not fill;
+  `ReaderTextBody` is memoized. On 300 chunks, ~39–42ms/frame became ~17.3ms.
+- The conveyor has no React slot list: its frame painter reads visible chunks
+  only; a player report updates a ref without repainting it.
+- Tests: `WaveformTimeline.test.tsx` counts slot renders; `ChunkConveyor.test.tsx`
+  pins painter ownership/scene reuse; `conveyor-canvas.test.ts` covers fractional
+  positions, fill, gaps, caching, book-sized bounded work and backing pixels.
+  Playwright checks actual canvas pixels, theme/resize repaints and gestures.
 
 ### Two historical bugs worth protecting against
 
@@ -1800,10 +1834,9 @@ and delete this note.
 
 ### 13. Do not nest ARIA sliders
 
-The main timeline exposes each chunk as `role="slider"`. The conveyor handles
-gestures at strip level and passes `interactive={false}` to `WaveformSlot`, which
-drops the role, tab stop and pointer handlers. A second interactive slider list
-inside the strip would be invalid ARIA and duplicate announcements.
+The main timeline exposes chunk sliders. The conveyor handles gestures at strip
+level; its canvas is decorative (aria-hidden). Do not add a second interactive
+slider list inside it.
 
 ## Current User-Facing Pages
 
@@ -2179,6 +2212,20 @@ Playback-speed round:
    defaults”.
 4. **The playbar only shows a badge**, and only when the rate is not 1×, in the
    metadata row that already fades away on scroll.
+
+Conveyor smoothness round:
+
+1. Removed 20Hz CSS-transition retargeting; the conveyor has a rate-aware frame
+   clock with slow correction to the media clock.
+2. Kept playback ticks out of the document/overview subtrees with clamped slot
+   playheads, memoization and stable chunk-state identities.
+3. A Gecko identity filter improved probe scores but not the user's jitter.
+   A minimal reproduction isolated slow DOM/rounded-SVG rendering; canvas
+   vectors were smooth. Replaced the DOM strip with a stationary vector canvas.
+4. The user confirmed smooth movement in the actual reader. Gestures and the
+   backend/playback model stay unchanged; geometry is shared with the overview.
+5. Orange-area brightness pulsing is still open (see rendering rules). This
+   checkpoint preserves the verified motion fix while that is investigated.
 
 ## Agent Workflow Checklist
 

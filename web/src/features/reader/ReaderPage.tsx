@@ -295,6 +295,24 @@ export function ReaderPage() {
     [contiguousReadyChunks, currentTimeSeconds],
   );
 
+  /**
+   * Chunk *states* only change when the playhead crosses a chunk boundary; the
+   * per-chunk fill inside `activeProgress` changes on every playback tick.
+   *
+   * Everything downstream that only needs states — the timeline slots and the
+   * reader text — is keyed on this signature instead of the progress object, so
+   * the 20Hz playback tick does not reconcile every chunk block and every
+   * timeline slot in the document. That reconciliation was measured at ~22ms per
+   * tick on a 300-chunk document (reader drops to ~26fps), and it is the same
+   * kind of work even for a small document whose chunks are long.
+   */
+  const chunkStateSignature = `${activeProgress.activeChunkIndex ?? "none"}:${activeProgress.playedIndexes.size}`;
+  const playedIndexes = useMemo(
+    () => activeProgress.playedIndexes,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity follows chunkStateSignature: the set is the run's prefix, so (active, size) determines it.
+    [chunkStateSignature],
+  );
+
   // Static waveform peaks for the playbar, fetched from the backend per chunk.
   // Updates automatically as chunks arrive or are reprocessed.
   const waveforms = useChunkWaveforms(activeChunks);
@@ -302,7 +320,8 @@ export function ReaderPage() {
   // ── Timeline slots (for WaveformTimeline) ───────────────
   const timelineSlots = useMemo<TimelineSlotData[]>(
     () => deriveTimelineSlots(activeChunks, playbackModel, activeProgress, playbackAnchorIndex),
-    [activeChunks, playbackModel, activeProgress, playbackAnchorIndex],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- states only; see chunkStateSignature
+    [activeChunks, playbackModel, playbackAnchorIndex, chunkStateSignature],
   );
 
   const detailSlot = useMemo(() => {
@@ -984,7 +1003,7 @@ export function ReaderPage() {
         activeChunkIndex={activeProgress.activeChunkIndex}
         onJumpToChunk={handleJumpToChunk}
         onRegisterChunkRef={handleRegisterChunkRef}
-        playedIndexes={activeProgress.playedIndexes}
+        playedIndexes={playedIndexes}
         segments={textSegments}
         showJumpButtons={settings.showChunkJumpButtons}
       />
@@ -1071,9 +1090,11 @@ export function ReaderPage() {
           {settings.showConveyor && !isPhoneViewport ? (
             <div className="mt-2">
               <ChunkConveyor
+                isPlaying={isActuallyPlaying}
                 maxSeekSeconds={displayRenderedDurationSeconds}
                 motion={motion}
                 onSeek={handleSeekToChunkWithScroll}
+                playbackRate={playbackRate}
                 playheadSeconds={displayTimeSeconds}
                 slots={timelineSlots}
                 waveforms={waveforms}
@@ -1238,6 +1259,7 @@ export function ReaderPage() {
           onPlay={handlePlay}
           onSeek={handleSeekToChunkWithScroll}
           onSkip={handleSkip}
+          playbackRate={playbackRate}
           playIntent={playIntent}
           playheadSeconds={displayTimeSeconds}
           slots={timelineSlots}

@@ -1,11 +1,19 @@
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   advanceConveyor,
+  advanceSmoothedPlayhead,
   averageDurationSeconds,
   beginDrag,
   conveyorPxPerSecond,
-  conveyorTrackOriginPx,
   endDrag,
   gestureCenterSeconds,
   isMovingGesture,
@@ -15,28 +23,23 @@ import {
   slotAtSeconds,
   slotIndexAtSeconds,
   updateDrag,
-  visibleSlotIndexes,
   type ConveyorBounds,
   type ConveyorGesture,
 } from "../features/reader/conveyor-physics";
 import { useElementWidth } from "../hooks/useElementWidth";
-import { formatClock } from "../lib/format";
+import { useTheme } from "../hooks/useTheme";
 import {
-  barCountForWidth,
-  barStepPx,
-  buildCumulativeStartTimes,
-  totalSlotDuration,
-  waveformForSlot,
-} from "../lib/waveform-timeline";
+  createConveyorScene,
+  paintConveyor,
+  readConveyorPalette,
+  sizeConveyorCanvas,
+  type ConveyorPalette,
+  type ConveyorScene,
+} from "../lib/conveyor-canvas";
+import { formatClock } from "../lib/format";
+import { buildCumulativeStartTimes, totalSlotDuration } from "../lib/waveform-timeline";
 import type { ConveyorWindowSize } from "../state/reader-settings";
 import type { TimelineSlotData } from "../types/timeline";
-import {
-  BAR_GAP_PX,
-  BAR_WIDTH_PX,
-  SLOT_H_PADDING_PX,
-  WaveformSlot,
-  type WaveformSlotInteraction,
-} from "./WaveformSlot";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -54,6 +57,13 @@ export interface ChunkConveyorProps {
   maxSeekSeconds: number;
   /** Motion after combining the reader setting with the OS preference. */
   motion: "animated" | "reduced";
+  /**
+   * Whether the media clock is actually running. The idle slide is driven by the
+   * strip's own frame clock only while it is: a frozen playhead needs no frames.
+   */
+  isPlaying: boolean;
+  /** Playback rate of the media clock, so the slide advances at the same speed. */
+  playbackRate: number;
   windowSizeSetting: ConveyorWindowSize;
   stripHeightPx?: number;
   /** Commit a seek. Fired once, when the strip comes to rest. */
@@ -66,11 +76,10 @@ export interface ChunkConveyorProps {
 const EDGE_FADE = "linear-gradient(to right, transparent, #000 8%, #000 92%, transparent)";
 
 /**
- * Smoothing for the idle slide. The playhead prop updates at ~20Hz but the
- * strip should move at display rate, so the browser interpolates between
- * updates. Disabled during a gesture so the track tracks the finger exactly.
+ * Smallest movement worth writing to the DOM. Frames that cannot move the strip
+ * by this much are skipped, so a paused or reduced-motion strip costs nothing.
  */
-const IDLE_TRANSITION = "transform 60ms linear";
+const MIN_WRITE_PX = 0.01;
 
 /* ── Component ────────────────────────────────────────────── */
 
@@ -97,12 +106,16 @@ export function ChunkConveyor({
   playheadSeconds,
   maxSeekSeconds,
   motion,
+  isPlaying,
+  playbackRate,
   windowSizeSetting,
   stripHeightPx = 64,
   onSeek,
 }: ChunkConveyorProps) {
   const { attachRef, width: stripWidth } = useElementWidth<HTMLDivElement>();
 
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const { theme } = useTheme();
   const gestureRef = useRef<ConveyorGesture | null>(null);
   const pointerIdRef = useRef<number | null>(null);
   const stripCenterClientXRef = useRef(0);
@@ -114,7 +127,10 @@ export function ChunkConveyor({
 
   const windowSize = resolveConveyorWindowSize(windowSizeSetting, stripWidth);
   const pxPerSecond = conveyorPxPerSecond(stripWidth, windowSize, averageDuration);
-  const barStep = barStepPx(BAR_WIDTH_PX, BAR_GAP_PX);
+  const scene = useMemo(
+    () => createConveyorScene(slots, cumulativeStartTimes, waveforms, pxPerSecond),
+    [slots, cumulativeStartTimes, waveforms, pxPerSecond],
+  );
 
   const bounds = useMemo<ConveyorBounds>(
     () => ({
@@ -138,22 +154,119 @@ export function ChunkConveyor({
 
   const centerSeconds = gesture ? gestureCenterSeconds(gesture) : idleCenterSeconds;
 
-  // Latest values for the imperative gesture code (pointer handlers and the
-  // animation loop run outside React's render cycle).
+  const sliding = gesture === null && motion === "animated" && isPlaying;
+  const reportedSecondsRef = useRef(playheadSeconds);
+  const rateRef = useRef(isPlaying ? playbackRate : 0);
+  const renderedSecondsRef = useRef<number | null>(null);
+  const smoothedSecondsRef = useRef<number | null>(null);
   const boundsRef = useRef(bounds);
   const pxPerSecondRef = useRef(pxPerSecond);
   const motionRef = useRef(motion);
   const cumulativeStartTimesRef = useRef(cumulativeStartTimes);
   const slotsRef = useRef(slots);
   const onSeekRef = useRef(onSeek);
-  useEffect(() => {
+  const paintRef = useRef<{
+    scene: ConveyorScene;
+    width: number;
+    height: number;
+    renderedDurationSeconds: number;
+    palette: ConveyorPalette;
+  } | null>(null);
+
+  // Both animation loops and pointer handlers read committed values, never
+  // stale render closures. Synchronize before the layout/paint effects below.
+  useLayoutEffect(() => {
     boundsRef.current = bounds;
     pxPerSecondRef.current = pxPerSecond;
     motionRef.current = motion;
     cumulativeStartTimesRef.current = cumulativeStartTimes;
     slotsRef.current = slots;
     onSeekRef.current = onSeek;
+    reportedSecondsRef.current = playheadSeconds;
+    rateRef.current = isPlaying ? playbackRate : 0;
   });
+
+  const drawSeconds = useCallback((seconds: number) => {
+    renderedSecondsRef.current = seconds;
+    const canvas = canvasRef.current;
+    const paint = paintRef.current;
+    if (!canvas || !paint || paint.width <= 0) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    sizeConveyorCanvas(canvas, paint.width, paint.height, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paintConveyor(ctx, paint.scene, { ...paint, centerSeconds: seconds });
+  }, []);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    paintRef.current = {
+      scene,
+      width: stripWidth,
+      height: stripHeightPx,
+      renderedDurationSeconds: maxSeekSeconds,
+      palette: readConveyorPalette(canvas),
+    };
+    drawSeconds(renderedSecondsRef.current ?? reportedSecondsRef.current);
+  }, [scene, stripWidth, stripHeightPx, maxSeekSeconds, theme, drawSeconds]);
+
+  // A paused canvas also needs fresh backing pixels when dragged to a monitor
+  // with a different scale. Re-arm the resolution query after each change.
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    let query: MediaQueryList | undefined;
+    const redraw = () => drawSeconds(renderedSecondsRef.current ?? reportedSecondsRef.current);
+    const watchDensity = () => {
+      query?.removeEventListener?.("change", watchDensity);
+      redraw();
+      query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query?.addEventListener?.("change", watchDensity);
+    };
+    watchDensity();
+    window.addEventListener("resize", redraw);
+    return () => {
+      query?.removeEventListener?.("change", watchDensity);
+      window.removeEventListener("resize", redraw);
+    };
+  }, [drawSeconds, slots.length]);
+
+  // One painter: the frame loop owns the canvas while playing; otherwise the
+  // committed gesture/paused/reduced-motion position is drawn before paint.
+  useLayoutEffect(() => {
+    if (!sliding) drawSeconds(centerSeconds);
+  }, [centerSeconds, sliding, drawSeconds]);
+
+  useLayoutEffect(() => {
+    if (!sliding) {
+      smoothedSecondsRef.current = null;
+      return;
+    }
+    const initial = renderedSecondsRef.current ?? reportedSecondsRef.current;
+    smoothedSecondsRef.current = initial;
+    drawSeconds(initial);
+    let frame = 0;
+    let lastMs = performance.now();
+    const tick = (nowMs: number) => {
+      frame = requestAnimationFrame(tick);
+      const dtSeconds = Math.min(0.064, Math.max(0, (nowMs - lastMs) / 1000));
+      lastMs = nowMs;
+      const smoothed = advanceSmoothedPlayhead({
+        smoothedSeconds: smoothedSecondsRef.current ?? reportedSecondsRef.current,
+        reportedSeconds: reportedSecondsRef.current,
+        rate: rateRef.current,
+        dtSeconds,
+        maxSeconds: boundsRef.current.maxVisualSeconds,
+      });
+      smoothedSecondsRef.current = smoothed;
+      const shown = renderedSecondsRef.current;
+      if (shown !== null && Math.abs(smoothed - shown) * pxPerSecondRef.current < MIN_WRITE_PX) return;
+      drawSeconds(smoothed);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [sliding, drawSeconds]);
 
   /**
    * The single place a gesture turns into playback.
@@ -205,7 +318,7 @@ export function ChunkConveyor({
     }
     // Freeze the current position as the gesture base so grabbing a moving
     // strip does not make it jump.
-    const started = beginDrag(centerSeconds, event.clientX, performance.now());
+    const started = beginDrag(renderedSecondsRef.current ?? centerSeconds, event.clientX, performance.now());
     gestureRef.current = started;
     setGesture(started);
     event.preventDefault();
@@ -273,45 +386,6 @@ export function ChunkConveyor({
 
   /* ── Layout ────────────────────────────────────────────── */
 
-  const trackOriginPx = conveyorTrackOriginPx(stripWidth, centerSeconds, pxPerSecond);
-  const visibleSeconds = pxPerSecond > 0 ? stripWidth / pxPerSecond : 0;
-  const marginSeconds = averageDuration * 2;
-  const { first, last } = visibleSlotIndexes(
-    cumulativeStartTimes,
-    slots,
-    centerSeconds - visibleSeconds / 2 - marginSeconds,
-    centerSeconds + visibleSeconds / 2 + marginSeconds,
-  );
-
-  const renderedSlots: React.ReactNode[] = [];
-  for (let index = first; index <= last; index += 1) {
-    const slot = slots[index];
-    const slotStartSeconds = cumulativeStartTimes[index] ?? 0;
-    const widthPx = slot.durationSeconds * pxPerSecond;
-    const barCount = barCountForWidth(widthPx, barStep, SLOT_H_PADDING_PX);
-    renderedSlots.push(
-      <WaveformSlot
-        barCount={barCount}
-        bars={waveformForSlot(waveforms.get(slot.chunkIndex), slot, barCount)}
-        interaction={CONVEYOR_INTERACTION}
-        interactive={false}
-        key={slot.chunkIndex}
-        playheadSeconds={centerSeconds}
-        renderedDurationSeconds={maxSeekSeconds}
-        showSeparator={false}
-        slot={slot}
-        slotStartSeconds={slotStartSeconds}
-        style={{
-          left: `${slotStartSeconds * pxPerSecond}px`,
-          position: "absolute",
-          top: 0,
-          bottom: 0,
-          width: `${widthPx}px`,
-        }}
-      />,
-    );
-  }
-
   const centerSlotIndex = slotIndexAtSeconds(cumulativeStartTimes, centerSeconds);
   const centerChunkNumber = (slots[centerSlotIndex]?.chunkIndex ?? 0) + 1;
   const centerClock = formatClock(centerSeconds);
@@ -347,27 +421,15 @@ export function ChunkConveyor({
         touchAction: "pan-y",
       }}
     >
-      {/* Sliding track. Masked so both edges fade instead of clipping hard. */}
-      <div
+      {/* The viewport never moves: fractional vector positions are painted
+          directly, avoiding Gecko's low-speed DOM/rounded-rectangle jitter. */}
+      <canvas
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0"
-        style={{
-          maskImage: EDGE_FADE,
-          WebkitMaskImage: EDGE_FADE,
-        }}
-      >
-        <div
-          className="relative h-full"
-          data-testid="conveyor-track"
-          style={{
-            transform: `translate3d(${trackOriginPx}px, 0, 0)`,
-            transition: gesture === null ? IDLE_TRANSITION : "none",
-            willChange: "transform",
-          }}
-        >
-          {renderedSlots}
-        </div>
-      </div>
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        data-testid="conveyor-canvas"
+        ref={canvasRef}
+        style={{ maskImage: EDGE_FADE, WebkitMaskImage: EDGE_FADE }}
+      />
 
       {/* Fixed playhead marker at the centre of the strip. */}
       <div
@@ -391,17 +453,3 @@ export function ChunkConveyor({
     </div>
   );
 }
-
-/**
- * The conveyor handles pointer input at the strip level (it needs the tap
- * position, not the slot), so its slots are decorative: the same chunk states
- * are already exposed as real sliders by the main timeline, and nesting sliders
- * inside a slider is invalid.
- */
-const CONVEYOR_INTERACTION: WaveformSlotInteraction = {
-  onPointerDown: () => {},
-  onPointerMove: () => {},
-  onPointerUp: () => {},
-  onPointerCancel: () => {},
-  onActivate: () => {},
-};

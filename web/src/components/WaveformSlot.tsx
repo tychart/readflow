@@ -3,21 +3,9 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { barFillFraction, isNonFillState, isSlotDimmed } from "../lib/waveform-timeline";
 import type { TimelineSlotData } from "../types/timeline";
 
-/* ── Tunable waveform style ─────────────────────────────────
- * All visual knobs for the static waveform live here so the look can be tuned
- * without touching rendering logic. Shared by every waveform surface: the main
- * playbar timeline and the reader's chunk conveyor. */
+import { BAR_GAP_PX, BAR_RADIUS_PX, BAR_WIDTH_PX, MIN_BAR_HEIGHT } from "../lib/waveform-style";
 
-/** Bar thickness in px. */
-export const BAR_WIDTH_PX = 3;
-/** Gap between bars in px. */
-export const BAR_GAP_PX = 2;
-/** Corner radius in px (BAR_WIDTH_PX / 2 = fully rounded pill). */
-export const BAR_RADIUS_PX = 2;
-/** Minimum bar height as a fraction of the slot height. */
-export const MIN_BAR_HEIGHT = 0.06;
-/** Horizontal padding inside each slot (matches the px-1 = 4px each side). */
-export const SLOT_H_PADDING_PX = 8;
+export { BAR_GAP_PX, BAR_WIDTH_PX, SLOT_H_PADDING_PX } from "../lib/waveform-style";
 
 /* ── Interaction ──────────────────────────────────────────── */
 

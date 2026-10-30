@@ -1,10 +1,11 @@
-import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, memo, useCallback, useMemo, useRef, useState } from "react";
 
 import { useElementWidth } from "../hooks/useElementWidth";
 import {
   barCountForWidth,
   barStepPx,
   buildCumulativeStartTimes,
+  playheadForSlot,
   pointerRatio,
   secondsAtRatio,
   slotIndexAtSeconds,
@@ -12,7 +13,7 @@ import {
   totalSlotDuration,
   waveformForSlot,
 } from "../lib/waveform-timeline";
-import type { TimelineSlotData } from "../types/timeline";
+import type { TimelineSlotData, TimelineSlotState } from "../types/timeline";
 import {
   BAR_GAP_PX,
   BAR_WIDTH_PX,
@@ -57,6 +58,62 @@ export interface WaveformTimelineProps {
 }
 
 /* ── Component ────────────────────────────────────────────── */
+
+/**
+ * One chunk slot of the whole-document timeline.
+ *
+ * Memoized on primitives, and given a playhead already clamped to its own range
+ * (`playheadForSlot`), so a playback tick re-renders only the slot being played
+ * instead of every slot and every bar in the document.
+ */
+const TimelineSlotItem = memo(function TimelineSlotItem({
+  chunkIndex,
+  state,
+  durationSeconds,
+  slotStartSeconds,
+  barCount,
+  playheadSeconds,
+  renderedDurationSeconds,
+  showSeparator,
+  waveform,
+  interaction,
+}: {
+  chunkIndex: number;
+  state: TimelineSlotState;
+  durationSeconds: number;
+  slotStartSeconds: number;
+  barCount: number;
+  playheadSeconds: number;
+  renderedDurationSeconds: number;
+  showSeparator: boolean;
+  waveform: Float32Array | undefined;
+  interaction: WaveformSlotInteraction;
+}) {
+  const slot = useMemo<TimelineSlotData>(
+    () => ({ chunkIndex, state, durationSeconds }),
+    [chunkIndex, durationSeconds, state],
+  );
+  const bars = useMemo(
+    () => waveformForSlot(waveform, slot, barCount),
+    [barCount, slot, waveform],
+  );
+  const style = useMemo(() => ({ flex: `${durationSeconds} 0 0` }), [durationSeconds]);
+
+  return (
+    <WaveformSlot
+      barCount={barCount}
+      bars={bars}
+      fadeLabels
+      interaction={interaction}
+      playheadSeconds={playheadSeconds}
+      renderedDurationSeconds={renderedDurationSeconds}
+      showSeparator={showSeparator}
+      slot={slot}
+      slotStartSeconds={slotStartSeconds}
+      style={style}
+    />
+  );
+});
 
 /**
  * WaveformTimeline — the whole-document waveform overview.
@@ -221,21 +278,28 @@ export function WaveformTimeline({
       tabIndex={-1}
     >
       {slots.map((slot, slotIndex) => {
-        const chunkWidthPx = slotWidthPx(containerWidth, slot.durationSeconds, totalSeconds);
-        const barCount = barCountForWidth(chunkWidthPx, barStep, SLOT_H_PADDING_PX);
+        const slotStartSeconds = cumulativeStartTimes[slotIndex] ?? 0;
         return (
-          <WaveformSlot
-            barCount={barCount}
-            bars={waveformForSlot(waveforms.get(slot.chunkIndex), slot, barCount)}
-            fadeLabels
+          <TimelineSlotItem
+            barCount={barCountForWidth(
+              slotWidthPx(containerWidth, slot.durationSeconds, totalSeconds),
+              barStep,
+              SLOT_H_PADDING_PX,
+            )}
+            chunkIndex={slot.chunkIndex}
+            durationSeconds={slot.durationSeconds}
             interaction={interaction}
             key={slot.chunkIndex}
-            playheadSeconds={effectivePlayheadSeconds}
+            playheadSeconds={playheadForSlot(
+              effectivePlayheadSeconds,
+              slotStartSeconds,
+              slot.durationSeconds,
+            )}
             renderedDurationSeconds={renderedDurationSeconds}
             showSeparator={slot.chunkIndex < slots.length - 1}
-            slot={slot}
-            slotStartSeconds={cumulativeStartTimes[slotIndex] ?? 0}
-            style={{ flex: `${slot.durationSeconds} 0 0` }}
+            slotStartSeconds={slotStartSeconds}
+            state={slot.state}
+            waveform={waveforms.get(slot.chunkIndex)}
           />
         );
       })}

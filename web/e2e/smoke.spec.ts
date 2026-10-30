@@ -511,6 +511,46 @@ test("the chunk conveyor seeks when dragged and keeps the strip under the playhe
   await expect(page.getByTestId("conveyor-readout")).not.toHaveText("0:00");
 });
 
+test("the conveyor draws into a fixed canvas and repaints on resize and theme changes", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("readflow-theme", "dark"));
+  await page.route("**/api/jobs/job-1", route => route.fulfill({ json: buildJob(6) }));
+  await page.route("**/api/jobs/job-1/manifest", route => route.fulfill({ json: buildManifest(6) }));
+  await page.route("**/api/jobs/job-1/chunks/**", route => route.fulfill({ body: "abc" }));
+  await page.goto("/jobs/job-1");
+  const canvas = page.getByTestId("conveyor-canvas");
+  await expect(canvas).toBeVisible();
+  const pixels = () => canvas.evaluate((element: HTMLCanvasElement) => {
+    const ctx = element.getContext("2d")!;
+    const data = ctx.getImageData(0, 0, element.width, element.height).data;
+    let painted = 0;
+    let checksum = 0;
+    for (let i = 0; i < data.length; i += 1) {
+      checksum = (checksum + data[i]) >>> 0;
+      if (i % 4 === 3 && data[i] > 0) painted += 1;
+    }
+    return {
+      painted, checksum, width: element.width,
+      expectedWidth: Math.round(element.clientWidth * devicePixelRatio),
+      transform: getComputedStyle(element).transform,
+      filter: getComputedStyle(element).filter,
+    };
+  });
+  await expect.poll(async () => (await pixels()).painted).toBeGreaterThan(500);
+  const before = await pixels();
+  expect(before.width).toBe(before.expectedWidth);
+  expect(before.transform).toBe("none");
+  expect(before.filter).toBe("none");
+  await expect(page.getByTestId("chunk-conveyor").locator("[data-waveform-slot]")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Switch to light mode" }).click();
+  await expect.poll(async () => (await pixels()).checksum).not.toBe(before.checksum);
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await expect.poll(async () => (await pixels()).width).not.toBe(before.width);
+  const resized = await pixels();
+  expect(resized.width).toBe(resized.expectedWidth);
+  expect(resized.painted).toBeGreaterThan(500);
+});
+
 test("reader settings hide the per-chunk jump controls", async ({ page }) => {
   await page.route("**/api/jobs/job-1", async (route) => {
     await route.fulfill({ json: buildJob(2, "queued") });

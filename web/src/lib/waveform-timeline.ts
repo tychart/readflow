@@ -102,6 +102,37 @@ export function barFillFraction(
 /* ── Slot state ───────────────────────────────────────────── */
 
 /**
+ * Smallest gap that still counts as "past the end of this slot", in seconds.
+ * Only used to keep a clamped playhead strictly beyond a slot edge.
+ */
+export const SLOT_EDGE_EPSILON_SECONDS = 1e-6;
+
+/**
+ * Playhead clamped to the range a single slot can respond to.
+ *
+ * A slot's appearance only depends on whether the playhead is before it (no
+ * fill), inside it (partial fill) or after it (full fill, and dimmed when it has
+ * been played). Clamping makes that value *constant* for every slot except the
+ * one currently playing, which is what lets the slot components be memoized:
+ * without it every playback tick rebuilds every bar of the document 20x/s
+ * (measured: ~10ms per tick for the conveyor alone in Firefox, and the reader
+ * drops to ~26fps on a 300-chunk document).
+ *
+ * "After" lands just past the slot's end rather than exactly on it, so
+ * `isSlotDimmed` still sees the playhead as having left the slot.
+ */
+export function playheadForSlot(
+  playheadSeconds: number,
+  slotStartSeconds: number,
+  slotDurationSeconds: number,
+): number {
+  if (playheadSeconds <= slotStartSeconds) return slotStartSeconds;
+  const slotEndSeconds = slotStartSeconds + slotDurationSeconds;
+  if (playheadSeconds >= slotEndSeconds) return slotEndSeconds + SLOT_EDGE_EPSILON_SECONDS;
+  return playheadSeconds;
+}
+
+/**
  * Chunk states that never show playback fill: they render a broken-signal or
  * dimmed pattern instead, because there is no audio to sweep across.
  */

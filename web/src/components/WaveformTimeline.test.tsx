@@ -3,7 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 
 import { maxPool } from "../lib/waveform";
 import type { TimelineSlotData } from "../types/timeline";
+import { WaveformSlot } from "./WaveformSlot";
 import { WaveformTimeline } from "./WaveformTimeline";
+
+/** Counts how many slots actually render (the memo wrapper delegates to the real one). */
+vi.mock("./WaveformSlot", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./WaveformSlot")>();
+  return {
+    ...actual,
+    WaveformSlot: vi.fn((props: Parameters<typeof actual.WaveformSlot>[0]) =>
+      actual.WaveformSlot(props),
+    ),
+  };
+});
 
 /* jsdom does not implement PointerEvent; provide a minimal polyfill so the
  * pointer-based scrub interactions can be exercised in tests. */
@@ -182,5 +194,42 @@ describe("WaveformTimeline drag seeking", () => {
     // Preview is discarded; the fill returns to the real playhead (0s).
     const fills = getBarFills(container);
     expect(fills.every((fill) => fill === null)).toBe(true);
+  });
+});
+
+describe("WaveformTimeline playback ticks", () => {
+  it("only re-renders the slot the playhead is inside", () => {
+    // Stable references, as the reader passes them: a new callback or peaks map
+    // per render legitimately invalidates every slot.
+    const slots = buildReadySlots(12);
+    const onSeek = vi.fn();
+    const waveforms = new Map<number, Float32Array>();
+    const { rerender } = render(
+      <WaveformTimeline
+        playheadSeconds={6}
+        renderedDurationSeconds={48}
+        slots={slots}
+        waveforms={waveforms}
+        onSeek={onSeek}
+      />,
+    );
+    const slotRenders = vi.mocked(WaveformSlot);
+    expect(slotRenders.mock.calls.length).toBeGreaterThan(1);
+    slotRenders.mockClear();
+
+    // One playback tick: every other slot's playhead is clamped to its own
+    // range, so their memoized components must bail out. Without that, a book
+    // re-renders every slot and every bar 20x/s while playing.
+    rerender(
+      <WaveformTimeline
+        playheadSeconds={6.1}
+        renderedDurationSeconds={48}
+        slots={slots}
+        waveforms={waveforms}
+        onSeek={onSeek}
+      />,
+    );
+
+    expect(slotRenders.mock.calls.length).toBe(1);
   });
 });

@@ -44,6 +44,31 @@ Object.defineProperty(window.URL, "revokeObjectURL", {
   value: () => undefined,
 });
 
+// jsdom has no matchMedia. Suites testing media queries replace this inert
+// default; ordinary components can still subscribe to theme/density changes.
+Object.defineProperty(window, "matchMedia", {
+  configurable: true,
+  writable: true,
+  value: (media: string): MediaQueryList => ({
+    media,
+    matches: false,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+  }),
+});
+
+// jsdom has no canvas renderer. Drawing suites provide an explicit 2D mock;
+// other reader tests may mount the decorative canvas without drawing pixels.
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+  configurable: true,
+  writable: true,
+  value: () => null,
+});
+
 /* ── localStorage ──────────────────────────────────────────── */
 
 /**

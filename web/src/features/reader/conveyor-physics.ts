@@ -45,6 +45,19 @@ export const SETTLE_REST_SECONDS = 0.01;
 /** Sample window used to read a flick's velocity. */
 export const VELOCITY_SAMPLE_WINDOW_MS = 110;
 /**
+ * Time constant (s) for pulling the smoothed playhead back onto the reported one.
+ *
+ * Deliberately long. The player reports its clock at ~20Hz and each report is
+ * already a stale sample, so a short constant turns every report into a visible
+ * velocity ripple. Prediction supplies the motion; this only removes slow drift.
+ */
+export const PLAYHEAD_SMOOTHING_SECONDS = 2;
+/**
+ * Reported-vs-smoothed gap that is a seek rather than clock drift, in seconds.
+ * Above it the strip snaps instead of easing, so a jump lands immediately.
+ */
+export const PLAYHEAD_SNAP_SECONDS = 0.5;
+/**
  * Pointer travel (px) below which a press is a tap rather than a drag. A tap
  * means "put this point under the playhead", which is a different edit from
  * dragging the track with the finger.
@@ -371,6 +384,50 @@ export function advanceConveyor(
   };
 }
 
+/* ── Idle slide ───────────────────────────────────────────── */
+
+export interface SmoothedPlayheadInput {
+  /** Position the strip is currently showing (timeline seconds). */
+  smoothedSeconds: number;
+  /** Latest playhead the player reported (timeline seconds, ~20Hz, stale). */
+  reportedSeconds: number;
+  /**
+   * Timeline seconds per real second while the media clock is running, i.e. the
+   * player's playback rate; 0 while paused or buffering and the clock stands still.
+   */
+  rate: number;
+  /** Time since the previous frame, already clamped by the caller. */
+  dtSeconds: number;
+  /** Upper bound for the position (end of the known document). */
+  maxSeconds: number;
+}
+
+/**
+ * One frame of the conveyor's own playhead clock.
+ *
+ * The reported playhead arrives as a staircase: the player only commits when
+ * the media clock has advanced ~0.05s, which lands 2-4 display frames apart and
+ * is quantized by whichever frame happens to cross the threshold. Interpolating
+ * that staircase with a fixed-duration transition therefore pulses the strip's
+ * velocity by ~30% at ~20Hz — subtle at a slow zoom, plainly visible when the
+ * strip moves several px per frame.
+ *
+ * So the strip keeps its own clock: advance by `rate` every frame (constant
+ * velocity, no ripple) and fold in the reported value slowly, which is enough to
+ * absorb the small drift between the media clock and the wall clock. A gap too
+ * large to be drift is a seek and snaps.
+ */
+export function advanceSmoothedPlayhead(input: SmoothedPlayheadInput): number {
+  const { smoothedSeconds, reportedSeconds, rate, dtSeconds, maxSeconds } = input;
+  if (Math.abs(reportedSeconds - smoothedSeconds) >= PLAYHEAD_SNAP_SECONDS) {
+    return clampSeconds(reportedSeconds, maxSeconds);
+  }
+  if (dtSeconds <= 0) return clampSeconds(smoothedSeconds, maxSeconds);
+  const predicted = smoothedSeconds + rate * dtSeconds;
+  const correction = 1 - Math.exp(-dtSeconds / PLAYHEAD_SMOOTHING_SECONDS);
+  return clampSeconds(predicted + (reportedSeconds - predicted) * correction, maxSeconds);
+}
+
 /** Where the strip currently sits, in timeline seconds. */
 export function gestureCenterSeconds(gesture: ConveyorGesture): number {
   return gesture.baseSeconds + gesture.offsetSeconds;
@@ -433,21 +490,23 @@ export function visibleSlotIndexes(
   toSeconds: number,
 ): { first: number; last: number } {
   if (slots.length === 0) return { first: 0, last: -1 };
-  let first = slots.length - 1;
-  for (let i = 0; i < slots.length; i += 1) {
-    const endSeconds = (cumulativeStartTimes[i] ?? 0) + slots[i].durationSeconds;
-    if (endSeconds > fromSeconds) {
-      first = i;
-      break;
-    }
+  // This also runs in the canvas frame loop: find the visible window in
+  // O(log n), not by walking a book's preceding chunks on every frame.
+  let low = 0;
+  let high = slots.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if ((cumulativeStartTimes[mid] ?? 0) + slots[mid].durationSeconds <= fromSeconds) low = mid + 1;
+    else high = mid;
   }
-  let last = slots.length - 1;
-  for (let i = first; i < slots.length; i += 1) {
-    if ((cumulativeStartTimes[i] ?? 0) >= toSeconds) {
-      last = i - 1;
-      break;
-    }
+  const first = low;
+  high = slots.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if ((cumulativeStartTimes[mid] ?? 0) < toSeconds) low = mid + 1;
+    else high = mid;
   }
+  const last = low - 1;
   return last < first ? { first: 0, last: -1 } : { first, last };
 }
 
@@ -456,12 +515,14 @@ export function slotIndexAtSeconds(
   cumulativeStartTimes: readonly number[],
   seconds: number,
 ): number {
-  let index = 0;
-  for (let i = 0; i < cumulativeStartTimes.length; i += 1) {
-    if (seconds >= cumulativeStartTimes[i]) index = i;
-    else break;
+  let low = 0;
+  let high = cumulativeStartTimes.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (cumulativeStartTimes[mid] <= seconds) low = mid + 1;
+    else high = mid;
   }
-  return index;
+  return Math.max(0, low - 1);
 }
 
 /**

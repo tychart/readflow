@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import type { TimelineSlotData } from "../../types/timeline";
 import {
   advanceConveyor,
+  advanceSmoothedPlayhead,
   averageDurationSeconds,
   beginDrag,
   clampSeconds,
@@ -18,6 +19,7 @@ import {
   isRenderedState,
   isSettleAtRest,
   isTap,
+  PLAYHEAD_SNAP_SECONDS,
   pxPerMsToStripSpeed,
   resolveConveyorWindowSize,
   slotAtSeconds,
@@ -565,5 +567,113 @@ describe("slotAtSeconds", () => {
 
   test("is null without slots", () => {
     expect(slotAtSeconds([], [], 5)).toBeNull();
+  });
+});
+
+/* ── Idle slide ───────────────────────────────────────────── */
+
+describe("advanceSmoothedPlayhead", () => {
+  /** One 60Hz frame. */
+  const FRAME_S = 1 / 60;
+
+  /**
+   * The player reports its clock when it has advanced ~0.05s, so the reported
+   * value is a staircase of frame-quantized steps (measured: 50ms most of the
+   * time, 63-83ms whenever a frame boundary lands differently).
+   */
+  function staircaseReport(seconds: number, rate = 1): number {
+    return Math.floor((seconds * rate) / 0.05) * 0.05;
+  }
+
+  test("holds a constant velocity across a staircase of reports", () => {
+    // Ten seconds of playback at 60fps, reported the way the player does it.
+    let smoothed = 0;
+    let clock = 0;
+    const speeds: number[] = [];
+    for (let frame = 0; frame < 600; frame += 1) {
+      clock += FRAME_S;
+      const next = advanceSmoothedPlayhead({
+        smoothedSeconds: smoothed,
+        reportedSeconds: staircaseReport(clock),
+        rate: 1,
+        dtSeconds: FRAME_S,
+        maxSeconds: 1_000,
+      });
+      speeds.push((next - smoothed) / FRAME_S);
+      smoothed = next;
+    }
+
+    // Skip the settling-in frames, then every frame must move at ~1x. The fix
+    // this protects: interpolating the stair steps pulsed velocity by ~30%.
+    const steady = speeds.slice(60);
+    const mean = steady.reduce((sum, s) => sum + s, 0) / steady.length;
+    const worst = Math.max(...steady.map((s) => Math.abs(s - mean)));
+    expect(mean).toBeCloseTo(1, 2);
+    // The old 60ms-transition interpolation measured ~0.3 here (30% ripple).
+    expect(worst).toBeLessThan(0.03);
+  });
+
+  test("scales the slide with the playback rate", () => {
+    let smoothed = 0;
+    let clock = 0;
+    for (let frame = 0; frame < 300; frame += 1) {
+      clock += FRAME_S;
+      smoothed = advanceSmoothedPlayhead({
+        smoothedSeconds: smoothed,
+        reportedSeconds: staircaseReport(clock, 2),
+        rate: 2,
+        dtSeconds: FRAME_S,
+        maxSeconds: 1_000,
+      });
+    }
+    // 300 frames = 5s of wall time at 2x = 10s of timeline.
+    expect(smoothed).toBeCloseTo(10, 1);
+  });
+
+  test("a frozen clock does not drift while paused", () => {
+    const smoothed = advanceSmoothedPlayhead({
+      smoothedSeconds: 12,
+      reportedSeconds: 12,
+      rate: 0,
+      dtSeconds: FRAME_S,
+      maxSeconds: 1_000,
+    });
+    expect(smoothed).toBeCloseTo(12, 6);
+  });
+
+  test("snaps when the report jumps by more than drift", () => {
+    // A seek: the strip must land there immediately, not ease over seconds.
+    const snapped = advanceSmoothedPlayhead({
+      smoothedSeconds: 10,
+      reportedSeconds: 10 + PLAYHEAD_SNAP_SECONDS,
+      rate: 1,
+      dtSeconds: FRAME_S,
+      maxSeconds: 1_000,
+    });
+    expect(snapped).toBe(10 + PLAYHEAD_SNAP_SECONDS);
+  });
+
+  test("eases a small report offset instead of snapping", () => {
+    const next = advanceSmoothedPlayhead({
+      smoothedSeconds: 10,
+      reportedSeconds: 10.2,
+      rate: 0,
+      dtSeconds: FRAME_S,
+      maxSeconds: 1_000,
+    });
+    expect(next).toBeGreaterThan(10);
+    expect(next).toBeLessThan(10.2);
+  });
+
+  test("clamps to the end of the document", () => {
+    expect(
+      advanceSmoothedPlayhead({
+        smoothedSeconds: 10,
+        reportedSeconds: 99,
+        rate: 1,
+        dtSeconds: FRAME_S,
+        maxSeconds: 20,
+      }),
+    ).toBe(20);
   });
 });
