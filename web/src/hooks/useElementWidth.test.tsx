@@ -70,6 +70,17 @@ describe("useElementWidth", () => {
     expect(screen.getByTestId("width")).toHaveTextContent("320");
   });
 
+  test("measures immediately instead of waiting for the first observer notification", () => {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 300,
+    } as DOMRect);
+    render(<Probe mounted />);
+    expect(screen.getByTestId("width")).toHaveTextContent("300");
+    act(() => FakeResizeObserver.instances[0]?.emit(400));
+    expect(screen.getByTestId("width")).toHaveTextContent("400");
+  });
+
   test("rounds the observed width and ignores a zero measurement", () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
 

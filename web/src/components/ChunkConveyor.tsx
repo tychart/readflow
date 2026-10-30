@@ -76,7 +76,7 @@ export interface ChunkConveyorProps {
 const EDGE_FADE = "linear-gradient(to right, transparent, #000 8%, #000 92%, transparent)";
 
 /**
- * Smallest movement worth writing to the DOM. Frames that cannot move the strip
+ * Smallest movement worth painting. Frames that cannot move the strip
  * by this much are skipped, so a paused or reduced-motion strip costs nothing.
  */
 const MIN_WRITE_PX = 0.01;
@@ -195,17 +195,20 @@ export function ChunkConveyor({
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     sizeConveyorCanvas(canvas, paint.width, paint.height, dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(canvas.width / paint.width, 0, 0, canvas.height / paint.height, 0, 0);
     paintConveyor(ctx, paint.scene, { ...paint, centerSeconds: seconds });
   }, []);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // The canvas fills the content box, not the wrapper's border box (64px
+    // outside means 62px inside). Never ask CSS to rescale the backing image.
+    const viewport = canvas.getBoundingClientRect();
     paintRef.current = {
       scene,
-      width: stripWidth,
-      height: stripHeightPx,
+      width: viewport.width,
+      height: viewport.height,
       renderedDurationSeconds: maxSeekSeconds,
       palette: readConveyorPalette(canvas),
     };
@@ -421,8 +424,8 @@ export function ChunkConveyor({
         touchAction: "pan-y",
       }}
     >
-      {/* The viewport never moves: fractional vector positions are painted
-          directly, avoiding Gecko's low-speed DOM/rounded-rectangle jitter. */}
+      {/* The viewport never moves. Native cached artwork slides inside it;
+          rounded contours are not re-rasterized at each fractional position. */}
       <canvas
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 h-full w-full"

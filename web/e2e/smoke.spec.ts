@@ -531,6 +531,8 @@ test("the conveyor draws into a fixed canvas and repaints on resize and theme ch
     return {
       painted, checksum, width: element.width,
       expectedWidth: Math.round(element.clientWidth * devicePixelRatio),
+      height: element.height,
+      expectedHeight: Math.round(element.clientHeight * devicePixelRatio),
       transform: getComputedStyle(element).transform,
       filter: getComputedStyle(element).filter,
     };
@@ -538,6 +540,7 @@ test("the conveyor draws into a fixed canvas and repaints on resize and theme ch
   await expect.poll(async () => (await pixels()).painted).toBeGreaterThan(500);
   const before = await pixels();
   expect(before.width).toBe(before.expectedWidth);
+  expect(before.height).toBe(before.expectedHeight);
   expect(before.transform).toBe("none");
   expect(before.filter).toBe("none");
   await expect(page.getByTestId("chunk-conveyor").locator("[data-waveform-slot]")).toHaveCount(0);
@@ -548,7 +551,63 @@ test("the conveyor draws into a fixed canvas and repaints on resize and theme ch
   await expect.poll(async () => (await pixels()).width).not.toBe(before.width);
   const resized = await pixels();
   expect(resized.width).toBe(resized.expectedWidth);
+  expect(resized.height).toBe(resized.expectedHeight);
   expect(resized.painted).toBeGreaterThan(500);
+});
+
+test("native cached contours remain rigid across fractional playback positions", async ({ page }) => {
+  await page.route("**/api/jobs/job-1", route => route.fulfill({ json: buildJob(6) }));
+  await page.route("**/api/jobs/job-1/manifest", route => route.fulfill({ json: buildManifest(6) }));
+  await page.route("**/api/jobs/job-1/chunks/**", route => route.fulfill({ body: "abc" }));
+  await page.goto("/jobs/job-1");
+  const mismatches = await page.evaluate(async () => {
+    // The selected look is native Canvas2D image filtering, not per-frame
+    // vector rasterization or supersampling. Compare actual pixels with a
+    // rigid native stamp at several phases/densities, including fractional
+    // logical slot widths. This guards the user's preferred rendering path;
+    // it intentionally does NOT promise constant linear-light luminance.
+    const moduleUrl = "/src/lib/conveyor-canvas.ts";
+    const { createConveyorScene, paintConveyor } = await import(moduleUrl);
+    const scene = createConveyorScene(
+      [{ chunkIndex: 0, state: "playing", durationSeconds: 1000.03 }],
+      [0], new Map([[0, new Float32Array([0.2, 1, 0.3, 0.8, 0.4, 0.9])]]), 5.2,
+    );
+    const palette = {
+      amber: "#f59e0b", active: "rgba(245,158,11,0.15)",
+      bar: "rgba(255,255,255,0.18)", muted: "rgba(255,255,255,0.10)",
+    };
+    let differingChannels = 0;
+    for (const dpr of [1, 1.5, 2]) {
+      const canvas = document.createElement("canvas");
+      const reference = document.createElement("canvas");
+      canvas.width = reference.width = 1800 * dpr;
+      canvas.height = reference.height = 64 * dpr;
+      const ctx = canvas.getContext("2d")!;
+      const expectedCtx = reference.getContext("2d")!;
+      const image = scene.texture(0, 64, dpr, dpr, palette)!.played;
+      expectedCtx.imageSmoothingEnabled = true;
+      expectedCtx.imageSmoothingQuality = "high";
+      for (let phase = 0; phase < 8; phase += 1) {
+        const centerSeconds = 500 + phase / 8 / 5.2;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        paintConveyor(ctx, scene, {
+          width: 1800, height: 64, centerSeconds,
+          renderedDurationSeconds: 1000.03, palette,
+        });
+        expectedCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        expectedCtx.clearRect(0, 0, 1800, 64);
+        expectedCtx.drawImage(image, 900 - centerSeconds * 5.2, 0, image.width / dpr, image.height / dpr);
+        // Entirely before the fixed playhead; includes varied-height contours.
+        const actual = ctx.getImageData(128 * dpr, 0, 656 * dpr, 64 * dpr).data;
+        const expected = expectedCtx.getImageData(128 * dpr, 0, 656 * dpr, 64 * dpr).data;
+        for (let i = 0; i < actual.length; i += 1) {
+          if (actual[i] !== expected[i]) differingChannels += 1;
+        }
+      }
+    }
+    return differingChannels;
+  });
+  expect(mismatches).toBe(0);
 });
 
 test("reader settings hide the per-chunk jump controls", async ({ page }) => {

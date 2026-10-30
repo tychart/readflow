@@ -28,7 +28,7 @@ beforeEach(() => {
   } as unknown as CanvasRenderingContext2D);
 });
 
-/** Last vector draw, not a CSS transform or a synthetic DOM playhead. */
+/** Last canvas paint, not a CSS transform or a synthetic DOM playhead. */
 function lastPaint() {
   const call = vi.mocked(paintConveyor).mock.calls.at(-1);
   if (!call) throw new Error("Expected the conveyor to paint");
@@ -126,7 +126,7 @@ describe("ChunkConveyor rendering", () => {
     expect(screen.getByTestId("conveyor-playhead")).toBeInTheDocument();
   });
 
-  test("draws decorative vectors in one fixed canvas, not translated DOM slots", () => {
+  test("paints decorative artwork in one fixed canvas, not translated DOM slots", () => {
     mockLayout();
     const { container } = render(<ChunkConveyor {...buildProps()} />);
     const canvas = screen.getByTestId("conveyor-canvas");

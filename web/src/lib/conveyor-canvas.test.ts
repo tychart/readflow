@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { TimelineSlotData } from "../types/timeline";
 import {
@@ -11,126 +11,145 @@ import {
 import { buildCumulativeStartTimes } from "./waveform-timeline";
 
 function recordingContext() {
-  type Color = string | CanvasGradient;
-  const fills: { color: Color; alpha: number; x: number; y: number; width: number; height: number }[] = [];
-  const pills: { color: Color; alpha: number }[] = [];
-  const stack: { alpha: number; color: Color }[] = [];
-  const gradient = { addColorStop: vi.fn() };
+  const pills: { color: string; alpha: number }[] = [];
+  const draws: { image: HTMLCanvasElement; alpha: number }[] = [];
+  const stack: number[] = [];
   const context = {
-    globalAlpha: 1,
-    fillStyle: "" as Color,
-    strokeStyle: "",
-    lineWidth: 1,
-    font: "",
-    textAlign: "",
-    textBaseline: "",
-    save: vi.fn(() => stack.push({ alpha: context.globalAlpha, color: context.fillStyle })),
+    globalAlpha: 1, fillStyle: "", strokeStyle: "", lineWidth: 1,
+    font: "", textAlign: "", textBaseline: "",
+    save: vi.fn(() => stack.push(context.globalAlpha)),
     restore: vi.fn(() => {
-      const state = stack.pop();
-      if (!state) throw new Error("Unbalanced canvas restore");
-      context.globalAlpha = state.alpha;
-      context.fillStyle = state.color;
+      const alpha = stack.pop();
+      if (alpha === undefined) throw new Error("Unbalanced canvas restore");
+      context.globalAlpha = alpha;
     }),
-    clearRect: vi.fn(),
-    translate: vi.fn(),
-    beginPath: vi.fn(),
-    rect: vi.fn(),
-    clip: vi.fn(),
-    roundRect: vi.fn(),
+    getTransform: vi.fn(() => ({ a: 1, d: 1 })),
+    setTransform: vi.fn(), clearRect: vi.fn(), beginPath: vi.fn(),
+    rect: vi.fn(), clip: vi.fn(), roundRect: vi.fn(),
     fill: vi.fn(() => pills.push({ color: context.fillStyle, alpha: context.globalAlpha })),
-    createLinearGradient: vi.fn(() => gradient as unknown as CanvasGradient),
-    stroke: vi.fn(),
-    moveTo: vi.fn(),
-    lineTo: vi.fn(),
-    fillText: vi.fn(),
-    fillRect: vi.fn((x: number, y: number, width: number, height: number) => {
-      fills.push({ color: context.fillStyle, alpha: context.globalAlpha, x, y, width, height });
+    stroke: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), fillText: vi.fn(), fillRect: vi.fn(),
+    drawImage: vi.fn<(image: HTMLCanvasElement, x: number, y: number, width: number, height: number) => void>((image) => {
+      draws.push({ image, alpha: context.globalAlpha });
     }),
   };
-  return { context, ctx: context as unknown as CanvasRenderingContext2D, fills, pills, gradient };
+  return { context, ctx: context as unknown as CanvasRenderingContext2D, pills, draws };
 }
+
+const rasters = new Map<HTMLCanvasElement, ReturnType<typeof recordingContext>>();
+beforeEach(() => {
+  rasters.clear();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+    const recording = recordingContext();
+    rasters.set(this, recording);
+    return recording.ctx;
+  });
+});
+afterEach(() => vi.restoreAllMocks());
 
 function slots(...states: TimelineSlotData["state"][]): TimelineSlotData[] {
   return states.map((state, chunkIndex) => ({ state, chunkIndex, durationSeconds: 4 }));
 }
-
 function sceneFor(list = slots("ready", "ready", "ready")) {
   return createConveyorScene(list, buildCumulativeStartTimes(list), new Map(), 40);
 }
-
+const palette = { amber: "#f59e0b", active: "#active", bar: "#bar", muted: "#muted" };
 function viewport(overrides: Partial<ConveyorViewport> = {}): ConveyorViewport {
-  return {
-    width: 320,
-    height: 64,
-    centerSeconds: 6,
-    renderedDurationSeconds: 12,
-    palette: { amber: "#f59e0b", active: "#active", bar: "#bar", muted: "#muted" },
-    ...overrides,
-  };
+  return { width: 320, height: 64, centerSeconds: 6, renderedDurationSeconds: 12, palette, ...overrides };
 }
+function rasterPills() { return [...rasters.values()].flatMap(recording => recording.pills); }
 
-describe("conveyor vector painting", () => {
-  test("draws visible chunks in order at fractional positions without moving a DOM layer", () => {
+describe("conveyor native-resolution artwork", () => {
+  test("moves rigid artwork fractionally without moving a DOM layer or rebuilding contours", () => {
     const { ctx, context } = recordingContext();
     const scene = sceneFor();
     paintConveyor(ctx, scene, viewport());
-    expect(context.translate.mock.calls).toEqual([[-80, 0], [80, 0], [240, 0]]);
-    expect(context.fillText.mock.calls.map(call => call[0])).toEqual(["1", "2", "3"]);
-    context.translate.mockClear();
-
+    expect(context.drawImage.mock.calls.map(call => call[1])).toEqual([-80, 80, 80, 240]);
+    expect(new Set([...rasters.values()].flatMap(r => r.context.fillText.mock.calls.map(c => c[0]))))
+      .toEqual(new Set(["1", "2", "3"]));
+    expect(rasters.size).toBe(6);
+    context.drawImage.mockClear();
     paintConveyor(ctx, scene, viewport({ centerSeconds: 6.001 }));
-    expect(context.translate.mock.calls[0][0]).toBeCloseTo(-80.04, 8);
-    expect(context.translate.mock.calls[1][0]).toBeCloseTo(79.96, 8);
+    expect(context.drawImage.mock.calls[0][1]).toBeCloseTo(-80.04, 8);
+    expect(context.drawImage.mock.calls[1][1]).toBeCloseTo(79.96, 8);
+    expect(rasters.size).toBe(6);
+    expect(context.roundRect).not.toHaveBeenCalled();
     expect(context.save).toHaveBeenCalledTimes(context.restore.mock.calls.length);
     expect(context.globalAlpha).toBe(1);
   });
 
-  test("motion and fractional amber fill use the SAME frame position", () => {
-    const { ctx, context, gradient } = recordingContext();
-    const scene = sceneFor(slots("playing"));
-    // 160px slot => 30 bars => first bar spans 4/30 seconds.
-    paintConveyor(ctx, scene, viewport({ centerSeconds: 0.05 }));
-    expect(context.createLinearGradient).toHaveBeenCalledTimes(1);
-    expect(context.createLinearGradient).toHaveBeenCalledWith(4, 0, 7, 0);
-    const fraction = 0.05 / (4 / 30);
-    expect(gradient.addColorStop.mock.calls).toEqual([
-      [0, "#f59e0b"], [fraction, "#f59e0b"], [fraction, "#bar"], [1, "#bar"],
-    ]);
+  test("motion and disjoint played/unplayed regions share the SAME frame position", () => {
+    const { ctx, context } = recordingContext();
+    paintConveyor(ctx, sceneFor(slots("playing")), viewport({ centerSeconds: 0.05 }));
+    expect(context.rect.mock.calls).toEqual([[158, 0, 2, 64], [160, 0, 158, 64]]);
+    expect(context.drawImage.mock.calls.map(call => call[1])).toEqual([158, 158]);
+    expect(context.clip).toHaveBeenCalledTimes(2);
   });
 
-  test("keeps failed/missing chunks unfilled and draws the broken-signal treatment", () => {
-    const { ctx, context, pills } = recordingContext();
+  test("keeps failed/missing chunks unfilled and caches the broken-signal treatment", () => {
+    const { ctx } = recordingContext();
     paintConveyor(ctx, sceneFor(slots("failed", "missing_expected")), viewport());
-    expect(pills.some(pill => pill.color === "#f59e0b")).toBe(false);
-    expect(context.stroke).toHaveBeenCalledTimes(1);
-    expect(context.roundRect).toHaveBeenCalled();
+    expect(rasterPills().some(pill => pill.color === palette.amber)).toBe(false);
+    expect([...rasters.values()].reduce((n, r) => n + r.context.stroke.mock.calls.length, 0)).toBe(1);
+    expect(rasters.size).toBe(2); // No unnecessary amber copies of non-fill slots.
   });
 
   test("played chunks recede and gaps retain their different tint", () => {
-    const { ctx, fills, pills } = recordingContext();
+    const { ctx, draws } = recordingContext();
     paintConveyor(ctx, sceneFor(slots("played", "ready_after_gap")), viewport());
-    const backgrounds = fills.filter(fill => fill.color === "#muted");
-    expect(backgrounds.map(fill => fill.alpha)).toEqual([0.4, 1]);
-    const amber = pills.filter(pill => pill.color === "#f59e0b");
-    expect(amber.some(fill => fill.alpha === 0.4)).toBe(true);
-    expect(amber.some(fill => fill.alpha === 0.7)).toBe(true);
+    expect(draws[0].alpha).toBe(0.4);
+    const amber = rasterPills().filter(pill => pill.color === palette.amber);
+    expect(amber.some(pill => pill.alpha === 0.7)).toBe(true);
   });
 
   test("draws no amber until audio is rendered", () => {
-    const { ctx, pills } = recordingContext();
+    const { ctx, draws } = recordingContext();
     paintConveyor(ctx, sceneFor(), viewport({ renderedDurationSeconds: 0 }));
-    expect(pills.some(pill => pill.color === "#f59e0b")).toBe(false);
+    for (const draw of draws) {
+      expect(rasters.get(draw.image)?.pills.some(pill => pill.color === palette.amber)).toBe(false);
+    }
   });
 
-  test("paints each pill once, without overlapping fills or per-pill clips that can pulse", () => {
-    const { ctx, context, fills, pills } = recordingContext();
-    paintConveyor(ctx, sceneFor(slots("played", "playing", "ready")), viewport({ centerSeconds: 6.01 }));
-    expect(pills.length).toBe(context.roundRect.mock.calls.length);
-    // Only the chunk boundaries/backgrounds clip or fillRect. There is never
-    // a second antialiased layer over a played OR partially played pill.
-    expect(context.clip).toHaveBeenCalledTimes(3);
-    expect(fills).toHaveLength(3);
-    expect(context.createLinearGradient).toHaveBeenCalledTimes(1);
+  test("never supersamples or rescales rounded backing dimensions to fractional slot widths", () => {
+    const { ctx, context } = recordingContext();
+    context.getTransform.mockReturnValue({ a: 1.5, d: 1.5 });
+    const list = [{ chunkIndex: 0, state: "playing" as const, durationSeconds: 4.013 }];
+    paintConveyor(ctx, sceneFor(list), viewport({ centerSeconds: 2 }));
+    for (const [image, , , width, height] of context.drawImage.mock.calls) {
+      expect(image.width).toBe(Math.ceil(4.013 * 40 * 1.5));
+      expect(width * 1.5).toBe(image.width);
+      expect(height * 1.5).toBe(image.height);
+    }
+    for (const r of rasters.values()) expect(r.context.setTransform).toHaveBeenCalledWith(1.5, 0, 0, 1.5, 0, 0);
+  });
+
+  test("rebuilds artwork only for changed palette, height or native monitor density", () => {
+    const scene = sceneFor(slots("playing"));
+    const { ctx, context } = recordingContext();
+    const theme = { ...palette, amber: "#d97706" };
+    paintConveyor(ctx, scene, viewport());
+    expect(rasters.size).toBe(2);
+    paintConveyor(ctx, scene, viewport({ centerSeconds: 6.001 }));
+    expect(rasters.size).toBe(2);
+    paintConveyor(ctx, scene, viewport({ palette: theme }));
+    expect(rasters.size).toBe(4);
+    context.getTransform.mockReturnValue({ a: 2, d: 2 });
+    paintConveyor(ctx, scene, viewport({ palette: theme }));
+    expect(rasters.size).toBe(6);
+    paintConveyor(ctx, scene, viewport({ palette: theme }));
+    expect(rasters.size).toBe(6);
+    paintConveyor(ctx, scene, viewport({ palette: theme, height: 60 }));
+    expect(rasters.size).toBe(8);
+  });
+
+  test("releases offscreen artwork instead of retaining a book of raster images", () => {
+    const scene = sceneFor(slots(...Array<TimelineSlotData["state"]>(100).fill("ready")));
+    const { ctx, draws } = recordingContext();
+    paintConveyor(ctx, scene, viewport({ centerSeconds: 6 }));
+    const originalImage = draws[0].image;
+    paintConveyor(ctx, scene, viewport({ centerSeconds: 200 }));
+    draws.length = 0;
+    paintConveyor(ctx, scene, viewport({ centerSeconds: 6 }));
+    expect(draws[0].image).not.toBe(originalImage);
   });
 
   test("pools analyzed peaks once per layout, not on every animation frame", () => {
@@ -145,7 +164,7 @@ describe("conveyor vector painting", () => {
     expect(scene.bars(0)).toBe(first);
   });
 
-  test("a book-sized scene reads only the visible chunks plus logarithmic lookup", () => {
+  test("a book-sized scene prepares only visible artwork with logarithmic lookup", () => {
     let reads = 0;
     const list = new Proxy(slots(...Array<TimelineSlotData["state"]>(10_000).fill("ready")), {
       get(target, key, receiver) {
@@ -155,18 +174,18 @@ describe("conveyor vector painting", () => {
     });
     const starts = buildCumulativeStartTimes(list);
     const scene = createConveyorScene(list, starts, new Map(), 40);
-    const { ctx, context } = recordingContext();
+    const { ctx } = recordingContext();
     reads = 0;
     paintConveyor(ctx, scene, viewport({ centerSeconds: 20_002 }));
-    expect(context.fillText.mock.calls.length).toBeLessThanOrEqual(3);
-    expect(reads).toBeLessThan(40);
+    expect(rasters.size).toBeLessThanOrEqual(6);
+    expect(reads).toBeLessThan(45);
   });
 
-  test("empty or unmeasured scenes clear safely without preparing bars", () => {
+  test("empty or unmeasured scenes clear safely without preparing artwork", () => {
     const { ctx, context } = recordingContext();
     paintConveyor(ctx, createConveyorScene([], [], new Map(), 0), viewport());
     expect(context.clearRect).toHaveBeenCalledWith(0, 0, 320, 64);
-    expect(context.roundRect).not.toHaveBeenCalled();
+    expect(rasters.size).toBe(0);
   });
 });
 

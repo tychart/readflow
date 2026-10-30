@@ -26,10 +26,10 @@ export function useElementWidth<T extends HTMLElement = HTMLDivElement>() {
     elementRef.current = element;
     if (!element) return;
 
-    if (typeof ResizeObserver === "undefined") {
-      setWidth(Math.round(element.getBoundingClientRect().width));
-      return;
-    }
+    // Paint the initial layout immediately; observer delivery can be deferred
+    // for an occluded window. Subsequent resizes still use the content box.
+    setWidth(Math.round(element.getBoundingClientRect().width));
+    if (typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver((entries) => {
       const next = entries[0]?.contentRect.width;

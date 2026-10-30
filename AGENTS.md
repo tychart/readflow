@@ -262,7 +262,7 @@ Key files:
   media-speed extensions cannot discover or re-rate it)
 - `web/src/lib/media-window.ts` (pure: streaming-window thresholds, eviction range, buffered-range checks)
 - `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
-- `web/src/components/WaveformSlot.tsx` (overview DOM bars), `web/src/lib/waveform-style.ts` (shared bar geometry), `web/src/lib/conveyor-canvas.ts` (conveyor vector painter)
+- `web/src/components/WaveformSlot.tsx` (overview DOM bars), `web/src/lib/waveform-style.ts` (shared bar geometry), `web/src/lib/conveyor-canvas.ts` (conveyor artwork cache/painter)
 - `web/src/components/WaveformTimeline.tsx` (whole-document overview bar)
 - `web/src/components/ChunkConveyor.tsx` + `ReaderDock.tsx` (zoomed scrub strip; phone dock)
 - `web/src/components/Playbar.tsx` + `TransportControls.tsx` + `PlaybackButtons.tsx`
@@ -784,9 +784,10 @@ chunk at a time instead.
 
 Rendering rules:
 
-- **One stationary canvas, directly drawn vectors.** `conveyor-canvas.ts` draws
-  rounded bars, backgrounds, labels and fill at fractional coordinates. No DOM
-  slot translation, moving bitmap, identity filter, SVG fallback or UA sniff.
+- **One stationary Canvas2D viewport with native-resolution cached artwork.**
+  `conveyor-canvas.ts` rasterizes each visible chunk's bars, background and label
+  once into played/unplayed images, then stamps those rigid images at fractional
+  positions. No DOM translation, identity filter, WebGL pipeline or UA sniff.
   The overview still uses `WaveformSlot`; geometry is in `waveform-style.ts`.
 - Standalone reproduction: `scripts/diagnostics/conveyor-motion.html`. Open it
   directly in a browser; no server or dependencies are needed.
@@ -801,16 +802,29 @@ Rendering rules:
   paused, gesture and reduced-motion positions instead. Motion and fill use
   the same position. React reports must not repaint over the frame loop.
 - Backing pixels follow `devicePixelRatio`, including monitor moves while
-  paused. CSS viewport size never animates. Read CSS palette colors on theme
-  changes, not every frame. The existing waveform peaks remain the source.
+  paused. Measure the actual canvas content viewport: a 64px bordered wrapper
+  contains a 62px canvas. CSS must not resize a wrongly sized backing image.
+  Read CSS colors on layout/theme changes, not every frame.
 - Binary search finds visible slots; peaks are lazily pooled/cached per scene
-  (slots/peaks/scale). Never scan a book or resample peaks per frame.
-- **One fill per pill.** Partial fill is a split-color gradient, not an amber
-  overlay on a muted pill; overlapping antialiased edges were removed.
-- **Open at this checkpoint:** the user STILL reports slight rapid pulsing of
-  already-played orange bars after the single-fill change. Motion is confirmed
-  smooth, fill pulsing is NOT resolved. Investigate it separately without
-  reverting the successful canvas motion architecture.
+  (slots/peaks/scale). Only visible chunk images are retained. New peaks/slot
+  states replace the scene; height, palette or density changes rebuild artwork.
+  Never scan a book, re-pool peaks or re-rasterize contours on every frame.
+- **Preserve native pixels.** Round texture backing dimensions up, then draw at
+  `image.width / scaleX` and `image.height / scaleY`, NOT at the fractional slot
+  width. The user found only native-density caching clean: direct vector redraw
+  and 2×/3× caches all produced distracting edge crawl in BOTH Firefox and
+  Vivaldi. Do not add supersampling as an assumed quality improvement.
+- Played/unplayed artwork is clipped into disjoint regions at the same frame's
+  playhead. No amber-over-muted double-compositing or per-pill clip stack.
+- **Accepted visual trade-off (explicit user decision):** native cached 3px bars
+  have confirmed smooth motion and clean edges, with slight brightness pulsing
+  remaining on the low-DPI display. A tested linear-light WebGL prototype removed
+  the pulse (~0.23% vs ~5.45% luminance variation) but looked softer/fuzzier while
+  moving. The user preferred native Canvas2D and simplicity. Do NOT claim the
+  pulse is eliminated or ship the rejected GPU pipeline. Fractional 2.125px gaps
+  reduce synchronized edge coverage, but cannot guarantee constant luminance.
+  Average sRGB code values are not emitted light; any brightness measurements
+  must convert them to linear light first.
 - Canvas content is decorative (`aria-hidden`); group/readout and main timeline
   keep their semantics. Gestures remain strip-level with touch-action pan-y;
   grabbing starts at the painted position, and seeking commits only at rest.
@@ -844,7 +858,10 @@ The player reports at ~20Hz. Only the active overview slot may re-render:
 - Tests: `WaveformTimeline.test.tsx` counts slot renders; `ChunkConveyor.test.tsx`
   pins painter ownership/scene reuse; `conveyor-canvas.test.ts` covers fractional
   positions, fill, gaps, caching, book-sized bounded work and backing pixels.
-  Playwright checks actual canvas pixels, theme/resize repaints and gestures.
+  Playwright checks actual canvas pixels, theme/resize repaints, gestures and
+  rigid native-image filtering at fractional positions/DPR 1, 1.5 and 2. The
+  earlier <1% luminance experiment is not the chosen visual acceptance contract:
+  the user explicitly preferred sharper native caching over linear-light filtering.
 
 ### Two historical bugs worth protecting against
 
@@ -2224,8 +2241,16 @@ Conveyor smoothness round:
    vectors were smooth. Replaced the DOM strip with a stationary vector canvas.
 4. The user confirmed smooth movement in the actual reader. Gestures and the
    backend/playback model stay unchanged; geometry is shared with the overview.
-5. Orange-area brightness pulsing is still open (see rendering rules). This
-   checkpoint preserves the verified motion fix while that is investigated.
+5. Direct per-frame vector rasterization left distracting contour crawl in
+   both Firefox and Vivaldi. User comparison selected native-resolution cached
+   artwork, NOT 2×/3× supersampling. The frame loop now stamps visible chunk
+   images; cache residency is bounded to the visible slots.
+6. Corrected the 64px-wrapper/62px-content backing mismatch and added immediate
+   width measurement so initial drawing does not depend on observer delivery.
+7. A linear-light GPU prototype removed the remaining brightness pulse but
+   softened moving edges. The user explicitly chose native Canvas2D caching,
+   original 3px bars and the simpler architecture, accepting slight low-DPI
+   pulsing. Tests guard that chosen renderer; the GPU prototype is not shipped.
 
 ## Agent Workflow Checklist
 
