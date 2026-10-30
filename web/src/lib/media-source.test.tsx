@@ -874,6 +874,137 @@ describe("playbackRate", () => {
     expect(audio!.playbackRate).toBe(2.5);
     expect(audio!.defaultPlaybackRate).toBe(2.5);
   });
+
+  test("a stream rebuild keeps the chosen speed (the element reloads from defaultPlaybackRate)", async () => {
+    let bufferedEnd = 0;
+    let setPlaybackRateFromHook: (rate: number) => void = () => {};
+
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+
+    // Real browsers restore `playbackRate` from `defaultPlaybackRate` when a new
+    // source loads, and jsdom does not. Emulate it, otherwise this test would
+    // pass even if only `playbackRate` were set — which is exactly the bug that
+    // made the reader look like it "forgot" the speed on a chunk jump.
+    const srcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
+    Object.defineProperty(HTMLMediaElement.prototype, "src", {
+      configurable: true,
+      get: srcDescriptor.get,
+      set(value: string) {
+        srcDescriptor.set!.call(this, value);
+        this.playbackRate = this.defaultPlaybackRate;
+      },
+    });
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/init")) {
+        bufferedEnd = 0.5;
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness({ anchor }: { anchor: number }) {
+      const { audioRef, setPlaybackRate, playbackRate } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1]),
+        playbackAnchorIndex: anchor,
+        playIntent: false,
+        isTerminal: false,
+      });
+      setPlaybackRateFromHook = setPlaybackRate;
+      return (
+        <div data-playback-rate={playbackRate}>
+          <audio ref={audioRef} />
+        </div>
+      );
+    }
+
+    try {
+      const { container, rerender } = render(<Harness anchor={0} />);
+      const audio = container.querySelector("audio");
+      expect(audio).not.toBeNull();
+
+      act(() => {
+        setPlaybackRateFromHook(1.75);
+      });
+      expect(audio!.playbackRate).toBe(1.75);
+
+      // A chunk jump reopens the MSE stream at the new anchor (`src` reassigned).
+      rerender(<Harness anchor={1} />);
+
+      await waitFor(() =>
+        expect(container.firstChild).toHaveAttribute("data-playback-rate", "1.75"),
+      );
+      expect(audio!.playbackRate).toBe(1.75);
+      expect(audio!.defaultPlaybackRate).toBe(1.75);
+    } finally {
+      Object.defineProperty(HTMLMediaElement.prototype, "src", srcDescriptor);
+    }
+  });
+
+  test("does not route the element through the Web Audio API", async () => {
+    let bufferedEnd = 0;
+    let setPlaybackRateFromHook: (rate: number) => void = () => {};
+    const playMock = vi.fn().mockResolvedValue(undefined);
+    const audioContextConstructions: string[] = [];
+
+    installBufferedAudioState(() => bufferedEnd);
+    installRecordingMediaSource([], () => bufferedEnd);
+    HTMLMediaElement.prototype.play = playMock;
+
+    // Firefox bug 1517199 made `playbackRate` inert on elements feeding the Web
+    // Audio API; it was fixed in Firefox 91, but the old workaround stayed and
+    // routed every element through an AudioContext to "fix" Firefox. That path
+    // is a failure mode of its own (suspended context, one source per element),
+    // so construction is deliberately asserted against here.
+    class ForbiddenAudioContext {
+      constructor() {
+        audioContextConstructions.push("constructed");
+        throw new Error("AudioContext must not be created for plain playback");
+      }
+    }
+    const originalAudioContext = (window as unknown as { AudioContext?: unknown }).AudioContext;
+    (window as unknown as { AudioContext?: unknown }).AudioContext = ForbiddenAudioContext;
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/init")) {
+        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+      }
+      bufferedEnd = 4;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    }) as typeof fetch;
+
+    function Harness() {
+      const { audioRef, setPlaybackRate } = useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1]),
+        playbackAnchorIndex: 0,
+        playIntent: true,
+        isTerminal: false,
+      });
+      setPlaybackRateFromHook = setPlaybackRate;
+      return <audio ref={audioRef} />;
+    }
+
+    try {
+      const { container } = render(<Harness />);
+      const audio = container.querySelector("audio");
+      act(() => {
+        setPlaybackRateFromHook(2);
+      });
+
+      await waitFor(() => expect(playMock).toHaveBeenCalled());
+      expect(audioContextConstructions).toEqual([]);
+      expect(audio!.playbackRate).toBe(2);
+      expect(audio!.defaultPlaybackRate).toBe(2);
+    } finally {
+      (window as unknown as { AudioContext?: unknown }).AudioContext = originalAudioContext;
+    }
+  });
 });
 
 test("applies a pending seek only after the new stream (anchor change) is primed and buffered", async () => {

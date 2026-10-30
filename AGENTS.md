@@ -258,6 +258,8 @@ Key files:
 - `web/src/features/reader/RenderingStallBanner.tsx` (stalled-producer banner + Retry)
 - `web/src/features/reader/conveyor-physics.ts` (pure: conveyor gesture physics + layout)
 - `web/src/lib/media-source.ts` (player hook: `<audio>`, `MediaSource`, append queue, eviction)
+- `web/src/components/ShadowAudio.tsx` (hosts the player `<audio>` in a shadow root so page-wide
+  media-speed extensions cannot discover or re-rate it)
 - `web/src/lib/media-window.ts` (pure: streaming-window thresholds, eviction range, buffered-range checks)
 - `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
 - `web/src/components/WaveformSlot.tsx` (the shared waveform look, used by both bars)
@@ -283,7 +285,7 @@ Important design rules:
 - the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
 - `playIntent` is user intent, not identical to "the browser is currently making sound"
 - real playback state comes from the hook and must stay synchronized with the custom controls
-- **the `<audio>` element is rendered in one stable wrapper for every reader state** (loading, error, loaded). `useMediaSourcePlayer` attaches its media event listeners from an effect guarded on the element existing, so a remount after loading silently drops `progress`/`seeking`/`playing` events for the rest of the session. This was a real bug: the element used to live only in the loaded branch, in a different tree shape, and got remounted once.
+- **the `<audio>` element is rendered in one stable wrapper for every reader state** (loading, error, loaded), **inside a shadow root** (`components/ShadowAudio.tsx` — see “The audio element lives in a shadow root” below). `useMediaSourcePlayer` attaches its media event listeners from an effect guarded on the element existing, so a remount after loading silently drops `progress`/`seeking`/`playing` events for the rest of the session. This was a real bug: the element used to live only in the loaded branch, in a different tree shape, and got remounted once.
 
 ### Playback speed (in the settings panel, not the playbar)
 
@@ -312,34 +314,122 @@ control back into `Playbar`.
   compact bar no space. `formatSpeed` (`lib/format.ts`) is shared by the badge
   and the control so they cannot round the same rate differently.
 
-The hook, not the component, owns applying the rate to the element, because the
-browser fights it:
+The hook, not the component, owns applying the rate to the element.
 
-- Firefox's MSE pipeline resets `playbackRate` to 1 while appending segments, so
-the hook re-applies the rate on every animation tick (~60fps) as well as after
-`play()`, after `src` is set and after the `SourceBuffer` is created. It is
-explicitly commented as a targeted browser workaround, not normal logic.
-- The element is routed through the Web Audio API (`createMediaElementSource`)
-because Firefox otherwise ignores `playbackRate` on MSE audio. `AudioContext`
-resumes lazily on the user gesture that starts playback.
+**Firefox does not have a broken `playbackRate`.** The repository spent months
+carrying two workarounds for a bug that does not exist in any supported
+browser; both were removed after measuring real playback in Firefox 155
+(Playwright build) and Firefox 158 (system build) with the real app and real
+AAC/MSE chunks:
+
+- plain MSE at 2× advances the element clock at 2.00× — with `preservesPitch`
+  both on and off, while segments are being appended, and after a chunk jump
+  that rebuilds the `MediaSource` (effective rate 1.996–2.03 measured over
+  three-second windows);
+- routing the element through `createMediaElementSource` did **not** change that,
+  so the Web Audio route was pointless risk (a suspended `AudioContext` is
+  silent; one source node per element; element volume/mute bypassed);
+- the Firefox bugs the workarounds cited are `1517199` /
+  `1660534` — "playbackRate does not work when the media element is going to
+  the MediaGraph" — **fixed in Firefox 91**, and `966247` (volume) fixed in 53.
+  That bug was caused by the Web Audio routing itself, not by MSE.
+
+The real bug was always `defaultPlaybackRate`: assigning `src` (every anchor
+change and every `streamRestartKey` rebuild) makes the browser restore
+`playbackRate` *from* `defaultPlaybackRate`. Setting only `playbackRate` made
+the speed drop back to 1× the moment the stream was rebuilt, which read as
+"Firefox ignores the rate". `applyPlaybackRate` writes both, and
+`media-source.test.tsx` emulates the restore on `src` assignment so the pairing
+cannot regress.
+
+A "speed does nothing in <browser>" report can have a second, unrelated cause:
+a media-speed **browser extension** overriding the element. That is what the
+shadow-root host protects against — see "The audio element lives in a shadow
+root" below before concluding the browser is at fault.
 
 Rules that are easy to break:
 
 - Both properties are always written together through `applyPlaybackRate`
-(`playbackRate` *and* `defaultPlaybackRate`); letting them drift was already a
-source of bugs, so do not set one without the other.
+(`playbackRate` *and* `defaultPlaybackRate`); only `defaultPlaybackRate`
+survives a new source, so do not set one without the other.
+- Do **not** re-add per-tick rate enforcement or `createMediaElementSource`
+"for Firefox". `media-source.test.tsx` fails if an `AudioContext` is
+constructed during playback, and the manual verification recipe lives in the
+"Playback speed verification (real browsers)" section below.
 - The rate starts at `DEFAULT_PLAYBACK_RATE` (1×) and `DEFAULT_READER_SETTINGS.playbackRate`
-is 1. An earlier hardcoded 3× was a debugging leftover from chasing the Firefox
-bug — do not reintroduce a non-1× default.
+is 1. An earlier hardcoded 3× was a debugging leftover from chasing the phantom
+Firefox bug — do not reintroduce a non-1× default.
 - A typed rate is clamped to `PLAYBACK_RATE_MIN`/`PLAYBACK_RATE_MAX` (0.1–4) by
 both the control and `sanitizeReaderSettings`, so the input, the stored
 preference and the player can never disagree.
-- The Firefox re-application is per tick and kept behind `enforcePlaybackRate`,
-which exits immediately at 1× so the common case costs nothing. It looks like
-redundant code and is not: deleting it breaks Firefox MSE playback speed.
+- The element is re-synced after `src` is assigned, after `play()` resolves, and
+whenever the `playbackRate` state changes (`useLayoutEffect` with
+`[playbackRate]`). Those are one-shot calls; nothing runs per frame.
 - `SpeedSyncedAudio.tsx` was deleted: it duplicated the hook's rate application
 with an inline callback ref (which also re-ran on every render) and nothing but
 its own test imported it.
+
+### The audio element lives in a shadow root (media-speed extensions)
+
+**Symptom that started this:** in Firefox the speed presets highlighted, the
+playbar badge said 2×, and the audio and clock stayed at 1×. Vivaldi was fine.
+Incognito Firefox was fine too. It was not the browser and not the app — it was
+the **Video Speed Controller** extension (0.6.3.3) with *Audio* enabled and
+*Force last saved speed* on.
+
+What that extension does, and why no page can win against it:
+
+- it discovers media with `document.querySelectorAll("video,audio")` (audio
+tags only when its `audioBoolean` setting is on) and stores `el.vsc`;
+- with `forceLastSavedSpeed: true` it registers a **capture-phase**
+  `document.addEventListener("ratechange", …)` that sets
+  `video.playbackRate = settings.lastSpeed` (default 1) for any rate change it
+did not originate, then calls `event.stopImmediatePropagation()` — so our own
+  `ratechange` handler never even runs;
+- it also re-forces its stored speed on `play` and `seeked`. Its per-`currentSrc`
+  memory is useless here because MSE changes the `blob:` URL on every stream
+  rebuild, so it falls back to 1×.
+
+Re-asserting the rate on a tick or on `ratechange` cannot fix this: every write
+fires `ratechange` again, the extension's handler runs first (capture) and stops
+propagation, and the two sides ping-pong. Do not "fix" this by re-adding
+per-tick enforcement.
+
+The fix is to be undiscoverable: `ShadowAudio` hosts the element in a shadow root.
+`document.querySelectorAll` and `MutationObserver` do not cross shadow
+boundaries, so the extension never attaches and its capture-phase guard has
+nothing to guard. Verified against a copy of that exact profile (extension
+active, `audioBoolean: true`, `forceLastSavedSpeed: true`): no `.vsc-controller`,
+`document.querySelectorAll("audio").length === 0`, element rate 2, media clock
+2.007–2.012, real audible output captured from the PipeWire sink, and a chunk
+jump that keeps 2×.
+
+Rules that are easy to break:
+
+- The element is created **imperatively inside a `useLayoutEffect`**, not
+  portalled and not rendered by React. That ordering is load-bearing: the player
+  hook's effects run later in the same commit and need `audioRef.current` to
+  attach media listeners and open the MediaSource. A portal would only exist
+  after a second render, so the hook would mount against `null` and never retry.
+- The host `<div>` must be rendered for **every** reader state (loading, error,
+  loaded) for the same reason the old light-DOM element was: identity across the
+  loading → loaded transition.
+- `document.querySelector("audio")` no longer finds the reader's element, by
+  design. Tests use the `readerAudio()` helper in `ReaderPage.test.tsx`,
+  `ShadowAudio.test.tsx` pins both the opacity and the single-element identity,
+  and a `ReaderPage` test asserts `document.querySelectorAll("audio")` is empty.
+  If you move the element back into the light DOM, those tests fail — that is
+  the point.
+- Consequence to accept: the extension's own shortcuts (S/D/G) do nothing on the
+  reader page, because it never sees a media element there. The reader's speed
+  control (persisted per device) is the one that applies.
+
+Debug recipe: the profile of a reporter can be exercised without touching it —
+copy `prefs.js`, `extensions.json`, `extension-preferences.json`, `extensions/`,
+`storage/default/moz-extension*` and `storage-sync-v2.sqlite*` into `/tmp`, then
+launch system Firefox through Selenium/geckodriver with `-profile /tmp/…`
+(remove `lock`/`.parentlock` first). The extension's own settings live in
+`storage-sync-v2.sqlite` and can be read with `strings`.
 
 ### Static waveform playbar (replaces the old live analyser)
 
@@ -1323,6 +1413,40 @@ Important operational note:
 - the real-model suite will fail immediately if `torch.cuda.is_available()` is false in the launching shell
 - that failure is expected and correct
 - do not "fix" that by weakening validation unless the user explicitly asks
+
+### Playback speed verification (real browsers)
+
+`playbackRate` cannot be verified in jsdom (no decoder, no independent media
+clock), and **Playwright's Firefox cannot decode AAC** — it reports
+`MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.2"')` as `true` but
+fails with "Media resource … could not be decoded" because the build ships
+without the codec. So the Firefox e2e project (`bunx playwright test
+--browser=firefox` from `web/`) can only cover UI, not audio,
+and an npm-installed `playwright install firefox` is *not* a valid audio
+reference. `--browser=firefox` currently also fails one UI test
+(`reader jumps playback to a chunk from the text`, a click/layout timing issue
+specific to the mocked, non-decodable media), which is why Firefox is not in CI.
+
+The recipe that actually measures playback speed, used to retire the old
+Firefox workarounds:
+
+1. Generate MSE media the way the server does (`-c:a aac -b:a 128k
+   -movflags frag_keyframe+empty_moov+default_base_moof+separate_moof`), split
+   `ftyp`/`moov` into an init segment and the rest into a media segment.
+2. Serve it, plus a page that builds a `MediaSource`, appends init + media in
+   `sequence` mode and plays at 2×.
+3. Automate **system** Firefox (Selenium + geckodriver, `-headless`, pref
+   `media.autoplay.default=0`). Playwright cannot drive system Firefox.
+4. Measure `(audio.currentTime delta) / (performance.now delta)` over ~3 s. A
+   working 2× shows ≈2.0; the bug shows ≈1.0 with `audio.playbackRate === 2`.
+
+Results for Firefox 155 and 158 (2026) on AAC/MSE: plain element 2× ≈ 1.89–2.0,
+with `createMediaElementSource` ≈ 2.0, with `preservesPitch=false` ≈ 1.88,
+non-MSE blob ≈ 1.9. App-level checks (real Qwen job, real chunks) gave 1.996
+for a completed job, 2.004 while chunks appended, 2.03 with the speed chosen
+before pressing play, and 2.002 after a chunk jump rebuilt the stream. Pitch
+preservation survives both paths: an `AnalyserNode` shows 440 Hz at 2× with
+`preservesPitch=true` and 880 Hz with it disabled.
 
 ## CI
 

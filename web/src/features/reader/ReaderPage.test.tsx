@@ -12,6 +12,17 @@ import {
 } from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
 import type { Chunk } from "../../types/api";
+/** The reader's <audio> element lives in a shadow root (see ShadowAudio), so it
+ *  is deliberately invisible to `document.querySelector(".reader audio")`-style
+ *  lookups — reach it through the host element instead. */
+function readerAudio(container: HTMLElement): HTMLAudioElement {
+  const host = container.querySelector<HTMLElement>('[data-testid="reader-audio-host"]');
+  const audio = host?.shadowRoot?.querySelector("audio");
+  if (!audio) {
+    throw new Error("reader audio element not found");
+  }
+  return audio;
+}
 
 /* jsdom does not implement PointerEvent; provide a minimal polyfill so the
  * timeline's pointer-based seek interactions can be exercised. */
@@ -726,8 +737,7 @@ test("stays in buffering mode when playback reaches the end of the current conti
   await screen.findByText("Reader job");
   await user.click(screen.getByRole("button", { name: "Play" }));
 
-  const audio = container.querySelector("audio");
-  expect(audio).not.toBeNull();
+  const audio = readerAudio(container);
 
   act(() => {
     bufferedEnd = 12;
@@ -850,7 +860,7 @@ test("shows a stall banner when the producer stops and can retry", async () => {
     await screen.findByText("Reader job");
     await user.click(screen.getByRole("button", { name: "Play" }));
 
-    const audio = container.querySelector("audio");
+    const audio = readerAudio(container);
     act(() => {
       if (audio) {
         audio.currentTime = 12;
@@ -917,7 +927,7 @@ test("renders analyzed waveform bars fetched from the backend", async () => {
   );
 
   await screen.findByText("Reader job");
-  expect(container.querySelector("audio")).not.toBeNull();
+  expect(readerAudio(container)).toBeInstanceOf(HTMLAudioElement);
 
   // The written chunk's bar heights come from the fetched peaks.
   // jsdom has no layout, so the timeline renders a single bar whose height
@@ -1035,8 +1045,7 @@ test("returns to Play (no spinner) after a completed job finishes playing", asyn
   await screen.findByText("Reader job");
 
   await user.click(screen.getByRole("button", { name: "Play" }));
-  const audio = container.querySelector("audio");
-  expect(audio).not.toBeNull();
+  const audio = readerAudio(container);
 
   act(() => {
     audio!.currentTime = 4;
@@ -1102,8 +1111,7 @@ test("highlights the chunk under the playhead without remounting the other block
   const untouchedBlock = container.querySelector('[data-chunk-block="2"]');
   expect(untouchedBlock).not.toBeNull();
 
-  const audio = container.querySelector("audio");
-  expect(audio).not.toBeNull();
+  const audio = readerAudio(container);
 
   act(() => {
     Object.defineProperty(audio!, "currentTime", { configurable: true, value: 6 });
@@ -1196,8 +1204,7 @@ test("the now-playing equalizer only runs while audio is actually playing", asyn
     "paused",
   );
 
-  const audio = container.querySelector("audio");
-  expect(audio).not.toBeNull();
+  const audio = readerAudio(container);
   await user.click(screen.getByRole("button", { name: "Play" }));
 
   // jsdom's mocked `play()` resolves without ever clearing `paused`, and the
@@ -1293,8 +1300,7 @@ test("the ±10s buttons seek within the rendered stream", async () => {
     ),
   );
 
-  const audio = container.querySelector("audio");
-  expect(audio).not.toBeNull();
+  const audio = readerAudio(container);
 
   await user.click(screen.getByRole("button", { name: "Forward 10 seconds" }));
   expect(audio!.currentTime).toBeCloseTo(10, 5);
@@ -1386,8 +1392,7 @@ test("a skip back into evicted audio reopens the stream instead of clamping", as
   renderReader();
   await screen.findByText("Reader job");
 
-  const audio = document.querySelector("audio");
-  expect(audio).not.toBeNull();
+  const audio = readerAudio(document.body);
   await waitFor(() => expect(mediaSourceCount).toBe(1));
   await waitFor(() => expect(bufferedEnd).toBe(12));
 
@@ -2120,4 +2125,44 @@ test("shows a waiting note when the job's model is not resident", async () => {
 
   expect(await screen.findByText(/Waiting for the GPU/)).toBeInTheDocument();
   expect(screen.getByText(/Large \(1.7B\)/)).toBeInTheDocument();
+});
+
+test("keeps the reader's audio element out of page-wide media queries", async () => {
+  seedStore();
+
+  const chunks: Chunk[] = [
+    {
+      index: 0,
+      status: "written",
+      duration_seconds: 4,
+      start_seconds: 0,
+      plan_version: 1,
+      version: 0,
+      voice_id: "suzy",
+      segment_url: "/api/jobs/job-1/chunks/0",
+      peaks_url: null,
+      deprecated: false,
+      reprocessing: false,
+    },
+  ];
+
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as typeof fetch;
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  expect(readerAudio(document.body)).toBeInstanceOf(HTMLAudioElement);
+  // Media-speed extensions find players with `document.querySelectorAll("video,audio")`
+  // and then force their own playbackRate, which made the reader's speed control
+  // look broken. The element must stay invisible to that scan (see ShadowAudio).
+  expect(document.querySelectorAll("audio")).toHaveLength(0);
 });

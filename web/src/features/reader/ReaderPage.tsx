@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
@@ -6,6 +6,7 @@ import { ChunkConveyor } from "../../components/ChunkConveyor";
 import { Playbar } from "../../components/Playbar";
 import { ReaderDock } from "../../components/ReaderDock";
 import { ReaderSettingsMenu } from "../../components/ReaderSettingsMenu";
+import { ShadowAudio } from "../../components/ShadowAudio";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -937,12 +938,11 @@ export function ReaderPage() {
   // attaches its media event listeners from an effect guarded on the element
   // existing, so a remount there would silently drop progress / seeking /
   // playing events for the rest of the session.
+  //
+  // The element lives in a shadow root (see ShadowAudio) so page-wide
+  // media-speed extensions cannot discover it and force their own rate.
   const audioElement = (
-    <audio
-      aria-hidden="true"
-      className="hidden"
-      ref={audioRef as React.RefObject<HTMLAudioElement | null>}
-    />
+    <ShadowAudio audioRef={audioRef as RefObject<HTMLAudioElement | null>} />
   );
 
   // Still inside the bounded initial-load retry budget: a restart is the common
