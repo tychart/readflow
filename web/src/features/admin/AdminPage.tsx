@@ -49,6 +49,58 @@ function formatTickAge(timestamp: number | null | undefined): string {
   return `${Math.round(seconds / 60)}m ago`;
 }
 
+/** API sizes are binary MiB, never decimal MB. */
+function formatMemory(mib: number | null): string {
+  if (mib == null) return "—";
+  return mib >= 1024
+    ? `${(mib / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GiB`
+    : `${mib.toLocaleString()} MiB`;
+}
+
+function MemoryUsage({ label, used, total, color, highlight = false }: {
+  label: string;
+  used: number | null;
+  total: number | null;
+  color: string;
+  highlight?: boolean;
+}) {
+  const available = used != null && total != null && total > 0;
+  const percent = available ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
+  return (
+    <div className={`rounded-lg border p-3 ${highlight ? "mt-1 border-[var(--amber)]/25 bg-[var(--amber)]/5" : "border-transparent"}`}>
+      {highlight ? (
+        <>
+          <div className="text-[10px] font-semibold text-[var(--amber)]">{label}</div>
+          <div className="mt-1 whitespace-nowrap text-2xl font-bold text-[var(--amber)]">{formatMemory(used)}</div>
+        </>
+      ) : (
+        <>
+          <div className="text-[10px] text-[var(--ink-secondary)]">{label}</div>
+          <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">{formatMemory(used)}</div>
+        </>
+      )}
+      {available && (
+        <>
+          <div className="text-[10px] text-[var(--ink-secondary)]">
+            {highlight ? "of" : "used of"} {formatMemory(total)}{highlight ? " capacity" : ""} ({Math.round(percent)}%)
+          </div>
+          <div
+            role="meter"
+            aria-label={label}
+            aria-valuemin={0}
+            aria-valuemax={total}
+            aria-valuenow={Math.min(total, Math.max(0, used))}
+            aria-valuetext={formatMemory(used) + " used of " + formatMemory(total)}
+            className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--line)]"
+          >
+            <div className="h-full rounded-full transition-[width]" style={{ width: percent + "%", backgroundColor: color }} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ── Stat Card ────────────────────────────────────────────── */
 
 function StatCard({ label, children }: { label: string; children: React.ReactNode }) {
@@ -178,12 +230,6 @@ function AdminOverview() {
     formState.batch_candidates_large_model.some((v, i) => v !== adminState.config.batch_candidates_large_model[i]);
 
   const recentBatch = adminState.telemetry?.recent_batches[0];
-  const isGpuActive =
-    adminState.memory &&
-    adminState.memory.device !== "cpu" &&
-    adminState.memory.device !== "unloaded" &&
-    adminState.memory.device !== "loading" &&
-    adminState.memory.device !== "evicting";
 
   return (
     <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
@@ -225,7 +271,7 @@ function AdminOverview() {
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
               {formState.device === "auto" && "Uses GPU if CUDA is available, otherwise falls back to CPU."}
               {formState.device === "gpu" && "Forces CUDA. Throws error if no GPU or insufficient VRAM."}
-              {formState.device === "cpu" && "Forces CPU. Slower but uses no VRAM."}
+              {formState.device === "cpu" && "Forces CPU synthesis. Slower, with model weights kept in system RAM."}
             </span>
           </label>
 
@@ -322,7 +368,7 @@ function AdminOverview() {
           </label>
 
           <label className={labelClass()}>
-            VRAM soft limit (MB)
+            VRAM soft limit (MiB)
             <input
               className={`${inputClass()} mt-1.5`}
               type="number"
@@ -333,7 +379,7 @@ function AdminOverview() {
           </label>
 
           <label className={labelClass()}>
-            VRAM hard limit (MB)
+            VRAM hard limit (MiB)
             <input
               className={`${inputClass()} mt-1.5`}
               type="number"
@@ -530,7 +576,7 @@ function AdminOverview() {
             <span>Last tick {formatTickAge(adminState.scheduler.last_tick_at)}</span>
             {adminState.scheduler.vram_per_chunk_mb ? (
               <span title="Measured marginal allocated VRAM per chunk; the soft limit sizes batches from this">
-                ≈{Math.round(adminState.scheduler.vram_per_chunk_mb)} MB/chunk
+                ≈{Math.round(adminState.scheduler.vram_per_chunk_mb)} MiB/chunk
               </span>
             ) : null}
             {(adminState.scheduler.consecutive_errors ?? 0) > 0 && (
@@ -571,6 +617,9 @@ function AdminOverview() {
           <h2 className="mb-3 text-sm font-semibold text-[var(--ink-primary)]">
             System resources
           </h2>
+          <p className="mb-3 text-[10px] text-[var(--ink-secondary)]">
+            Green bars show total system/device usage; amber bars show ReadFlow. Both use the same capacity scale. Measurements are server-side, not this browser: system totals cover the host OS (the Linux VM on Docker Desktop), and GPU totals cover the first visible CUDA GPU.
+          </p>
           {adminState.memory ? (
             <>
               <div className="grid gap-3 md:grid-cols-2">
@@ -586,71 +635,63 @@ function AdminOverview() {
                   </div>
                 </StatCard>
 
-                {isGpuActive ? (
-                  <StatCard label="VRAM">
-                    <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">
-                      {adminState.memory.vram_reserved_mb.toLocaleString()} MB
-                    </div>
-                    <div className="text-[10px] text-[var(--ink-secondary)]">
-                      reserved of {adminState.memory.vram_total_mb.toLocaleString()} MB total
-                    </div>
-                    {/* Stacked bars */}
-                    <div className="mt-2 space-y-1">
-                      <div className="h-2 overflow-hidden rounded-full bg-[var(--line)]">
-                        <div
-                          className="h-2 rounded-full bg-[var(--amber)] transition-all"
-                          style={{
-                            width: `${adminState.memory.vram_total_mb > 0 ? Math.min((adminState.memory.vram_used_mb / adminState.memory.vram_total_mb) * 100, 100) : 0}%`,
-                          }}
-                        />
-                      </div>
-                      <div className="flex gap-3 text-[10px] text-[var(--ink-secondary)]">
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--amber)]" />
-                          Allocated {adminState.memory.vram_used_mb.toLocaleString()} MB
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--ink-secondary)]" />
-                          Headroom {Math.max(0, adminState.memory.vram_reserved_mb - adminState.memory.vram_used_mb).toLocaleString()} MB
-                        </span>
-                      </div>
-                    </div>
-                    <div className="mt-2 flex gap-3 text-[10px] text-[var(--ink-secondary)]">
-                      <span>Soft: {adminState.config.vram_soft_limit_mb.toLocaleString()} MB</span>
-                      <span>Hard: {adminState.config.vram_hard_limit_mb.toLocaleString()} MB</span>
-                    </div>
-                    {(adminState.telemetry?.oom_count ?? 0) > 0 && (
-                      <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-2 py-0.5 text-[10px] font-medium text-[var(--rose)]">
-                        {adminState.telemetry!.oom_count} OOM
-                      </div>
+                <StatCard label="GPU VRAM · CUDA device 0">
+                  <MemoryUsage
+                    label="GPU VRAM usage"
+                    used={adminState.memory.vram_used_mb}
+                    total={adminState.memory.vram_total_mb}
+                    color="var(--emerald)"
+                  />
+                  {adminState.memory.vram_total_mb != null && (
+                    <MemoryUsage
+                      label="ReadFlow (PyTorch reserved)"
+                      used={adminState.memory.vram_reserved_mb}
+                      total={adminState.memory.vram_total_mb}
+                      color="var(--amber)"
+                      highlight
+                    />
+                  )}
+                  <div className="mt-2 space-y-1 text-[10px] text-[var(--ink-secondary)]">
+                    {adminState.memory.vram_total_mb != null ? (
+                      <>
+                        <div>Free on device: {formatMemory(adminState.memory.vram_free_mb)}</div>
+                        <div>Active tensors: {formatMemory(adminState.memory.vram_allocated_mb)}</div>
+                        <div>CUDA-usable capacity, excluding driver-reserved memory. Usage includes other processes. PyTorch reserved covers active tensors and reusable cache, not all ReadFlow GPU overhead.</div>
+                      </>
+                    ) : (
+                      <div>GPU statistics unavailable — no visible CUDA GPU, fake provider, or a GPU query failed.</div>
                     )}
-                  </StatCard>
-                ) : (
-                  <StatCard label="VRAM">
-                    <div className="mt-1 text-2xl font-bold text-[var(--ink-secondary)]/50">—</div>
-                    <div className="mt-0.5 text-[10px] text-[var(--ink-secondary)]">
-                      {adminState.memory.device === "cpu" ? "Running on CPU — no GPU memory" :
-                       "Model not loaded — GPU memory not in use"}
-                    </div>
-                  </StatCard>
-                )}
+                    <div>ReadFlow allocator limits: soft {adminState.config.vram_soft_limit_mb ? formatMemory(adminState.config.vram_soft_limit_mb) : "off"} · hard {adminState.config.vram_hard_limit_mb ? formatMemory(adminState.config.vram_hard_limit_mb) : "off"}</div>
+                    {(adminState.telemetry?.oom_count ?? 0) > 0 && (
+                      <div className="text-[var(--rose)]">{adminState.telemetry!.oom_count} OOM</div>
+                    )}
+                  </div>
+                </StatCard>
               </div>
 
               <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <StatCard label="System RAM">
-                  <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">
-                    {adminState.memory.ram_used_mb.toLocaleString()} MB
-                  </div>
-                  <div className="text-[10px] text-[var(--ink-secondary)]">
-                    {adminState.memory.ram_free_mb.toLocaleString()} MB free of {adminState.memory.ram_total_mb.toLocaleString()} MB total
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--line)]">
-                    <div
-                      className="h-2 rounded-full bg-[var(--emerald)] transition-all"
-                      style={{
-                        width: `${adminState.memory.ram_total_mb ? Math.round((adminState.memory.ram_used_mb / adminState.memory.ram_total_mb) * 100) : 0}%`,
-                      }}
-                    />
+                  <MemoryUsage
+                    label="System RAM usage"
+                    used={adminState.memory.ram_used_mb}
+                    total={adminState.memory.ram_total_mb}
+                    color="var(--emerald)"
+                  />
+                  <MemoryUsage
+                    label="ReadFlow server (RSS)"
+                    used={adminState.memory.ram_process_mb}
+                    total={adminState.memory.ram_total_mb}
+                    color="var(--amber)"
+                    highlight
+                  />
+                  <div className="mt-2 space-y-1 text-[10px] text-[var(--ink-secondary)]">
+                    <div>Available to the system: {formatMemory(adminState.memory.ram_available_mb)}</div>
+                    <div>System usage includes other processes and excludes reclaimable cache. RSS is the API server process only.</div>
+                    {adminState.memory.ram_cgroup_limit_mb != null && (
+                      <div className="mt-2 border-t border-[var(--line)] pt-2">
+                        Container / cgroup: {formatMemory(adminState.memory.ram_cgroup_used_mb)} used of {formatMemory(adminState.memory.ram_cgroup_limit_mb)} limit (includes cache)
+                      </div>
+                    )}
                   </div>
                 </StatCard>
 
@@ -661,7 +702,7 @@ function AdminOverview() {
                         {recentBatch.batch_size} chunk{recentBatch.batch_size !== 1 ? "s" : ""} · {recentBatch.duration_seconds.toFixed(1)}s
                       </div>
                       <div className="text-[10px] text-[var(--ink-secondary)]">
-                        VRAM: {recentBatch.reserved_vram_mb.toLocaleString()} MB reserved · {recentBatch.allocated_vram_mb.toLocaleString()} MB allocated
+                        ReadFlow batch peak: {formatMemory(recentBatch.reserved_vram_mb)} reserved · {formatMemory(recentBatch.allocated_vram_mb)} allocated
                       </div>
                     </div>
                   ) : (

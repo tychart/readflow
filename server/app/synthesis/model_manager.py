@@ -5,6 +5,7 @@ from time import monotonic
 from app.core.config import RuntimeConfig
 from app.jobs.models import ModelState
 from app.synthesis.provider import ModelVRAMError, SynthesisProvider
+from app.telemetry.memory import MemoryStats
 from app.telemetry.service import TelemetryService
 
 
@@ -151,30 +152,17 @@ class ModelManager:
         if monotonic() >= deadline and self._state != ModelState.BUSY:
             await self.unload()
 
-    async def memory_stats(self) -> tuple[str, int, int, int, int, int, int, int, str]:
+    async def memory_stats(self) -> MemoryStats:
         stats = await self._provider.memory_stats()
-        _is_cuda, vram_total, vram_allocated = stats[0], stats[1], stats[2]
-        vram_reserved, vram_free, ram_total, ram_free = stats[3], stats[4], stats[5], stats[6]
-        ram_used, resolved_device = stats[7], stats[8]
-        # Use the resolved device from the provider when the model is loaded.
-        # During loading/evicting transitions, use the state label.
         if self._state in {ModelState.LOADING, ModelState.EVICTING}:
             device = self._state
         elif self._state in {ModelState.WARM_IDLE, ModelState.BUSY} and self._loaded_model_id:
-            device = resolved_device
+            device = stats.device
         else:
             device = "unloaded"
-        return (
-            device,
-            vram_total,
-            vram_allocated,
-            vram_reserved,
-            vram_free,
-            ram_total,
-            ram_free,
-            ram_used,
-            resolved_device,
-        )
+        # Only the device label follows lifecycle state. Host/GPU measurements
+        # remain visible even when the model is unloaded or running on CPU.
+        return stats.model_copy(update={"device": device})
 
     def _touch(self) -> None:
         self._last_used_at = monotonic()

@@ -6,6 +6,7 @@ from app.core.config import RuntimeConfig
 from app.jobs.models import ModelState
 from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import ModelVRAMError
+from app.telemetry.memory import MemoryStats
 from app.telemetry.service import TelemetryService
 
 
@@ -36,7 +37,18 @@ class _FakeProvider:
         raise RuntimeError("Not implemented in test provider")
 
     async def memory_stats(self):
-        return (False, 0, 0, 0, 0, 16384, 10240, 4096, "cpu")
+        return MemoryStats(
+            device="cpu",
+            vram_total_mb=0,
+            vram_allocated_mb=0,
+            vram_reserved_mb=0,
+            vram_free_mb=0,
+            vram_used_mb=0 - 0,
+            ram_total_mb=16384,
+            ram_available_mb=10240,
+            ram_used_mb=16384 - 10240,
+            ram_process_mb=4096,
+        )
 
 
 class _FakeOomProvider:
@@ -66,7 +78,18 @@ class _FakeOomProvider:
         raise RuntimeError("Not implemented in test provider")
 
     async def memory_stats(self):
-        return (False, 0, 0, 0, 0, 16384, 10240, 4096, "cpu")
+        return MemoryStats(
+            device="cpu",
+            vram_total_mb=0,
+            vram_allocated_mb=0,
+            vram_reserved_mb=0,
+            vram_free_mb=0,
+            vram_used_mb=0 - 0,
+            ram_total_mb=16384,
+            ram_available_mb=10240,
+            ram_used_mb=16384 - 10240,
+            ram_process_mb=4096,
+        )
 
 
 @pytest.fixture
@@ -260,7 +283,18 @@ class _FakeBrokenProvider:
         raise RuntimeError("Not implemented")
 
     async def memory_stats(self):
-        return (False, 0, 0, 0, 0, 16384, 10240, 4096, "cpu")
+        return MemoryStats(
+            device="cpu",
+            vram_total_mb=0,
+            vram_allocated_mb=0,
+            vram_reserved_mb=0,
+            vram_free_mb=0,
+            vram_used_mb=0 - 0,
+            ram_total_mb=16384,
+            ram_available_mb=10240,
+            ram_used_mb=16384 - 10240,
+            ram_process_mb=4096,
+        )
 
 
 @pytest.fixture
@@ -306,3 +340,43 @@ def test_reset_provider_clears_error_and_provider(broken_manager):
     assert broken_manager.state == ModelState.UNLOADED
     assert broken_manager.last_error is None
     assert broken_manager._provider.reset_called == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "label"),
+    [
+        (ModelState.UNLOADED, "unloaded"),
+        (ModelState.LOADING, "loading"),
+        (ModelState.EVICTING, "evicting"),
+        (ModelState.BUSY, "cuda:0"),
+        (ModelState.WARM_IDLE, "cuda:0"),
+        (ModelState.ERROR, "unloaded"),
+    ],
+)
+async def test_memory_preserves_gpu_and_ram_figures_across_model_states(
+    manager, monkeypatch, state, label
+):
+    stats = MemoryStats(
+        device="cuda:0",
+        vram_total_mb=12288,
+        vram_used_mb=10240,
+        vram_free_mb=2048,
+        vram_allocated_mb=1536,
+        vram_reserved_mb=2048,
+        ram_total_mb=65536,
+        ram_available_mb=31744,
+        ram_used_mb=33792,
+        ram_process_mb=2048,
+    )
+
+    async def memory_stats():
+        return stats
+
+    monkeypatch.setattr(manager._provider, "memory_stats", memory_stats)
+    manager._state = state
+    manager._loaded_model_id = "model"
+
+    reading = await manager.memory_stats()
+
+    assert reading.model_dump() == {**stats.model_dump(), "device": label}
+    assert stats.device == "cuda:0"  # Label changes must not mutate the sample.

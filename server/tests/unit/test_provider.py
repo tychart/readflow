@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from threading import Event
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -42,6 +44,10 @@ class _FakeCuda:
     @staticmethod
     def memory_reserved(device: int | None = None) -> int:
         return 96 * 1024 * 1024
+
+    @staticmethod
+    def mem_get_info(device: int) -> tuple[int, int]:
+        return (8 * 1024**3, 11 * 1024**3)
 
     @staticmethod
     def get_device_properties(device: int) -> _FakeCudaDeviceProperties:
@@ -568,3 +574,81 @@ def test_provider_flags_a_chunk_that_is_still_truncated_after_the_retry(monkeypa
     )
 
     assert [result.truncated for result in results] == [True, True]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_memory_stats_include_other_gpu_users_even_without_a_gpu_model(monkeypatch, device):
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
+    provider = QwenProvider()
+    provider._resolved_device = device
+
+    stats = provider._memory_stats_sync()
+
+    assert stats.device == device
+    assert stats.vram_total_mb == 11 * 1024
+    assert stats.vram_free_mb == 8 * 1024
+    assert stats.vram_used_mb == 3 * 1024
+    assert stats.vram_allocated_mb == 64
+    assert stats.vram_reserved_mb == 96
+    # CUDA context/driver/other processes are outside PyTorch's reserved pool.
+    assert stats.vram_used_mb > stats.vram_reserved_mb
+
+
+def test_memory_stats_keep_ram_when_cuda_is_unavailable(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorchNoCuda())
+
+    stats = QwenProvider()._memory_stats_sync()
+
+    assert stats.ram_total_mb > 0
+    assert stats.ram_process_mb > 0
+    assert stats.vram_total_mb is None
+    assert stats.vram_used_mb is None
+
+
+def test_memory_stats_keep_ram_when_gpu_query_fails(monkeypatch):
+    def fail(device):
+        raise RuntimeError("GPU driver unavailable")
+
+    monkeypatch.setattr(_FakeCuda, "mem_get_info", staticmethod(fail))
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
+
+    stats = QwenProvider()._memory_stats_sync()
+
+    assert stats.ram_total_mb > 0
+    assert stats.vram_used_mb is None
+    assert stats.vram_free_mb is None
+
+
+def test_memory_monitor_does_not_queue_behind_synthesis(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
+    provider = QwenProvider()
+    started = Event()
+    release = Event()
+
+    def busy_synthesis():
+        started.set()
+        release.wait(timeout=5)
+
+    async def run():
+        busy = asyncio.create_task(provider._call_in_worker(busy_synthesis))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            stats = await asyncio.wait_for(provider.memory_stats(), timeout=1)
+            assert stats.vram_used_mb == 3072
+        finally:
+            release.set()
+            await busy
+            provider._executor.shutdown(wait=True)
+
+    asyncio.run(run())
+
+
+def test_auto_device_uses_device_wide_free_memory(monkeypatch):
+    _make_provider_module_cuda(monkeypatch)
+    monkeypatch.setattr(
+        _FakeCuda, "mem_get_info", staticmethod(lambda device: (1024**3, 11 * 1024**3))
+    )
+    provider = _setup_provider(monkeypatch, device="auto")
+
+    # Other processes filled the GPU, even though ReadFlow's tensors are tiny.
+    assert provider._resolve_device() == "cpu"

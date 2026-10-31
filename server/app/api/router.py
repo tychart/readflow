@@ -18,7 +18,6 @@ from app.jobs.models import ChunkStatus, Job, JobStatus
 from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
-    AdminMemoryStats,
     AdminQueueResponse,
     AdminStateResponse,
     ChunkReprocessRequest,
@@ -603,17 +602,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             **app_services.scheduler.liveness_snapshot(),
         )
         try:
-            mem_raw = await asyncio.wait_for(app_services.model_manager.memory_stats(), timeout=2.0)
-            memory = AdminMemoryStats(
-                device=mem_raw[0],
-                vram_total_mb=mem_raw[1],
-                vram_used_mb=mem_raw[2],
-                vram_reserved_mb=mem_raw[3],
-                vram_free_mb=mem_raw[4],
-                ram_total_mb=mem_raw[5],
-                ram_free_mb=mem_raw[6],
-                ram_used_mb=mem_raw[7],
-            )
+            memory = await asyncio.wait_for(app_services.model_manager.memory_stats(), timeout=2.0)
         except Exception:
             memory = None
         return AdminStateResponse(

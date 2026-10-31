@@ -69,23 +69,31 @@ function makeAdminState(memory: AdminMemoryStats | null): AdminState {
 const MEMORY: AdminMemoryStats = {
   device: "cuda",
   vram_total_mb: 24000,
-  vram_used_mb: 6000,
+  vram_used_mb: 8000,
+  vram_allocated_mb: 6000,
   vram_reserved_mb: 8000,
   vram_free_mb: 16000,
   ram_total_mb: 32000,
-  ram_free_mb: 16000,
+  ram_available_mb: 16000,
   ram_used_mb: 16000,
+  ram_process_mb: 2048,
+  ram_cgroup_used_mb: null,
+  ram_cgroup_limit_mb: null,
 };
 
 const DIFFERENT_MEMORY: AdminMemoryStats = {
   device: "cuda",
   vram_total_mb: 24000,
-  vram_used_mb: 9000,
+  vram_used_mb: 12000,
+  vram_allocated_mb: 9000,
   vram_reserved_mb: 12000,
   vram_free_mb: 12000,
   ram_total_mb: 32000,
-  ram_free_mb: 12000,
+  ram_available_mb: 12000,
   ram_used_mb: 20000,
+  ram_process_mb: 2500,
+  ram_cgroup_used_mb: null,
+  ram_cgroup_limit_mb: null,
 };
 
 describe("applyEvent — memory_stats", () => {
@@ -144,7 +152,7 @@ describe("applyEvent — memory_stats", () => {
 
     const state = useAppStore.getState();
     expect(state.adminState?.memory).toEqual(MEMORY);
-    expect(state.adminState?.telemetry.model_state).toBe("busy");
+    expect(state.adminState?.telemetry?.model_state).toBe("busy");
   });
 
   it("preserves adminState.memory on scheduler_state event", () => {
@@ -214,6 +222,7 @@ describe("applyEvent — memory_stats", () => {
         render_ahead_seconds: 0,
         active_listener_timeout_seconds: 60,
         target_buffer_seconds: 60,
+        plan_ahead_chunks: 16,
         batch_candidates_small_model: [4, 3, 2, 1],
         batch_candidates_large_model: [3, 2, 1],
         vram_soft_limit_mb: 4000,

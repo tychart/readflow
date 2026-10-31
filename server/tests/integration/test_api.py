@@ -905,7 +905,7 @@ async def test_admin_queue_reflects_reprocessed_chunk(client, services):
 async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, services):
     """The queue view must answer even while the provider is mid-synthesis.
 
-    `memory_stats()` is executed on the provider's worker thread, so awaiting it
+    Historically `memory_stats()` ran on the synthesis worker thread, so awaiting it
     here queued behind the batch and the endpoint never returned, which is why
     the admin Queue tab looked empty. The snapshot must not touch it.
     """
@@ -955,3 +955,68 @@ async def test_admin_config_exposes_and_updates_inactive_ahead_window(client, se
     services.scheduler._ensure_planned_chunks()
     job = services.job_manager.get_job(job_id)
     assert sum(1 for chunk in job.chunks if chunk.status == "planned") == 4
+
+
+async def test_admin_memory_http_and_live_events_use_the_same_named_measurements(
+    client, services, monkeypatch
+):
+    from app.telemetry.memory import MemoryStats
+
+    stats = MemoryStats(
+        device="unloaded",
+        vram_total_mb=12288,
+        vram_used_mb=10240,
+        vram_free_mb=2048,
+        vram_reserved_mb=2048,
+        vram_allocated_mb=1536,
+        ram_total_mb=65536,
+        ram_available_mb=31744,
+        ram_used_mb=33792,
+        ram_process_mb=2048,
+        ram_cgroup_used_mb=2048,
+        ram_cgroup_limit_mb=4096,
+    )
+
+    async def memory_stats():
+        return stats
+
+    messages = []
+
+    async def broadcast(message):
+        messages.append(message)
+        services.scheduler._stop_event.set()
+
+    monkeypatch.setattr(services.model_manager, "memory_stats", memory_stats)
+    monkeypatch.setattr(services.hub, "broadcast", broadcast)
+    monkeypatch.setattr(services.scheduler, "MEMORY_STATS_INTERVAL", 0)
+
+    response = await client.get("/api/admin/state")
+    assert response.status_code == 200
+    assert response.json()["memory"] == stats.model_dump()
+
+    await services.scheduler._memory_broadcast_loop()
+    assert messages == [{"type": "memory_stats", "payload": {"memory": response.json()["memory"]}}]
+
+
+async def test_memory_failures_clear_readings_in_http_and_live_events(
+    client, services, monkeypatch
+):
+    async def memory_stats():
+        raise RuntimeError("System memory query failed")
+
+    messages = []
+
+    async def broadcast(message):
+        messages.append(message)
+        services.scheduler._stop_event.set()
+
+    monkeypatch.setattr(services.model_manager, "memory_stats", memory_stats)
+    monkeypatch.setattr(services.hub, "broadcast", broadcast)
+    monkeypatch.setattr(services.scheduler, "MEMORY_STATS_INTERVAL", 0)
+
+    response = await client.get("/api/admin/state")
+    assert response.status_code == 200
+    assert response.json()["memory"] is None
+
+    await services.scheduler._memory_broadcast_loop()
+    assert messages == [{"type": "memory_stats", "payload": {"memory": None}}]

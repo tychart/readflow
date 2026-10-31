@@ -591,6 +591,40 @@ The admin page can change runtime scheduling knobs such as:
 
 These changes are in memory only. They are not persisted across restarts.
 
+### Admin resource readings
+
+Admin → Overview → **System resources** reports the server's resources, not
+memory in the browser. Green bars show total usage and highlighted amber bars
+show ReadFlow, each against the same capacity scale, with amounts and percentages.
+These are independent readings, not additive stacked segments:
+
+- **System RAM:** system-wide usage is total minus OS-available memory. This
+  includes other processes and excludes reclaimable cache. ReadFlow's API-server
+  RSS is shown separately; it is not a sum of child processes or browser memory.
+- **GPU VRAM:** CUDA device 0's usable total, global usage, and free memory include
+  other GPU users, even while the model is unloaded or running on CPU. CUDA's
+  usable total excludes driver/firmware-reserved memory, so it can be lower than
+  the card's marketed capacity or `nvidia-smi`'s physical total. ReadFlow's
+  PyTorch reserved pool and active tensors are shown separately. The reserved
+  pool includes reusable cache but does **not** include all CUDA-context or
+  non-PyTorch overhead; it is not an exact per-process VRAM total.
+- **Units:** sizes are binary GiB/MiB (the API retains its historical `_mb`
+  suffix for MiB). Scheduler soft/hard limits still apply to ReadFlow's allocator,
+  not other processes' GPU usage.
+- **Containers:** native Linux Docker/Podman uses the host's RAM and the first
+  exposed CUDA GPU. Docker Desktop reports the Linux VM's RAM, not the
+  Windows/macOS host's RAM. A tighter memory limit exposed at the standard
+  namespaced cgroup mount is displayed separately (cgroup v2 or the v1 memory
+  controller); its usage includes cache. Missing/unreadable cgroup files do not
+  break monitoring. No privileged mode, host PID namespace, host `/proc` mount,
+  NVML package, or additional monitoring service is needed. Existing GPU-runtime
+  access is still required for CUDA readings.
+
+Readings update about every three seconds independently of synthesis. Failed
+GPU queries show unavailable GPU data while retaining RAM readings; a failed
+whole snapshot clears old readings instead of presenting them as live. Fake
+mode reports real RAM, but does not invent GPU resource readings.
+
 ### Useful environment variables
 
 - `READFLOW_TTS_PROVIDER=qwen|fake`

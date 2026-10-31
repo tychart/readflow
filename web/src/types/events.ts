@@ -71,13 +71,18 @@ export type AdminStateTelemetry = TelemetrySnapshot;
 
 export type AdminMemoryStats = {
   device: string;
-  vram_total_mb: number;
-  vram_used_mb: number;
-  vram_reserved_mb: number;
-  vram_free_mb: number;
+  /** Sizes use MiB; null GPU values mean unavailable, not zero usage. */
+  vram_total_mb: number | null;
+  vram_used_mb: number | null;
+  vram_reserved_mb: number | null;
+  vram_allocated_mb: number | null;
+  vram_free_mb: number | null;
   ram_total_mb: number;
-  ram_free_mb: number;
+  ram_available_mb: number;
   ram_used_mb: number;
+  ram_process_mb: number;
+  ram_cgroup_used_mb: number | null;
+  ram_cgroup_limit_mb: number | null;
 };
 
 export type AdminState = {
@@ -90,7 +95,7 @@ export type AdminState = {
 };
 
 export interface AdminMemoryStatsPayload {
-  memory: AdminMemoryStats;
+  memory: AdminMemoryStats | null;
 }
 
 export type WsEnvelope =

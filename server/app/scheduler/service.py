@@ -181,26 +181,19 @@ class SchedulerService:
     async def _memory_broadcast_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                mem_raw = await self._model_manager.memory_stats()
+                memory = await asyncio.wait_for(self._model_manager.memory_stats(), timeout=2.0)
+            except Exception:
+                logger.warning("Memory statistics unavailable", exc_info=True)
+                memory = None
+            try:
                 await self._hub.broadcast(
                     WsEnvelope(
                         type="memory_stats",
-                        payload={
-                            "memory": {
-                                "device": mem_raw[0],
-                                "vram_total_mb": mem_raw[1],
-                                "vram_used_mb": mem_raw[2],
-                                "vram_reserved_mb": mem_raw[3],
-                                "vram_free_mb": mem_raw[4],
-                                "ram_total_mb": mem_raw[5],
-                                "ram_free_mb": mem_raw[6],
-                                "ram_used_mb": mem_raw[7],
-                            },
-                        },
+                        payload={"memory": memory.model_dump() if memory else None},
                     ).model_dump()
                 )
             except Exception:
-                pass
+                logger.warning("Memory statistics broadcast failed", exc_info=True)
             try:
                 await asyncio.sleep(self.MEMORY_STATS_INTERVAL)
             except asyncio.CancelledError:
@@ -568,15 +561,24 @@ class SchedulerService:
         if not ranked_chunks:
             return
         stats = await self._model_manager.memory_stats()
-        # stats[1] total, stats[2] allocated (the live working set), stats[3]
-        # reserved (the caching allocator's sticky pool). Batch sizing uses
-        # allocated; the hard-limit brake uses reserved because that is what
-        # cannot be handed back to another process.
-        vram_total, vram_allocated, vram_reserved = stats[1], stats[2], stats[3]
+        if stats.device.startswith("cuda") and (
+            stats.vram_allocated_mb is None or stats.vram_reserved_mb is None
+        ):
+            # Monitoring can retain RAM when a GPU query fails, but dispatch
+            # must not interpret missing allocator readings as zero usage.
+            self._set_warning(
+                "GPU memory statistics unavailable; dispatch paused until readings recover."
+            )
+            return
+        # Keep scheduler limits scoped to ReadFlow's allocator, not device-wide
+        # usage. These are different from the system totals shown in Admin.
+        vram_total = stats.vram_total_mb or 0
+        vram_allocated = stats.vram_allocated_mb or 0
+        vram_reserved = stats.vram_reserved_mb or 0
         if self._hard_limit_exceeded(vram_reserved):
             self._set_warning(
-                f"VRAM hard limit reached ({vram_reserved} MB >= "
-                f"{self._config.vram_hard_limit_mb} MB); dispatch paused. "
+                f"VRAM hard limit reached ({vram_reserved} MiB >= "
+                f"{self._config.vram_hard_limit_mb} MiB); dispatch paused. "
                 "Evict the model or raise the hard limit in Admin."
             )
             return

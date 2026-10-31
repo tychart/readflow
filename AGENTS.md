@@ -1940,8 +1940,8 @@ scheduler behavior debuggable, not just pretty.
   `_render_next_batch`) in addition to the end-of-tick one, so "rendering now"
   is observable while the batch is in flight.
 - **`queue_snapshot()` must stay synchronous and provider-free.** It used to
-  `await ModelManager.memory_stats()`, which on the real provider runs on the
-  synthesis worker thread and therefore queued *behind the in-flight batch*: the
+  `await ModelManager.memory_stats()`, which at the time ran on the synthesis
+  worker thread and therefore queued *behind the in-flight batch*: the
   endpoint took as long as the whole synthesis (the tab looked empty/stuck), and
   the `await` yielded the event loop mid-snapshot so chunks mutated between
   collection and serialization (`queue_depth: 0` next to a `written` chunk). It
@@ -1949,6 +1949,51 @@ scheduler behavior debuggable, not just pretty.
   `next_batch` without live VRAM figures (the real dispatch still applies the
   VRAM downshift in `_render_next_batch`). `test_queue_snapshot_never_calls_provider_memory_stats`
   and `test_admin_queue_does_not_depend_on_provider_memory_stats` pin this.
+
+### Admin system-resource readings
+
+`server/app/telemetry/memory.py::MemoryStats` is the single named snapshot used
+by providers, ModelManager, the HTTP response and `memory_stats` socket events.
+Do not restore the old positional tuple or duplicate the HTTP/socket mappings.
+
+- `ram_used_mb` is **system-wide** (`total - available`), excluding reclaimable
+  cache; `ram_process_mb` is the API server's RSS. `ram_available_mb` is not
+  strictly unused memory. Never label RSS as total system usage.
+- `vram_used_mb` / `vram_free_mb` come from `torch.cuda.mem_get_info(0)` and
+  include other processes. CUDA reports **usable capacity**, excluding
+  driver/firmware-reserved memory (e.g. 11954 MiB usable on a physical 12288 MiB
+  GPU). Do not subtract PyTorch's reserve from total to invent device free space.
+- `vram_allocated_mb` and `vram_reserved_mb` remain **PyTorch-only** counters.
+  The reserve includes reusable cache, not CUDA context/non-PyTorch overhead;
+  it is not an exact per-process VRAM figure. Scheduler sizing/hard-limit policy
+  still uses allocated/reserved respectively, not device-wide used memory.
+- Monitoring queries CUDA device 0 even without a GPU-loaded model. The model's
+  lifecycle affects only the device label, never whether GPU totals are shown.
+  Queries run via `asyncio.to_thread`, **not the synthesis executor**, so long
+  batches do not freeze the resource panel. HTTP/live reads have a 2 s deadline;
+  a failed snapshot sends `memory: null` to clear stale readings. A GPU query
+  failure keeps valid RAM readings and null GPU fields (not fabricated zeros).
+  Missing GPU allocator readings pause GPU dispatch until readings recover;
+  never treat unknown usage as zero when enforcing scheduler limits.
+- Auto-device selection also uses device-wide free VRAM when deciding whether
+  the GPU has room; `total - memory_allocated()` ignored other applications.
+- `_mb` API fields are binary **MiB**; the UI explicitly formats MiB/GiB.
+- The user requested visual comparison, not just a process number under a system
+  bar: total usage is green, ReadFlow has its own highlighted amber meter, and
+  both bars align and use the same capacity scale with amounts/percentages. Keep
+  these independent rather than inventing an exact additive split: process RSS
+  includes shared/reclaimable pages, and PyTorch reserve excludes GPU overhead.
+- Deployment stays dependency/privilege-free beyond existing psutil/torch.
+  Host RAM comes from the server's OS (Linux VM for Docker Desktop), not the
+  client's computer. A tighter limit visible at the standard namespaced cgroup
+  root (v2, or v1's memory controller) is a separate container/cgroup line, whose
+  usage includes cache. No host PID/proc mount or NVML/nvidia-smi dependency.
+  Fake mode reports actual RAM and null GPU values, not synthetic host usage.
+
+Coverage: `test_memory.py` (RAM/cgroup accounting), provider tests (global vs
+allocator usage, missing/broken CUDA, monitoring while synthesis is occupied,
+auto-device free-space check), ModelManager lifecycle tests, HTTP/socket parity
+and failure tests, AdminPage tests and desktop/phone Playwright resource tests.
 
 ### Scheduler: partial batches are requeued (do not regress)
 

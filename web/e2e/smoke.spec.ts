@@ -237,6 +237,8 @@ test.beforeEach(async ({ page }) => {
           device: "auto",
           idle_unload_seconds: 300,
           max_prebuffer_seconds: 300,
+          render_ahead_seconds: 0,
+          active_listener_timeout_seconds: 60,
           target_buffer_seconds: 60,
           plan_ahead_chunks: 16,
           batch_candidates_small_model: [8, 7, 6, 5],
@@ -264,6 +266,20 @@ test.beforeEach(async ({ page }) => {
           oom_count: 0,
           recent_batches: [],
           recent_events: [],
+        },
+        memory: {
+          device: "unloaded",
+          vram_total_mb: 12288,
+          vram_used_mb: 10240,
+          vram_free_mb: 2048,
+          vram_reserved_mb: 2048,
+          vram_allocated_mb: 1536,
+          ram_total_mb: 65536,
+          ram_available_mb: 31744,
+          ram_used_mb: 33792,
+          ram_process_mb: 2048,
+          ram_cgroup_used_mb: 2048,
+          ram_cgroup_limit_mb: 4096,
         },
       },
     });
@@ -977,3 +993,41 @@ test.describe("reader settings sheet gestures", () => {
     expect(await page.evaluate(() => document.body.style.overflow)).toBe("");
   });
 });
+
+
+for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
+  test(
+    `admin distinguishes host, ReadFlow, and container memory at ${viewport.width}px`,
+    async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/admin");
+      await page.getByRole("heading", { name: "System resources" }).scrollIntoViewIfNeeded();
+
+      await expect(page.getByText("used of 64 GiB (52%)")).toBeVisible();
+      await expect(page.getByRole("meter", { name: "ReadFlow server (RSS)" })).toHaveAttribute("aria-valuetext", "2 GiB used of 64 GiB");
+      await expect(page.getByText("used of 12 GiB (83%)")).toBeVisible();
+      await expect(page.getByRole("meter", { name: "ReadFlow (PyTorch reserved)" })).toHaveAttribute("aria-valuetext", "2 GiB used of 12 GiB");
+      await expect(page.getByText("Container / cgroup: 2 GiB used of 4 GiB limit (includes cache)")).toBeVisible();
+      const meter = page.getByRole("meter", { name: "System RAM usage" });
+      await expect(meter).toHaveAttribute("aria-valuenow", "33792");
+      await expect(meter).toHaveAttribute("aria-valuemax", "65536");
+      const ratio = await meter.evaluate((element) =>
+        element.firstElementChild!.getBoundingClientRect().width / element.getBoundingClientRect().width,
+      );
+      expect(ratio).toBeCloseTo(33 / 64, 2);
+      const processMeter = page.getByRole("meter", { name: "ReadFlow server (RSS)" });
+      await expect(processMeter).toHaveAttribute("aria-valuemax", "65536");
+      await expect(processMeter).toHaveAttribute("aria-valuenow", "2048");
+      const processRatio = await processMeter.evaluate((element) =>
+        element.firstElementChild!.getBoundingClientRect().width / element.getBoundingClientRect().width,
+      );
+      expect(processRatio).toBeCloseTo(2 / 64, 2);
+      const systemBox = (await meter.boundingBox())!;
+      const processBox = (await processMeter.boundingBox())!;
+      expect(processBox.width).toBeCloseTo(systemBox.width, 1);
+      expect(processBox.x).toBeCloseTo(systemBox.x, 1);
+      await expect(page.getByText("of 64 GiB capacity (3%)")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    },
+  );
+}

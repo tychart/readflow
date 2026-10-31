@@ -3,6 +3,7 @@ from time import time
 
 from app.jobs.models import JobStatus, ModelState
 from app.synthesis.worker import RenderedChunkResult
+from app.telemetry.memory import MemoryStats
 
 
 def test_scheduler_prioritizes_active_listening_jobs_and_writes_media(services):
@@ -45,7 +46,18 @@ def test_scheduler_reduces_batch_size_when_memory_is_high(services):
     services.settings.runtime.vram_soft_limit_mb = 1
 
     async def fake_memory_stats():
-        return ("cuda", 5000, 4200, 4800, 200, 32000, 16000, 4096, "cuda")
+        return MemoryStats(
+            device="cuda",
+            vram_total_mb=5000,
+            vram_allocated_mb=4200,
+            vram_reserved_mb=4800,
+            vram_free_mb=200,
+            vram_used_mb=5000 - 200,
+            ram_total_mb=32000,
+            ram_available_mb=16000,
+            ram_used_mb=32000 - 16000,
+            ram_process_mb=4096,
+        )
 
     services.model_manager.memory_stats = fake_memory_stats
 
@@ -969,7 +981,18 @@ def test_scheduler_learns_per_chunk_vram_cost(services):
     services.settings.runtime.batch_candidates_small_model = [2]
 
     async def fake_memory_stats():
-        return ("cuda", 12000, 2400, 8560, 3440, 32000, 16000, 4096, "cuda")
+        return MemoryStats(
+            device="cuda",
+            vram_total_mb=12000,
+            vram_allocated_mb=2400,
+            vram_reserved_mb=8560,
+            vram_free_mb=3440,
+            vram_used_mb=12000 - 3440,
+            ram_total_mb=32000,
+            ram_available_mb=16000,
+            ram_used_mb=32000 - 16000,
+            ram_process_mb=4096,
+        )
 
     services.model_manager.memory_stats = fake_memory_stats  # type: ignore[method-assign]
 
@@ -1000,8 +1023,19 @@ def test_hard_vram_limit_pauses_dispatch_and_warns_once(services):
     services.settings.runtime.vram_hard_limit_mb = 100
 
     async def over_hard_limit():
-        # total, allocated, reserved all above the hard limit.
-        return ("cuda", 24000, 12000, 200, 23800, 32000, 16000, 4096, "cuda")
+        # ReadFlow's allocated/reserved pool is above the hard limit.
+        return MemoryStats(
+            device="cuda",
+            vram_total_mb=24000,
+            vram_allocated_mb=160,
+            vram_reserved_mb=200,
+            vram_free_mb=23800,
+            vram_used_mb=24000 - 23800,
+            ram_total_mb=32000,
+            ram_available_mb=16000,
+            ram_used_mb=32000 - 16000,
+            ram_process_mb=4096,
+        )
 
     services.model_manager.memory_stats = over_hard_limit  # type: ignore[method-assign]
 
@@ -1238,3 +1272,44 @@ def test_residency_snapshot_clears_when_model_is_unloaded(services):
     snapshot = services.scheduler.residency_snapshot()
     assert snapshot["resident_model_id"] is None
     assert snapshot["resident_voice_id"] is None
+
+
+async def test_missing_gpu_counters_pause_dispatch_and_recovery_resumes_it(services, monkeypatch):
+    job = _create_job(services, title="memory query failure")
+    services.job_manager.activate_job(job.id)
+    snapshot = MemoryStats(
+        device="cuda:0",
+        ram_total_mb=32000,
+        ram_available_mb=16000,
+        ram_used_mb=16000,
+        ram_process_mb=2048,
+    )
+
+    async def memory_stats():
+        return snapshot
+
+    calls = []
+
+    async def render(model_id, batch):
+        calls.append(batch)
+        return []
+
+    monkeypatch.setattr(services.model_manager, "memory_stats", memory_stats)
+    monkeypatch.setattr(services.worker, "render_batch", render)
+
+    await services.scheduler.run_once()
+    assert calls == []
+    assert "GPU memory statistics unavailable" in services.scheduler._warning
+
+    snapshot = snapshot.model_copy(
+        update={
+            "vram_total_mb": 12000,
+            "vram_used_mb": 4000,
+            "vram_free_mb": 8000,
+            "vram_reserved_mb": 2800,
+            "vram_allocated_mb": 2500,
+        }
+    )
+    await services.scheduler.run_once()
+    assert len(calls) == 1
+    assert services.scheduler._warning is None
