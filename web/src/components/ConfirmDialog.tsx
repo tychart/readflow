@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 interface ConfirmDialogProps {
   title: string;
@@ -41,15 +41,17 @@ export function ConfirmDialog({
   }, [onCancel]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={onCancel}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      {/* Backdrop dismissal is a mouse-only convenience: Escape (handled above)
+          is the keyboard path, and the dialog's own buttons are the explicit
+          action. Making the backdrop focusable would only add a "close" stop
+          that duplicates them. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: see the backdrop comment above. */}
+      <div className="absolute inset-0" onMouseDown={onCancel} />
       <div
         aria-labelledby="confirm-dialog-title"
         aria-modal="true"
-        className="w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-xl"
-        onMouseDown={(event) => event.stopPropagation()}
+        className="relative w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-xl"
         role="dialog"
       >
         <h2
@@ -58,7 +60,9 @@ export function ConfirmDialog({
         >
           {title}
         </h2>
-        <div className="mt-2 text-sm text-[var(--ink-secondary)]">{description}</div>
+        <div className="mt-2 text-sm text-[var(--ink-secondary)]">
+          {description}
+        </div>
         {children}
         <div className="mt-5 flex justify-end gap-2">
           <button

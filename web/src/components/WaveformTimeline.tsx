@@ -1,4 +1,11 @@
-import { type PointerEvent as ReactPointerEvent, memo, useCallback, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { useElementWidth } from "../hooks/useElementWidth";
 import {
@@ -97,7 +104,10 @@ const TimelineSlotItem = memo(function TimelineSlotItem({
     () => waveformForSlot(waveform, slot, barCount),
     [barCount, slot, waveform],
   );
-  const style = useMemo(() => ({ flex: `${durationSeconds} 0 0` }), [durationSeconds]);
+  const style = useMemo(
+    () => ({ flex: `${durationSeconds} 0 0` }),
+    [durationSeconds],
+  );
 
   return (
     <WaveformSlot
@@ -134,17 +144,25 @@ export function WaveformTimeline({
 }: WaveformTimelineProps) {
   const seekingPointerIdRef = useRef<number | null>(null);
   const suppressClickRef = useRef<number | null>(null);
-  const { attachRef, elementRef: containerRef, width: containerWidth } =
-    useElementWidth<HTMLDivElement>();
+  const {
+    attachRef,
+    elementRef: containerRef,
+    width: containerWidth,
+  } = useElementWidth<HTMLDivElement>();
   /**
    * While the user is dragging, the fill previews the position under the
    * pointer immediately (standard scrubber behavior) instead of waiting for the
    * audio seek to land. The real seek is committed once on pointer-up.
    * Stored in job-timeline coordinates, matching the slots.
    */
-  const [dragPreviewSeconds, setDragPreviewSeconds] = useState<number | null>(null);
+  const [dragPreviewSeconds, setDragPreviewSeconds] = useState<number | null>(
+    null,
+  );
 
-  const cumulativeStartTimes = useMemo(() => buildCumulativeStartTimes(slots), [slots]);
+  const cumulativeStartTimes = useMemo(
+    () => buildCumulativeStartTimes(slots),
+    [slots],
+  );
   const totalSeconds = useMemo(() => totalSlotDuration(slots), [slots]);
 
   /**
@@ -157,14 +175,18 @@ export function WaveformTimeline({
     (clientX: number): number => {
       const container = containerRef.current;
       if (!container || totalSeconds <= 0) return 0;
-      return secondsAtRatio(pointerRatio(clientX, container.getBoundingClientRect()), totalSeconds);
+      return secondsAtRatio(
+        pointerRatio(clientX, container.getBoundingClientRect()),
+        totalSeconds,
+      );
     },
     [containerRef, totalSeconds],
   );
 
   /** Index of the slot containing an absolute job-timeline position. */
   const slotIndexAt = useCallback(
-    (seconds: number): number => slotIndexAtSeconds(cumulativeStartTimes, seconds),
+    (seconds: number): number =>
+      slotIndexAtSeconds(cumulativeStartTimes, seconds),
     [cumulativeStartTimes],
   );
 
@@ -212,11 +234,14 @@ export function WaveformTimeline({
     [computeTimelinePositionSeconds, onSeek, slotIndexAt, slots],
   );
 
-  const handlePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (seekingPointerIdRef.current !== event.pointerId) return;
-    seekingPointerIdRef.current = null;
-    setDragPreviewSeconds(null);
-  }, []);
+  const handlePointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (seekingPointerIdRef.current !== event.pointerId) return;
+      seekingPointerIdRef.current = null;
+      setDragPreviewSeconds(null);
+    },
+    [],
+  );
 
   const handleActivate = useCallback(
     (slot: TimelineSlotData) => {
@@ -239,14 +264,19 @@ export function WaveformTimeline({
       onPointerCancel: handlePointerCancel,
       onActivate: handleActivate,
     }),
-    [handleActivate, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp],
+    [
+      handleActivate,
+      handlePointerCancel,
+      handlePointerDown,
+      handlePointerMove,
+      handlePointerUp,
+    ],
   );
 
   // Smooth height interpolation driven by the sticky bar's scroll progress
   // (80px → 40px). Kept in CSS so no React render happens per scroll frame, and
   // so there is no threshold at which the height flips.
-  const timelineHeight =
-    "calc(80px - var(--scroll-progress, 0) * 40px)";
+  const timelineHeight = "calc(80px - var(--scroll-progress, 0) * 40px)";
   const barStep = barStepPx(BAR_WIDTH_PX, BAR_GAP_PX);
   // The fill follows the pointer during a drag; otherwise it tracks the real
   // playback position (both in job-timeline coordinates).
@@ -254,10 +284,12 @@ export function WaveformTimeline({
 
   if (slots.length === 0) {
     return (
+      // A placeholder, not a control: there is no value to expose until the
+      // first chunk exists, and `status` announces its arrival.
       <div
         aria-label="Timeline"
         className="flex items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)] text-xs text-[var(--ink-secondary)]"
-        role="slider"
+        role="status"
         style={{ height: timelineHeight }}
       >
         No chunks to display
@@ -270,7 +302,10 @@ export function WaveformTimeline({
       aria-label="Audio waveform timeline"
       aria-valuemax={renderedDurationSeconds}
       aria-valuemin={0}
-      aria-valuenow={Math.min(effectivePlayheadSeconds, renderedDurationSeconds)}
+      aria-valuenow={Math.min(
+        effectivePlayheadSeconds,
+        renderedDurationSeconds,
+      )}
       className="relative flex w-full overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
       ref={attachRef}
       role="slider"

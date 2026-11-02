@@ -51,10 +51,7 @@ function shallowArrayEqual<T>(a: T[], b: T[]): boolean {
   return true;
 }
 
-function adminStateEqual(
-  a: AdminState | null,
-  b: AdminState | null,
-): boolean {
+function adminStateEqual(a: AdminState | null, b: AdminState | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return (
@@ -65,7 +62,10 @@ function adminStateEqual(
   );
 }
 
-function runtimeStatusEqual(a: RuntimeStatus | null, b: RuntimeStatus | null): boolean {
+function runtimeStatusEqual(
+  a: RuntimeStatus | null,
+  b: RuntimeStatus | null,
+): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return (
@@ -105,14 +105,29 @@ export const useAppStore = create<AppStore>((set) => ({
   reconnectAttempt: 0,
   isSocketStale: false,
   lastEvent: null,
-  setJobs: (jobs) => set((state) => (jobsEqual(state.jobs, jobs) ? state : { jobs })),
-  setVoices: (voices) => set((state) => (shallowArrayEqual(state.voices, voices) ? state : { voices })),
-  setAdminState: (adminState) => set((state) => (adminStateEqual(state.adminState, adminState) ? state : { adminState })),
+  setJobs: (jobs) =>
+    set((state) => (jobsEqual(state.jobs, jobs) ? state : { jobs })),
+  setVoices: (voices) =>
+    set((state) =>
+      shallowArrayEqual(state.voices, voices) ? state : { voices },
+    ),
+  setAdminState: (adminState) =>
+    set((state) =>
+      adminStateEqual(state.adminState, adminState) ? state : { adminState },
+    ),
   setRuntimeStatus: (runtimeStatus) =>
     set((state) =>
-      runtimeStatusEqual(state.runtimeStatus, runtimeStatus) ? state : { runtimeStatus },
+      runtimeStatusEqual(state.runtimeStatus, runtimeStatus)
+        ? state
+        : { runtimeStatus },
     ),
-  setSocketState: ({ status, lastMessageAt, error, reconnectAttempt, isStale }) =>
+  setSocketState: ({
+    status,
+    lastMessageAt,
+    error,
+    reconnectAttempt,
+    isStale,
+  }) =>
     set((state) => {
       const newState = { ...state };
       let changed = false;
@@ -121,7 +136,10 @@ export const useAppStore = create<AppStore>((set) => ({
         newState.websocketStatus = status;
         changed = true;
       }
-      if (lastMessageAt !== undefined && lastMessageAt !== state.lastSocketMessageAt) {
+      if (
+        lastMessageAt !== undefined &&
+        lastMessageAt !== state.lastSocketMessageAt
+      ) {
         newState.lastSocketMessageAt = lastMessageAt;
         changed = true;
       }
@@ -129,7 +147,10 @@ export const useAppStore = create<AppStore>((set) => ({
         newState.lastSocketError = error;
         changed = true;
       }
-      if (reconnectAttempt !== undefined && reconnectAttempt !== state.reconnectAttempt) {
+      if (
+        reconnectAttempt !== undefined &&
+        reconnectAttempt !== state.reconnectAttempt
+      ) {
         newState.reconnectAttempt = reconnectAttempt;
         changed = true;
       }
@@ -149,7 +170,10 @@ export const useAppStore = create<AppStore>((set) => ({
         event.type === "chunk_ready"
       ) {
         return {
-          jobs: { ...state.jobs, [event.payload.job.id]: toSummary(event.payload.job) },
+          jobs: {
+            ...state.jobs,
+            [event.payload.job.id]: toSummary(event.payload.job),
+          },
           lastEvent: event,
         };
       }

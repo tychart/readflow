@@ -39,7 +39,10 @@ Object.defineProperty(window, "PointerEvent", {
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
-function buildReadySlots(count: number, durationSeconds = 4): TimelineSlotData[] {
+function buildReadySlots(
+  count: number,
+  durationSeconds = 4,
+): TimelineSlotData[] {
   return Array.from({ length: count }, (_, index) => ({
     chunkIndex: index,
     state: "ready" as const,
@@ -154,8 +157,15 @@ describe("WaveformTimeline drag seeking", () => {
     expect(startSlot).not.toBeNull();
 
     // Pointer down at x=75 (3s), drag to x=225 (9s), then release.
-    fireEvent.pointerDown(startSlot as HTMLElement, { button: 0, clientX: 75, pointerId: 1 });
-    fireEvent.pointerMove(startSlot as HTMLElement, { clientX: 225, pointerId: 1 });
+    fireEvent.pointerDown(startSlot as HTMLElement, {
+      button: 0,
+      clientX: 75,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(startSlot as HTMLElement, {
+      clientX: 225,
+      pointerId: 1,
+    });
 
     // The fill previews at 9s immediately — no seek committed yet.
     expect(onSeek).not.toHaveBeenCalled();
@@ -164,7 +174,10 @@ describe("WaveformTimeline drag seeking", () => {
     expect(fills[1]?.style.width).toBe("100%");
     expect(fills[2]?.style.width).toBe("25%");
 
-    fireEvent.pointerUp(startSlot as HTMLElement, { clientX: 225, pointerId: 1 });
+    fireEvent.pointerUp(startSlot as HTMLElement, {
+      clientX: 225,
+      pointerId: 1,
+    });
 
     // Exactly one committed seek at the final pointer position (job coords).
     expect(onSeek).toHaveBeenCalledTimes(1);
@@ -186,8 +199,15 @@ describe("WaveformTimeline drag seeking", () => {
     mockTimelineWidth(300);
 
     const startSlot = container.querySelector<HTMLElement>("[data-slot-state]");
-    fireEvent.pointerDown(startSlot as HTMLElement, { button: 0, clientX: 75, pointerId: 1 });
-    fireEvent.pointerMove(startSlot as HTMLElement, { clientX: 225, pointerId: 1 });
+    fireEvent.pointerDown(startSlot as HTMLElement, {
+      button: 0,
+      clientX: 75,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(startSlot as HTMLElement, {
+      clientX: 225,
+      pointerId: 1,
+    });
     fireEvent.pointerCancel(startSlot as HTMLElement, { pointerId: 1 });
 
     expect(onSeek).not.toHaveBeenCalled();

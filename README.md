@@ -527,7 +527,7 @@ make test-real-model
 ### What they do
 
 - `make test`: web unit tests + mocked server tests
-- `make lint`: ESLint + Ruff format/lint checks
+- `make lint`: Biome (lint + format check) + Ruff lint/format checks
 - `make typecheck`: TypeScript + Pyright
 - `make test-real-model`: opt-in real Qwen tests
 
@@ -539,6 +539,23 @@ bun run test:run        # vitest, one shot
 bun run test:coverage   # vitest + v8 coverage
 bun run test:e2e        # Playwright
 ```
+
+### Web formatting and linting (Biome)
+
+Biome is the only tool for formatting, linting and import organization; there is no ESLint
+and no Prettier. The config lives at the repo root (`biome.jsonc`) so it also covers the
+root `package.json`, the compose files and the CI workflows, while the binary stays in
+`web/` (the only JS package) — which is why the scripts check `..` from `web/`.
+
+```bash
+cd web
+bun run lint       # biome check ..          read-only; fails on lint or format drift
+bun run lint:fix   # biome check --write ..  format, fix, organize imports
+bun run ci         # biome ci ..             what CI runs
+```
+
+Install the `biomejs.biome` VS Code extension; `.vscode/settings.json` already makes it the
+default formatter with format-on-save.
 
 ### Server tests
 

@@ -1,7 +1,16 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-
-import { DEFAULT_READER_SETTINGS, type ReaderSettings } from "../state/reader-settings";
+import { focusableWithin } from "../hooks/useModalFocusTrap";
+import {
+  DEFAULT_READER_SETTINGS,
+  type ReaderSettings,
+} from "../state/reader-settings";
 import { ReaderSettingsMenu } from "./ReaderSettingsMenu";
 
 /* jsdom has no PointerEvent; the popover dismisses on a pointer press. */
@@ -21,10 +30,15 @@ Object.defineProperty(window, "PointerEvent", {
 
 afterEach(cleanup);
 
-function buildProps(overrides: Partial<Parameters<typeof ReaderSettingsMenu>[0]> = {}) {
-  const settings: ReaderSettings = { ...DEFAULT_READER_SETTINGS, ...overrides.settings };
+type MenuProps = Parameters<typeof ReaderSettingsMenu>[0];
+
+function buildProps({
+  settings,
+  ...overrides
+}: Partial<Omit<MenuProps, "settings">> & {
+  settings?: Partial<ReaderSettings>;
+} = {}): MenuProps {
   return {
-    settings,
     onChange: vi.fn(),
     onReset: vi.fn(),
     playbackRate: 1,
@@ -32,9 +46,9 @@ function buildProps(overrides: Partial<Parameters<typeof ReaderSettingsMenu>[0]>
     isOverlay: false,
     showConveyorControls: false,
     ...overrides,
+    settings: { ...DEFAULT_READER_SETTINGS, ...settings },
   };
 }
-
 
 /**
  * jsdom has no `TouchEvent`, so dispatch a touch event with the fields the sheet
@@ -48,7 +62,9 @@ function dispatchTouch(
 ) {
   const touch = { clientX: 0, clientY, identifier: 0, target };
   const event = new Event(type, { bubbles: true, cancelable: true });
-  Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [touch] });
+  Object.defineProperty(event, "touches", {
+    value: type === "touchend" ? [] : [touch],
+  });
   Object.defineProperty(event, "changedTouches", { value: [touch] });
   Object.defineProperty(event, "timeStamp", { value: at });
   // The gesture handler is a native listener, so flush React's work per event.
@@ -102,7 +118,9 @@ describe("ReaderSettingsMenu", () => {
 
     fireEvent.click(screen.getByLabelText("Show chunk jump buttons"));
 
-    expect(props.onChange).toHaveBeenCalledWith({ showChunkJumpButtons: false });
+    expect(props.onChange).toHaveBeenCalledWith({
+      showChunkJumpButtons: false,
+    });
   });
 
   test("reflects the stored value of each control", () => {
@@ -112,7 +130,9 @@ describe("ReaderSettingsMenu", () => {
 
   test("hides conveyor controls until that feature is available", () => {
     openMenu(buildProps({ showConveyorControls: false }));
-    expect(screen.queryByLabelText("Show chunk conveyor")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Show chunk conveyor"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Playback motion")).not.toBeInTheDocument();
   });
 
@@ -131,7 +151,12 @@ describe("ReaderSettingsMenu", () => {
     expect(props.onChange).toHaveBeenCalledWith({ conveyorWindowSize: 4 });
 
     cleanup();
-    openMenu(buildProps({ showConveyorControls: true, settings: { showConveyor: false } }));
+    openMenu(
+      buildProps({
+        showConveyorControls: true,
+        settings: { showConveyor: false },
+      }),
+    );
     expect(screen.queryByText("Chunks in view")).not.toBeInTheDocument();
   });
 
@@ -188,8 +213,13 @@ describe("ReaderSettingsMenu", () => {
     openMenu(props);
 
     // The rate is player state passed in, not part of the persisted settings patch.
-    expect(screen.getByRole("button", { name: "1.5×" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.5");
+    expect(screen.getByRole("button", { name: "1.5×" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.getByRole("textbox", { name: /playback speed value/i }),
+    ).toHaveValue("1.5");
 
     fireEvent.click(screen.getByRole("button", { name: "2×" }));
     expect(props.onPlaybackRateChange).toHaveBeenCalledWith(2);
@@ -272,7 +302,9 @@ describe("ReaderSettingsMenu phone sheet", () => {
     swipeSheet(panel, 400, 430, 160);
 
     expect(panel.style.transform).toBe("");
-    expect(screen.getByRole("dialog", { name: "Reader settings" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Reader settings" }),
+    ).toBeInTheDocument();
   });
 
   test("a short fast flick closes the sheet", () => {
@@ -293,7 +325,83 @@ describe("ReaderSettingsMenu phone sheet", () => {
     dispatchTouch(panel, "touchend", 520, 32);
 
     expect(panel.style.transform).toBe("");
-    expect(screen.getByRole("dialog", { name: "Reader settings" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Reader settings" }),
+    ).toBeInTheDocument();
+  });
+
+  test("declares itself modal only when it renders as the phone sheet", () => {
+    openSheet();
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+
+    cleanup();
+    openMenu(buildProps({ isOverlay: false }));
+    expect(screen.getByRole("dialog")).not.toHaveAttribute("aria-modal");
+  });
+
+  test("keeps Tab inside the sheet, wrapping at both ends", () => {
+    const panel = openSheet();
+    const focusables = focusableWithin(panel);
+    expect(focusables.length).toBeGreaterThan(1);
+
+    const last = focusables[focusables.length - 1];
+    last.focus();
+    const forward = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+    });
+    document.dispatchEvent(forward);
+
+    expect(forward.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(focusables[0]);
+
+    const backwards = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+      shiftKey: true,
+    });
+    document.dispatchEvent(backwards);
+
+    expect(backwards.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(last);
+  });
+
+  test("leaves in-panel tabbing to the browser", () => {
+    const panel = openSheet();
+    const focusables = focusableWithin(panel);
+    focusables[0].focus();
+
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+    });
+    document.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(focusables[0]);
+  });
+
+  test("dismissing with the backdrop returns focus to the gear", () => {
+    openSheet();
+    const gear = screen.getByRole("button", { name: "Reader settings" });
+
+    fireEvent.click(screen.getByTestId("reader-settings-backdrop"));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(gear);
+  });
+
+  test("swiping the sheet away returns focus to the gear", () => {
+    const panel = openSheet();
+    const gear = screen.getByRole("button", { name: "Reader settings" });
+
+    swipeSheet(panel, 400, 520, 120);
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(gear);
   });
 
   test("an upward drag is left to the panel instead of dismissing", () => {
@@ -305,6 +413,8 @@ describe("ReaderSettingsMenu phone sheet", () => {
     dispatchTouch(panel, "touchend", 300, 32);
 
     expect(panel.style.transform).toBe("");
-    expect(screen.getByRole("dialog", { name: "Reader settings" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Reader settings" }),
+    ).toBeInTheDocument();
   });
 });

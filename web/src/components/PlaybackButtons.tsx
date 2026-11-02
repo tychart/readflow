@@ -50,13 +50,24 @@ export function PlayButton({
         />
       ) : showPauseIcon ? (
         /* Pause icon */
-        <svg aria-hidden="true" fill="currentColor" style={iconStyle} viewBox="0 0 16 16">
+        <svg
+          aria-hidden="true"
+          fill="currentColor"
+          style={iconStyle}
+          viewBox="0 0 16 16"
+        >
           <rect height="14" rx="1" width="5" x="2.5" y="1" />
           <rect height="14" rx="1" width="5" x="8.5" y="1" />
         </svg>
       ) : (
         /* Play icon */
-        <svg aria-hidden="true" className="ml-0.5" fill="currentColor" style={iconStyle} viewBox="0 0 16 16">
+        <svg
+          aria-hidden="true"
+          className="ml-0.5"
+          fill="currentColor"
+          style={iconStyle}
+          viewBox="0 0 16 16"
+        >
           <path d="M3 1.5v13l11-6.5L3 1.5z" />
         </svg>
       )}

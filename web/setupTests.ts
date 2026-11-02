@@ -91,7 +91,8 @@ Object.defineProperty(globalThis, "localStorage", {
     clear: () => {
       storageMap.clear();
     },
-    getItem: (key: string) => (storageMap.has(key) ? storageMap.get(key)! : null),
+    getItem: (key: string) =>
+      storageMap.has(key) ? storageMap.get(key)! : null,
     key: (index: number) => Array.from(storageMap.keys())[index] ?? null,
     removeItem: (key: string) => {
       storageMap.delete(key);

@@ -79,7 +79,9 @@ export function sanitizeReaderSettings(raw: unknown): ReaderSettings {
       typeof value.showChunkJumpButtons === "boolean"
         ? value.showChunkJumpButtons
         : DEFAULT_READER_SETTINGS.showChunkJumpButtons,
-    conveyorWindowSize: WINDOW_SIZES.includes(value.conveyorWindowSize as ConveyorWindowSize)
+    conveyorWindowSize: WINDOW_SIZES.includes(
+      value.conveyorWindowSize as ConveyorWindowSize,
+    )
       ? (value.conveyorWindowSize as ConveyorWindowSize)
       : DEFAULT_READER_SETTINGS.conveyorWindowSize,
     playbackRate: sanitizePlaybackRate(value.playbackRate),
@@ -102,7 +104,8 @@ let cached: ReaderSettings | null = null;
 const listeners = new Set<() => void>();
 
 function loadFromStorage(): ReaderSettings {
-  if (typeof localStorage === "undefined") return { ...DEFAULT_READER_SETTINGS };
+  if (typeof localStorage === "undefined")
+    return { ...DEFAULT_READER_SETTINGS };
   try {
     const raw = localStorage.getItem(READER_SETTINGS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_READER_SETTINGS };

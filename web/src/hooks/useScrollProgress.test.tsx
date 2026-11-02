@@ -9,17 +9,15 @@ afterEach(() => {
 });
 
 function setScrollY(value: number) {
-  Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value,
+    writable: true,
+  });
 }
 
 /** Mounts a div that attaches the hook's callback ref to itself. */
-function Probe({
-  variable,
-  forced,
-}: {
-  variable: string;
-  forced?: number;
-}) {
+function Probe({ variable, forced }: { variable: string; forced?: number }) {
   const attachRef = useScrollProgressVar<HTMLDivElement>({ variable, forced });
   return <div data-testid="probe" ref={attachRef} />;
 }
@@ -47,7 +45,9 @@ describe("useScrollProgressVar", () => {
     setScrollY(55);
     const { getByTestId } = render(<Probe variable="--probe-progress" />);
 
-    expect(getByTestId("probe").style.getPropertyValue("--probe-progress")).toBe("0.250");
+    expect(
+      getByTestId("probe").style.getPropertyValue("--probe-progress"),
+    ).toBe("0.250");
   });
 
   it("updates the variable on scroll without re-rendering the owner", async () => {
@@ -63,21 +63,29 @@ describe("useScrollProgressVar", () => {
     window.dispatchEvent(new Event("scroll"));
 
     await waitFor(() =>
-      expect(getByTestId("probe").style.getPropertyValue("--probe-progress")).toBe("1.000"),
+      expect(
+        getByTestId("probe").style.getPropertyValue("--probe-progress"),
+      ).toBe("1.000"),
     );
     expect(renders.mock.calls.length).toBe(rendersAfterMount);
   });
 
   it("pins a forced value and ignores scroll", async () => {
     setScrollY(180);
-    const { getByTestId } = render(<Probe forced={1} variable="--probe-progress" />);
+    const { getByTestId } = render(
+      <Probe forced={1} variable="--probe-progress" />,
+    );
 
-    expect(getByTestId("probe").style.getPropertyValue("--probe-progress")).toBe("1.000");
+    expect(
+      getByTestId("probe").style.getPropertyValue("--probe-progress"),
+    ).toBe("1.000");
 
     setScrollY(0);
     window.dispatchEvent(new Event("scroll"));
     // No listener is attached for a pinned value, so nothing can move it.
     await Promise.resolve();
-    expect(getByTestId("probe").style.getPropertyValue("--probe-progress")).toBe("1.000");
+    expect(
+      getByTestId("probe").style.getPropertyValue("--probe-progress"),
+    ).toBe("1.000");
   });
 });

@@ -67,7 +67,10 @@ export function resolveAppendWindowEnd({
   if (pendingSeekSeconds === null) {
     return aheadEnd;
   }
-  return Math.max(aheadEnd, pendingSeekSeconds + STREAM_WINDOW_SEEK_LOOKAHEAD_SECONDS);
+  return Math.max(
+    aheadEnd,
+    pendingSeekSeconds + STREAM_WINDOW_SEEK_LOOKAHEAD_SECONDS,
+  );
 }
 
 /**
@@ -80,11 +83,16 @@ export function needsWindowFill({
   bufferedUntilSeconds,
   pendingSeekSeconds,
 }: WindowFillInput): boolean {
-  if (pendingSeekSeconds !== null && pendingSeekSeconds > bufferedUntilSeconds) {
+  if (
+    pendingSeekSeconds !== null &&
+    pendingSeekSeconds > bufferedUntilSeconds
+  ) {
     return true;
   }
   const remainingAhead = bufferedUntilSeconds - Math.max(0, playheadSeconds);
-  return remainingAhead < STREAM_WINDOW_AHEAD_SECONDS - STREAM_WINDOW_REFILL_SECONDS;
+  return (
+    remainingAhead < STREAM_WINDOW_AHEAD_SECONDS - STREAM_WINDOW_REFILL_SECONDS
+  );
 }
 
 /**
@@ -111,7 +119,10 @@ export function resolveEvictionRange(
  * tell "this audio is loaded" apart from "this audio was evicted", which decides
  * between an in-stream seek and reopening the stream.
  */
-export function isSecondsBuffered(ranges: SecondsRange[], targetSeconds: number): boolean {
+export function isSecondsBuffered(
+  ranges: SecondsRange[],
+  targetSeconds: number,
+): boolean {
   for (const range of ranges) {
     if (
       targetSeconds >= range.start - STREAM_WINDOW_EPSILON_SECONDS &&
@@ -124,7 +135,10 @@ export function isSecondsBuffered(ranges: SecondsRange[], targetSeconds: number)
 }
 
 /** True when the position is behind the retained audio (played and evicted). */
-export function isSecondsEvicted(ranges: SecondsRange[], targetSeconds: number): boolean {
+export function isSecondsEvicted(
+  ranges: SecondsRange[],
+  targetSeconds: number,
+): boolean {
   if (ranges.length === 0) {
     return false;
   }

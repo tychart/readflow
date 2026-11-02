@@ -3,8 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { buildChunk } from "../../test-utils/chunks";
-import { buildReaderTextSegments } from "./reader-text";
 import { ReaderChunkBlock, ReaderContent, ReaderTextBody } from "./ReaderText";
+import { buildReaderTextSegments } from "./reader-text";
 
 afterEach(cleanup);
 
@@ -19,8 +19,8 @@ function bodySegments(...chunks: ReturnType<typeof buildChunk>[]) {
 
 function chunkState(chunkIndex: number): string | null {
   return (
-    document.querySelector<HTMLElement>(`[data-chunk-block="${chunkIndex}"]`)?.dataset.chunkState ??
-    null
+    document.querySelector<HTMLElement>(`[data-chunk-block="${chunkIndex}"]`)
+      ?.dataset.chunkState ?? null
   );
 }
 
@@ -29,10 +29,16 @@ interface BodyOverrides {
   playedIndexes?: Set<number>;
   showJumpButtons?: boolean;
   onJumpToChunk?: (chunkIndex: number) => void;
-  onRegisterChunkRef?: (chunkIndex: number, element: HTMLDivElement | null) => void;
+  onRegisterChunkRef?: (
+    chunkIndex: number,
+    element: HTMLDivElement | null,
+  ) => void;
 }
 
-function renderBody(segments: ReturnType<typeof buildReaderTextSegments>, overrides: BodyOverrides = {}) {
+function renderBody(
+  segments: ReturnType<typeof buildReaderTextSegments>,
+  overrides: BodyOverrides = {},
+) {
   return render(
     <ReaderTextBody
       activeChunkIndex={overrides.activeChunkIndex ?? null}
@@ -84,18 +90,31 @@ describe("ReaderTextBody", () => {
 
   test("reports how many characters the bounded tail hides", () => {
     renderBody([
-      { key: "upcoming", kind: "upcoming", chunkIndex: null, text: "abc", hiddenChars: 1234 },
+      {
+        key: "upcoming",
+        kind: "upcoming",
+        chunkIndex: null,
+        text: "abc",
+        hiddenChars: 1234,
+      },
     ]);
-    expect(screen.getByText(/1,234 more characters not shown/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1,234 more characters not shown/),
+    ).toBeInTheDocument();
   });
 
   test("registers each chunk block element by index and clears it on unmount", () => {
     const onRegisterChunkRef = vi.fn();
-    const { unmount } = renderBody(bodySegments(buildChunk(7, { char_start: 0, char_end: 4 })), {
-      onRegisterChunkRef,
-    });
+    const { unmount } = renderBody(
+      bodySegments(buildChunk(7, { char_start: 0, char_end: 4 })),
+      {
+        onRegisterChunkRef,
+      },
+    );
 
-    const block = document.querySelector<HTMLDivElement>('[data-chunk-block="7"]');
+    const block = document.querySelector<HTMLDivElement>(
+      '[data-chunk-block="7"]',
+    );
     expect(block).not.toBeNull();
     expect(onRegisterChunkRef).toHaveBeenCalledWith(7, block);
 
@@ -115,15 +134,21 @@ describe("ReaderTextBody jump controls", () => {
   test("offers a labelled jump button on every chunk", () => {
     renderBody(segments, { showJumpButtons: true });
 
-    expect(screen.getByRole("button", { name: "Jump playback to chunk 1" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Jump playback to chunk 2" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Jump playback to chunk 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Jump playback to chunk 2" }),
+    ).toBeInTheDocument();
   });
 
   test("jump reports the chunk it belongs to", async () => {
     const onJumpToChunk = vi.fn();
     renderBody(segments, { onJumpToChunk, showJumpButtons: true });
 
-    await userEvent.click(screen.getByRole("button", { name: "Jump playback to chunk 2" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Jump playback to chunk 2" }),
+    );
 
     expect(onJumpToChunk).toHaveBeenCalledWith(1);
   });
@@ -132,17 +157,25 @@ describe("ReaderTextBody jump controls", () => {
     renderBody(segments, { activeChunkIndex: 0, showJumpButtons: true });
 
     expect(screen.getByTestId("chunk-0-now-playing")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Jump playback to chunk 1" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Jump playback to chunk 1" }),
+    ).toBeNull();
     // The other chunk keeps its control.
-    expect(screen.getByRole("button", { name: "Jump playback to chunk 2" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Jump playback to chunk 2" }),
+    ).toBeInTheDocument();
   });
 
   test("uses a return arrow, not the previous download-looking glyph", () => {
     renderBody(segments, { showJumpButtons: true });
 
-    const button = screen.getByRole("button", { name: "Jump playback to chunk 2" });
+    const button = screen.getByRole("button", {
+      name: "Jump playback to chunk 2",
+    });
     expect(
-      Array.from(button.querySelectorAll("path")).map((path) => path.getAttribute("d")),
+      Array.from(button.querySelectorAll("path")).map((path) =>
+        path.getAttribute("d"),
+      ),
     ).toEqual(["M9 14 4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 0 11H11"]);
     // The old glyph was an arrow pointing down at a baseline, which read as a
     // download button. Keep the icon a single stroked arrow.
@@ -157,9 +190,9 @@ describe("ReaderTextBody jump controls", () => {
     const marker = screen.getByTestId("chunk-0-now-playing");
     expect(marker.querySelectorAll("[data-now-playing-bar]")).toHaveLength(4);
     // The bars are uneven, so the marker reads as a live signal.
-    const heights = Array.from(marker.querySelectorAll<HTMLElement>("[data-now-playing-bar]")).map(
-      (bar) => bar.style.height,
-    );
+    const heights = Array.from(
+      marker.querySelectorAll<HTMLElement>("[data-now-playing-bar]"),
+    ).map((bar) => bar.style.height);
     expect(new Set(heights).size).toBeGreaterThan(1);
   });
 
@@ -167,20 +200,16 @@ describe("ReaderTextBody jump controls", () => {
     renderBody(segments, { activeChunkIndex: 0, showJumpButtons: true });
 
     const bars = Array.from(
-      screen.getByTestId("chunk-0-now-playing").querySelectorAll<HTMLElement>("[data-now-playing-bar]"),
+      screen
+        .getByTestId("chunk-0-now-playing")
+        .querySelectorAll<HTMLElement>("[data-now-playing-bar]"),
     );
-    expect(bars.map((bar) => bar.style.getPropertyValue("--equalizer-duration"))).toEqual([
-      "800ms",
-      "970ms",
-      "1140ms",
-      "1310ms",
-    ]);
-    expect(bars.map((bar) => bar.style.getPropertyValue("--equalizer-delay"))).toEqual([
-      "0ms",
-      "130ms",
-      "260ms",
-      "390ms",
-    ]);
+    expect(
+      bars.map((bar) => bar.style.getPropertyValue("--equalizer-duration")),
+    ).toEqual(["800ms", "970ms", "1140ms", "1310ms"]);
+    expect(
+      bars.map((bar) => bar.style.getPropertyValue("--equalizer-delay")),
+    ).toEqual(["0ms", "130ms", "260ms", "390ms"]);
 
     // Regression guard: the `animation` shorthand must never be set inline. It
     // resets `animation-play-state` to `running` at inline priority, which is
@@ -195,7 +224,9 @@ describe("ReaderTextBody jump controls", () => {
   test("renders no jump control when the setting is off", () => {
     renderBody(segments, { showJumpButtons: false });
 
-    expect(screen.queryByRole("button", { name: /Jump playback to chunk/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Jump playback to chunk/ }),
+    ).toBeNull();
     // The chunk number itself is not a control.
     expect(screen.getByText("Chunk 1")).toBeInTheDocument();
   });
@@ -213,7 +244,6 @@ describe("ReaderChunkBlock", () => {
   test("re-rendering with unchanged props preserves the DOM node", () => {
     const { rerender } = render(
       <ReaderChunkBlock
-        animateNowPlaying
         chunkIndex={3}
         isActive={false}
         isPlayed={false}
@@ -227,7 +257,6 @@ describe("ReaderChunkBlock", () => {
 
     rerender(
       <ReaderChunkBlock
-        animateNowPlaying
         chunkIndex={3}
         isActive={false}
         isPlayed={false}
@@ -243,7 +272,6 @@ describe("ReaderChunkBlock", () => {
 
   test("updates state when the chunk becomes active", () => {
     const props = {
-      animateNowPlaying: true,
       chunkIndex: 1,
       isPlayed: false,
       onJump: NOOP_JUMP,
@@ -251,7 +279,9 @@ describe("ReaderChunkBlock", () => {
       showJumpButton: true,
       text: "text",
     };
-    const { rerender } = render(<ReaderChunkBlock {...props} isActive={false} />);
+    const { rerender } = render(
+      <ReaderChunkBlock {...props} isActive={false} />,
+    );
     expect(chunkState(1)).toBe("idle");
 
     rerender(<ReaderChunkBlock {...props} isActive />);
@@ -261,7 +291,6 @@ describe("ReaderChunkBlock", () => {
   test("falls back to a placeholder for an empty chunk", () => {
     render(
       <ReaderChunkBlock
-        animateNowPlaying={false}
         chunkIndex={0}
         isActive={false}
         isPlayed={false}
@@ -355,6 +384,8 @@ describe("ReaderContent", () => {
         title="Chapter one"
       />,
     );
-    expect(screen.queryByRole("button", { name: /sidebar/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /sidebar/i }),
+    ).not.toBeInTheDocument();
   });
 });

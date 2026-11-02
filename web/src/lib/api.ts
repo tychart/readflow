@@ -46,11 +46,13 @@ async function readErrorDetail(response: Response): Promise<string | null> {
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
+    ...init,
     headers: {
-      ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(init?.body instanceof FormData
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...init?.headers,
     },
-    ...init,
   });
   if (!response.ok) {
     const detail = await readErrorDetail(response);
@@ -66,7 +68,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-function parseDownloadFilename(contentDisposition: string | null, fallback: string) {
+function parseDownloadFilename(
+  contentDisposition: string | null,
+  fallback: string,
+) {
   if (!contentDisposition) {
     return fallback;
   }
@@ -90,10 +95,14 @@ export const api = {
 
   /** Creates a new job from form data. */
   createJob: (formData: FormData) =>
-    request<{ job: JobDetail }>(apiPath("/jobs"), { method: "POST", body: formData }),
+    request<{ job: JobDetail }>(apiPath("/jobs"), {
+      method: "POST",
+      body: formData,
+    }),
 
   /** Fetches the media manifest for a job. */
-  getManifest: (jobId: string) => request<JobManifest>(apiPath(`/jobs/${jobId}/manifest`)),
+  getManifest: (jobId: string) =>
+    request<JobManifest>(apiPath(`/jobs/${jobId}/manifest`)),
 
   /** Activates a job for listening. Returns a summary: playback transitions
    *  never change the document, so the reader keeps its loaded detail. */
@@ -128,11 +137,18 @@ export const api = {
   updateJobVoice: (jobId: string, voiceId: string, rerenderWritten = false) =>
     request<JobDetail>(apiPath(`/jobs/${jobId}/voice`), {
       method: "POST",
-      body: JSON.stringify({ voice_id: voiceId, rerender_written: rerenderWritten }),
+      body: JSON.stringify({
+        voice_id: voiceId,
+        rerender_written: rerenderWritten,
+      }),
     }),
 
   /** Updates playback position. */
-  updatePlayback: (jobId: string, currentTimeSeconds: number, isPlaying: boolean) =>
+  updatePlayback: (
+    jobId: string,
+    currentTimeSeconds: number,
+    isPlaying: boolean,
+  ) =>
     request<JobDetail>(apiPath(`/jobs/${jobId}/playback`), {
       method: "POST",
       body: JSON.stringify({
@@ -142,21 +158,31 @@ export const api = {
     }),
 
   /** Reprocess a specific chunk, optionally with new text/voice. */
-  reprocessChunk: (jobId: string, chunkIndex: number, options?: {
-    new_text?: string;
-    new_voice_id?: string;
-  }) =>
-    request<JobDetail>(apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/reprocess`), {
-      method: "POST",
-      body: JSON.stringify(options ?? {}),
-    }),
+  reprocessChunk: (
+    jobId: string,
+    chunkIndex: number,
+    options?: {
+      new_text?: string;
+      new_voice_id?: string;
+    },
+  ) =>
+    request<JobDetail>(
+      apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/reprocess`),
+      {
+        method: "POST",
+        body: JSON.stringify(options ?? {}),
+      },
+    ),
 
   /** Set the active version for a chunk index. */
   setActiveVersion: (jobId: string, chunkIndex: number, version: number) =>
-    request<JobDetail>(apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/set-active-version`), {
-      method: "POST",
-      body: JSON.stringify({ version }),
-    }),
+    request<JobDetail>(
+      apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/set-active-version`),
+      {
+        method: "POST",
+        body: JSON.stringify({ version }),
+      },
+    ),
 
   /** Downloads the rendered audio for a job. */
   downloadJobAudio: async (jobId: string) => {
@@ -201,16 +227,23 @@ export const api = {
     }),
 
   /** Warms the model. */
-  warmModel: () => request<{ status: string }>(apiPath("/admin/model/warm"), { method: "POST" }),
+  warmModel: () =>
+    request<{ status: string }>(apiPath("/admin/model/warm"), {
+      method: "POST",
+    }),
 
   /** Evicts the model from VRAM. */
   evictModel: () =>
-    request<{ status: string }>(apiPath("/admin/model/evict"), { method: "POST" }),
+    request<{ status: string }>(apiPath("/admin/model/evict"), {
+      method: "POST",
+    }),
 
   /**
    * Resets a stuck or errored provider (fresh worker executor). The manual
    * escape hatch for the scheduler's timeout circuit breaker.
    */
   resetModel: () =>
-    request<{ status: string }>(apiPath("/admin/model/reset"), { method: "POST" }),
+    request<{ status: string }>(apiPath("/admin/model/reset"), {
+      method: "POST",
+    }),
 };

@@ -4,11 +4,11 @@ import {
   DEFAULT_READER_SETTINGS,
   getReaderSettings,
   invalidateReaderSettingsCache,
+  PLAYBACK_RATE_MAX,
+  PLAYBACK_RATE_MIN,
   READER_SETTINGS_STORAGE_KEY,
   resetReaderSettings,
   resolveAnimatedMotion,
-  PLAYBACK_RATE_MAX,
-  PLAYBACK_RATE_MIN,
   sanitizeReaderSettings,
   setReaderSettings,
   subscribeReaderSettings,
@@ -34,7 +34,9 @@ describe("sanitizeReaderSettings", () => {
     });
     expect(settings.motionMode).toBe(DEFAULT_READER_SETTINGS.motionMode);
     expect(settings.showChunkJumpButtons).toBe(false);
-    expect(settings.conveyorWindowSize).toBe(DEFAULT_READER_SETTINGS.conveyorWindowSize);
+    expect(settings.conveyorWindowSize).toBe(
+      DEFAULT_READER_SETTINGS.conveyorWindowSize,
+    );
   });
 
   test("accepts every valid value", () => {
@@ -53,21 +55,33 @@ describe("sanitizeReaderSettings", () => {
       conveyorWindowSize: 5,
       playbackRate: 1.5,
     });
-    expect(sanitizeReaderSettings({ conveyorWindowSize: 3 }).conveyorWindowSize).toBe(3);
-    expect(sanitizeReaderSettings({ motionMode: "reduced" }).motionMode).toBe("reduced");
+    expect(
+      sanitizeReaderSettings({ conveyorWindowSize: 3 }).conveyorWindowSize,
+    ).toBe(3);
+    expect(sanitizeReaderSettings({ motionMode: "reduced" }).motionMode).toBe(
+      "reduced",
+    );
   });
 
   test("clamps a stored playback speed into the supported range", () => {
-    expect(sanitizeReaderSettings({ playbackRate: 1.75 }).playbackRate).toBe(1.75);
-    expect(sanitizeReaderSettings({ playbackRate: 99 }).playbackRate).toBe(PLAYBACK_RATE_MAX);
-    expect(sanitizeReaderSettings({ playbackRate: 0 }).playbackRate).toBe(PLAYBACK_RATE_MIN);
-    expect(sanitizeReaderSettings({ playbackRate: -2 }).playbackRate).toBe(PLAYBACK_RATE_MIN);
+    expect(sanitizeReaderSettings({ playbackRate: 1.75 }).playbackRate).toBe(
+      1.75,
+    );
+    expect(sanitizeReaderSettings({ playbackRate: 99 }).playbackRate).toBe(
+      PLAYBACK_RATE_MAX,
+    );
+    expect(sanitizeReaderSettings({ playbackRate: 0 }).playbackRate).toBe(
+      PLAYBACK_RATE_MIN,
+    );
+    expect(sanitizeReaderSettings({ playbackRate: -2 }).playbackRate).toBe(
+      PLAYBACK_RATE_MIN,
+    );
     expect(sanitizeReaderSettings({ playbackRate: "fast" }).playbackRate).toBe(
       DEFAULT_READER_SETTINGS.playbackRate,
     );
-    expect(sanitizeReaderSettings({ playbackRate: Number.NaN }).playbackRate).toBe(
-      DEFAULT_READER_SETTINGS.playbackRate,
-    );
+    expect(
+      sanitizeReaderSettings({ playbackRate: Number.NaN }).playbackRate,
+    ).toBe(DEFAULT_READER_SETTINGS.playbackRate);
   });
 });
 
@@ -90,7 +104,9 @@ describe("reader settings store", () => {
 
   test("persists changes to localStorage and reloads them", () => {
     setReaderSettings({ showChunkJumpButtons: false, conveyorWindowSize: 4 });
-    expect(JSON.parse(localStorage.getItem(READER_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
+    expect(
+      JSON.parse(localStorage.getItem(READER_SETTINGS_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({
       showChunkJumpButtons: false,
       conveyorWindowSize: 4,
     });

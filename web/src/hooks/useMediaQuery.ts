@@ -9,13 +9,17 @@ import { useEffect, useState } from "react";
  * breakpoints in tests as well as browsers. After mount the real query is the
  * source of truth.
  */
-export function useMediaQuery(query: string, initiallyMatches: boolean): boolean {
+export function useMediaQuery(
+  query: string,
+  initiallyMatches: boolean,
+): boolean {
   const [matches, setMatches] = useState(initiallyMatches);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const list = window.matchMedia(query);
-    const handleChange = (event: MediaQueryListEvent) => setMatches(event.matches);
+    const handleChange = (event: MediaQueryListEvent) =>
+      setMatches(event.matches);
     list.addEventListener("change", handleChange);
     return () => list.removeEventListener("change", handleChange);
   }, [query]);

@@ -52,7 +52,9 @@ export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
   const queueRef = useRef<number[]>([]);
   const controllersRef = useRef(new Map<number, AbortController>());
   const processingRef = useRef(false);
-  const [waveforms, setWaveforms] = useState<Map<number, Float32Array>>(() => new Map());
+  const [waveforms, setWaveforms] = useState<Map<number, Float32Array>>(
+    () => new Map(),
+  );
 
   const chunksRef = useRef(chunks);
   chunksRef.current = chunks;
@@ -67,7 +69,9 @@ export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
         const controller = new AbortController();
         controllersRef.current.set(index, controller);
         try {
-          const response = await fetch(chunk.peaks_url, { signal: controller.signal });
+          const response = await fetch(chunk.peaks_url, {
+            signal: controller.signal,
+          });
           if (!response.ok) continue;
           const peaks = parsePeaks(await response.json());
           if (peaks) {
@@ -95,7 +99,8 @@ export function useChunkWaveforms(chunks: Chunk[]): Map<number, Float32Array> {
       if (!chunk.peaks_url) continue;
       if (fetchedRef.current.get(chunk.index) === peaksKey(chunk)) continue;
       if (inflightRef.current.has(chunk.index)) continue;
-      if (!queueRef.current.includes(chunk.index)) queueRef.current.push(chunk.index);
+      if (!queueRef.current.includes(chunk.index))
+        queueRef.current.push(chunk.index);
     }
     if (!processingRef.current && queueRef.current.length > 0) {
       processingRef.current = true;

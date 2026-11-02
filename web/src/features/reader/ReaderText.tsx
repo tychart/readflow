@@ -1,5 +1,5 @@
-import { memo } from "react";
 import type { CSSProperties, RefObject } from "react";
+import { memo } from "react";
 
 import type { ReaderTextSegment } from "./reader-text";
 
@@ -49,8 +49,12 @@ export function ReaderContent({
       {/* Header row with title + toggle */}
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">Reader</p>
-          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">{title}</h2>
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
+            Reader
+          </p>
+          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
+            {title}
+          </h2>
         </div>
         <div className="flex items-center gap-2">
           <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
@@ -115,9 +119,15 @@ export function ReaderContent({
 
 /**
  * Bar heights for the now-playing equalizer, as a percentage of the icon box.
- * Deliberately uneven so the bars read as a live signal rather than a chart.
+ * Deliberately uneven so the bars read as a live signal rather than a chart. The
+ * keys are explicit because each bar is a distinct fixed shape, not a list item.
  */
-const NOW_PLAYING_BAR_HEIGHTS = [58, 100, 74, 90];
+const NOW_PLAYING_BARS = [
+  { key: "low", heightPercent: 58 },
+  { key: "full", heightPercent: 100 },
+  { key: "mid", heightPercent: 74 },
+  { key: "high", heightPercent: 90 },
+];
 
 export interface ReaderChunkBlockProps {
   chunkIndex: number;
@@ -190,17 +200,20 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
               {/* Equalizer bars — the standard "this is what's playing" marker.
                   Applied only when reader motion allows it; paused by CSS while
                   audio is not actually running. */}
-              <span aria-hidden="true" className="flex h-3.5 items-end justify-center gap-[1.5px]">
-                {NOW_PLAYING_BAR_HEIGHTS.map((heightPercent, barIndex) => (
+              <span
+                aria-hidden="true"
+                className="flex h-3.5 items-end justify-center gap-[1.5px]"
+              >
+                {NOW_PLAYING_BARS.map((bar, barIndex) => (
                   <span
+                    key={bar.key}
                     className="w-[2px] origin-bottom rounded-full bg-current"
                     data-now-playing-bar
-                    key={barIndex}
                     style={
                       {
                         "--equalizer-delay": `${barIndex * 130}ms`,
                         "--equalizer-duration": `${800 + barIndex * 170}ms`,
-                        height: `${heightPercent}%`,
+                        height: `${bar.heightPercent}%`,
                       } as CSSProperties
                     }
                   />
@@ -250,7 +263,10 @@ export interface ReaderUpcomingBlockProps {
 }
 
 /** Dimmed tail block for text the planner has not reached yet. */
-export function ReaderUpcomingBlock({ text, hiddenChars }: ReaderUpcomingBlockProps) {
+export function ReaderUpcomingBlock({
+  text,
+  hiddenChars,
+}: ReaderUpcomingBlockProps) {
   return (
     <div className="relative rounded-lg border-l-2 border-l-white/5 px-4 py-3 opacity-45 [contain-intrinsic-size:auto_160px] [content-visibility:auto]">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
@@ -259,7 +275,9 @@ export function ReaderUpcomingBlock({ text, hiddenChars }: ReaderUpcomingBlockPr
           ? ` — ${hiddenChars.toLocaleString()} more characters not shown`
           : " — not queued yet"}
       </div>
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">{text}</p>
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
+        {text}
+      </p>
     </div>
   );
 }
@@ -270,7 +288,10 @@ export interface ReaderTextBodyProps {
   segments: ReaderTextSegment[];
   activeChunkIndex: number | null;
   playedIndexes: Set<number>;
-  onRegisterChunkRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
+  onRegisterChunkRef: (
+    chunkIndex: number,
+    element: HTMLDivElement | null,
+  ) => void;
   /** Reader setting: show the per-chunk jump control. */
   showJumpButtons: boolean;
   onJumpToChunk: (chunkIndex: number) => void;
@@ -305,12 +326,19 @@ export const ReaderTextBody = memo(function ReaderTextBody({
     <>
       {segments.map((segment) =>
         segment.kind === "upcoming" ? (
-          <ReaderUpcomingBlock hiddenChars={segment.hiddenChars} key={segment.key} text={segment.text} />
+          <ReaderUpcomingBlock
+            hiddenChars={segment.hiddenChars}
+            key={segment.key}
+            text={segment.text}
+          />
         ) : (
           <ReaderChunkBlock
             chunkIndex={segment.chunkIndex ?? 0}
             isActive={segment.chunkIndex === activeChunkIndex}
-            isPlayed={segment.chunkIndex !== null && playedIndexes.has(segment.chunkIndex)}
+            isPlayed={
+              segment.chunkIndex !== null &&
+              playedIndexes.has(segment.chunkIndex)
+            }
             key={segment.key}
             onJump={onJumpToChunk}
             onRegisterRef={onRegisterChunkRef}

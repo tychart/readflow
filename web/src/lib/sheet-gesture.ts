@@ -65,6 +65,12 @@ export function shouldDismissSheet({
 
 /** Backdrop opacity for the current drag offset (fades as the sheet moves down). */
 export function sheetBackdropOpacity(deltaY: number): number {
-  const progress = Math.min(1, sheetDragOffset(deltaY) / SHEET_BACKDROP_FADE_PX);
-  return Math.max(SHEET_BACKDROP_MIN_OPACITY, 1 - progress * (1 - SHEET_BACKDROP_MIN_OPACITY));
+  const progress = Math.min(
+    1,
+    sheetDragOffset(deltaY) / SHEET_BACKDROP_FADE_PX,
+  );
+  return Math.max(
+    SHEET_BACKDROP_MIN_OPACITY,
+    1 - progress * (1 - SHEET_BACKDROP_MIN_OPACITY),
+  );
 }

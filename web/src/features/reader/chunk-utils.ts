@@ -7,7 +7,10 @@ import type { Chunk, ChunkStatus, JobStatus } from "../../types/api";
  */
 
 /** Job statuses after which no further chunks will be produced. */
-export const TERMINAL_JOB_STATUSES: readonly JobStatus[] = ["completed", "failed"];
+export const TERMINAL_JOB_STATUSES: readonly JobStatus[] = [
+  "completed",
+  "failed",
+];
 
 export function isTerminalStatus(status: JobStatus | undefined): boolean {
   return status ? TERMINAL_JOB_STATUSES.includes(status) : false;
@@ -21,7 +24,8 @@ export function sortChunks(chunks: readonly Chunk[]): Chunk[] {
 /** Insert or replace a chunk by (index, version), keeping timeline order. */
 export function upsertChunk(chunks: Chunk[], incoming: Chunk): Chunk[] {
   const next = chunks.filter(
-    (chunk) => !(chunk.index === incoming.index && chunk.version === incoming.version),
+    (chunk) =>
+      !(chunk.index === incoming.index && chunk.version === incoming.version),
   );
   next.push(incoming);
   return sortChunks(next);

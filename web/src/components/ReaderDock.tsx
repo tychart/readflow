@@ -1,4 +1,7 @@
-import { resolvePlayButtonLabel, resolveShowSpinner } from "../features/reader/transport";
+import {
+  resolvePlayButtonLabel,
+  resolveShowSpinner,
+} from "../features/reader/transport";
 import type { ConveyorWindowSize } from "../state/reader-settings";
 import type { TimelineSlotData } from "../types/timeline";
 import { ChunkConveyor } from "./ChunkConveyor";
@@ -71,7 +74,10 @@ export function ReaderDock({
             onSkip={onSkip}
             playButtonSize="52px"
             playIconSize="18px"
-            playLabel={resolvePlayButtonLabel({ isAutoplayBlocked, playIntent })}
+            playLabel={resolvePlayButtonLabel({
+              isAutoplayBlocked,
+              playIntent,
+            })}
             showPauseIcon={isPlaying || playIntent}
             showSpinner={resolveShowSpinner({
               isAutoplayBlocked,

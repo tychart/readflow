@@ -24,7 +24,10 @@ export interface TransportState {
 export function resolvePlayButtonLabel({
   isAutoplayBlocked,
   playIntent,
-}: Pick<TransportState, "isAutoplayBlocked" | "playIntent">): "Play" | "Pause" | "Resume" {
+}: Pick<TransportState, "isAutoplayBlocked" | "playIntent">):
+  | "Play"
+  | "Pause"
+  | "Resume" {
   if (isAutoplayBlocked) return "Resume";
   return playIntent ? "Pause" : "Play";
 }
@@ -37,7 +40,11 @@ export function resolveShowSpinner({
   isWaitingForData,
   playIntent,
 }: Omit<TransportState, "isJobTerminal">): boolean {
-  return isLoadingAudio || (playIntent && !isAutoplayBlocked && !isPlaying) || isWaitingForData;
+  return (
+    isLoadingAudio ||
+    (playIntent && !isAutoplayBlocked && !isPlaying) ||
+    isWaitingForData
+  );
 }
 
 export interface PlayerStateInput extends TransportState {
@@ -60,9 +67,14 @@ export function resolvePlayerStateLabel(state: PlayerStateInput): string {
   // "Loading audio…" is about fetching/buffering audio this client asked for.
   // With nothing rendered yet there is nothing to load, and "Preparing
   // stream…" is the honest copy (the producer has not emitted a chunk).
-  if (state.isLoadingAudio && state.renderedDurationSeconds > 0) return "Loading audio…";
+  if (state.isLoadingAudio && state.renderedDurationSeconds > 0)
+    return "Loading audio…";
   if (state.playIntent && state.isWaitingForData) return "Buffering…";
-  if (state.playIntent && !state.isPlaying && state.renderedDurationSeconds <= 0) {
+  if (
+    state.playIntent &&
+    !state.isPlaying &&
+    state.renderedDurationSeconds <= 0
+  ) {
     return "Preparing stream…";
   }
   if (state.playIntent) return "Starting…";
@@ -93,5 +105,7 @@ export function isRenderingStalled(
   if (state.isJobTerminal) return false;
   if (!state.playIntent) return false;
   if (!state.isWaitingForData) return false;
-  return secondsSinceChunk !== null && secondsSinceChunk >= RENDERING_STALL_SECONDS;
+  return (
+    secondsSinceChunk !== null && secondsSinceChunk >= RENDERING_STALL_SECONDS
+  );
 }

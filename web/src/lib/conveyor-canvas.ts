@@ -1,4 +1,7 @@
-import { conveyorTrackOriginPx, visibleSlotIndexes } from "../features/reader/conveyor-physics";
+import {
+  conveyorTrackOriginPx,
+  visibleSlotIndexes,
+} from "../features/reader/conveyor-physics";
 import type { TimelineSlotData } from "../types/timeline";
 import {
   BAR_GAP_PX,
@@ -7,7 +10,12 @@ import {
   MIN_BAR_HEIGHT,
   SLOT_H_PADDING_PX,
 } from "./waveform-style";
-import { barCountForWidth, isNonFillState, isSlotDimmed, waveformForSlot } from "./waveform-timeline";
+import {
+  barCountForWidth,
+  isNonFillState,
+  isSlotDimmed,
+  waveformForSlot,
+} from "./waveform-timeline";
 
 export interface ConveyorPalette {
   amber: string;
@@ -21,9 +29,14 @@ export function readConveyorPalette(element: HTMLElement): ConveyorPalette {
   const style = getComputedStyle(element);
   return {
     amber: style.getPropertyValue("--amber").trim() || "#f59e0b",
-    active: style.getPropertyValue("--amber-soft").trim() || "rgba(245,158,11,0.15)",
-    bar: style.getPropertyValue("--waveform-bar-dim").trim() || "rgba(255,255,255,0.18)",
-    muted: style.getPropertyValue("--waveform-bar-muted").trim() || "rgba(255,255,255,0.10)",
+    active:
+      style.getPropertyValue("--amber-soft").trim() || "rgba(245,158,11,0.15)",
+    bar:
+      style.getPropertyValue("--waveform-bar-dim").trim() ||
+      "rgba(255,255,255,0.18)",
+    muted:
+      style.getPropertyValue("--waveform-bar-muted").trim() ||
+      "rgba(255,255,255,0.10)",
   };
 }
 
@@ -47,7 +60,8 @@ function rasterizeSlot(
 
   let background = palette.muted;
   if (slot.state === "failed") background = "rgba(136,19,55,0.30)";
-  else if (slot.state === "missing_expected") background = "rgba(136,19,55,0.15)";
+  else if (slot.state === "missing_expected")
+    background = "rgba(136,19,55,0.15)";
   else if (slot.state === "playing") background = palette.active;
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, width, height);
@@ -65,14 +79,20 @@ function rasterizeSlot(
 
   const nonFill = isNonFillState(slot.state);
   ctx.fillStyle = played ? palette.amber : palette.bar;
-  if (nonFill) ctx.fillStyle = slot.state === "failed" ? "rgba(244,63,94,0.6)" : palette.muted;
+  if (nonFill)
+    ctx.fillStyle =
+      slot.state === "failed" ? "rgba(244,63,94,0.6)" : palette.muted;
   if (slot.state === "ready_after_gap") ctx.globalAlpha = played ? 0.7 : 0.5;
   for (let i = 0; i < bars.length; i += 1) {
     const barX = SLOT_H_PADDING_PX / 2 + i * (BAR_WIDTH_PX + BAR_GAP_PX);
-    const barHeight = Math.max(MIN_BAR_HEIGHT, bars[i]) * Math.max(0, height - 8);
+    const barHeight =
+      Math.max(MIN_BAR_HEIGHT, bars[i]) * Math.max(0, height - 8);
     ctx.beginPath();
     ctx.roundRect(
-      barX, height - barHeight, BAR_WIDTH_PX, barHeight,
+      barX,
+      height - barHeight,
+      BAR_WIDTH_PX,
+      barHeight,
       Math.min(BAR_RADIUS_PX, BAR_WIDTH_PX / 2, barHeight / 2),
     );
     ctx.fill();
@@ -98,20 +118,25 @@ export function createConveyorScene(
   pxPerSecond: number,
 ) {
   const peaks = new Map<number, Float32Array>();
-  const images = new Map<number, {
-    height: number;
-    scaleX: number;
-    scaleY: number;
-    palette: ConveyorPalette;
-    unplayed: HTMLCanvasElement;
-    played: HTMLCanvasElement;
-  }>();
+  const images = new Map<
+    number,
+    {
+      height: number;
+      scaleX: number;
+      scaleY: number;
+      palette: ConveyorPalette;
+      unplayed: HTMLCanvasElement;
+      played: HTMLCanvasElement;
+    }
+  >();
   const bars = (index: number) => {
     let data = peaks.get(index);
     if (!data) {
       const slot = slots[index];
       const count = barCountForWidth(
-        slot.durationSeconds * pxPerSecond, BAR_WIDTH_PX + BAR_GAP_PX, SLOT_H_PADDING_PX,
+        slot.durationSeconds * pxPerSecond,
+        BAR_WIDTH_PX + BAR_GAP_PX,
+        SLOT_H_PADDING_PX,
       );
       data = waveformForSlot(waveforms.get(slot.chunkIndex), slot, count);
       peaks.set(index, data);
@@ -119,22 +144,56 @@ export function createConveyorScene(
     return data;
   };
   return {
-    slots, starts, pxPerSecond, bars,
+    slots,
+    starts,
+    pxPerSecond,
+    bars,
     retainImages(first: number, last: number) {
       for (const index of images.keys()) {
         if (index < first || index > last) images.delete(index);
       }
     },
-    texture(index: number, height: number, scaleX: number, scaleY: number, palette: ConveyorPalette) {
+    texture(
+      index: number,
+      height: number,
+      scaleX: number,
+      scaleY: number,
+      palette: ConveyorPalette,
+    ) {
       let cached = images.get(index);
-      if (cached && cached.height === height && cached.scaleX === scaleX
-        && cached.scaleY === scaleY && cached.palette === palette) return cached;
+      if (
+        cached &&
+        cached.height === height &&
+        cached.scaleX === scaleX &&
+        cached.scaleY === scaleY &&
+        cached.palette === palette
+      )
+        return cached;
       const slot = slots[index];
       const width = slot.durationSeconds * pxPerSecond;
       const data = bars(index);
-      const unplayed = rasterizeSlot(slot, data, width, height, scaleX, scaleY, palette, false);
+      const unplayed = rasterizeSlot(
+        slot,
+        data,
+        width,
+        height,
+        scaleX,
+        scaleY,
+        palette,
+        false,
+      );
       const played = isNonFillState(slot.state)
-        ? unplayed : rasterizeSlot(slot, data, width, height, scaleX, scaleY, palette, true);
+        ? unplayed
+        : rasterizeSlot(
+            slot,
+            data,
+            width,
+            height,
+            scaleX,
+            scaleY,
+            palette,
+            true,
+          );
       if (!unplayed || !played) return null;
       cached = { height, scaleX, scaleY, palette, unplayed, played };
       images.set(index, cached);
@@ -165,14 +224,23 @@ export interface ConveyorViewport {
 export function paintConveyor(
   ctx: CanvasRenderingContext2D,
   scene: ConveyorScene,
-  { width, height, centerSeconds, renderedDurationSeconds, palette }: ConveyorViewport,
+  {
+    width,
+    height,
+    centerSeconds,
+    renderedDurationSeconds,
+    palette,
+  }: ConveyorViewport,
 ) {
   ctx.clearRect(0, 0, width, height);
   if (width <= 0 || height <= 0 || scene.pxPerSecond <= 0) return;
   const { a: scaleX, d: scaleY } = ctx.getTransform();
   const halfWindow = width / scene.pxPerSecond / 2;
   const { first, last } = visibleSlotIndexes(
-    scene.starts, scene.slots, centerSeconds - halfWindow, centerSeconds + halfWindow,
+    scene.starts,
+    scene.slots,
+    centerSeconds - halfWindow,
+    centerSeconds + halfWindow,
   );
   const origin = conveyorTrackOriginPx(width, centerSeconds, scene.pxPerSecond);
   scene.retainImages(first, last);
@@ -185,8 +253,13 @@ export function paintConveyor(
     const slotWidth = slot.durationSeconds * scene.pxPerSecond;
     const texture = scene.texture(index, height, scaleX, scaleY, palette);
     if (!texture) continue;
-    const fillWidth = isNonFillState(slot.state) || renderedDurationSeconds <= 0
-      ? 0 : Math.max(0, Math.min(slotWidth, (centerSeconds - start) * scene.pxPerSecond));
+    const fillWidth =
+      isNonFillState(slot.state) || renderedDurationSeconds <= 0
+        ? 0
+        : Math.max(
+            0,
+            Math.min(slotWidth, (centerSeconds - start) * scene.pxPerSecond),
+          );
     ctx.save();
     ctx.globalAlpha = isSlotDimmed(slot, start, centerSeconds) ? 0.4 : 1;
     // Disjoint color regions: no amber-over-muted edge double-compositing.

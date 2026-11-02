@@ -19,7 +19,10 @@ tmp/
 
 web/tsconfig.node.tsbuildinfo
 
-.vscode/
+# Editor config is shared where it is not machine-specific.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 
 plans/
 .pi-subagents/

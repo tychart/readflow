@@ -1,8 +1,8 @@
+import { useAppStore } from "../state/store";
+import type { JobSummary, WsEnvelope } from "../types/api";
+import type { WebSocketStatus } from "../types/events";
 import { api } from "./api";
 import { websocketUrl } from "./transport";
-import { useAppStore } from "../state/store";
-import type { WebSocketStatus } from "../types/events";
-import type { JobSummary, WsEnvelope } from "../types/api";
 
 const HEARTBEAT_MS = 15_000;
 const STALE_AFTER_MS = 30_000;
@@ -73,7 +73,11 @@ class LiveClient {
    * Returns true if the message was sent, false otherwise
    * (caller can fall back to HTTP).
    */
-  sendPlaybackSync(jobId: string, currentTimeSeconds: number, isPlaying: boolean): boolean {
+  sendPlaybackSync(
+    jobId: string,
+    currentTimeSeconds: number,
+    isPlaying: boolean,
+  ): boolean {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return false;
     }
@@ -118,7 +122,9 @@ class LiveClient {
       }
       this.setSocketState({
         error:
-          error instanceof Error ? `${errorPrefix}: ${error.message}` : errorPrefix,
+          error instanceof Error
+            ? `${errorPrefix}: ${error.message}`
+            : errorPrefix,
       });
     }
   }
@@ -164,7 +170,9 @@ class LiveClient {
     }
     this.reconnectAttempt += 1;
     const delay =
-      RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt - 1, RECONNECT_DELAYS_MS.length - 1)];
+      RECONNECT_DELAYS_MS[
+        Math.min(this.reconnectAttempt - 1, RECONNECT_DELAYS_MS.length - 1)
+      ];
     this.setSocketState({
       status: "reconnecting",
       reconnectAttempt: this.reconnectAttempt,
@@ -215,7 +223,9 @@ class LiveClient {
             this.setSocketState({
               status: "error",
               error:
-                error instanceof Error ? `Heartbeat failed: ${error.message}` : "Heartbeat failed",
+                error instanceof Error
+                  ? `Heartbeat failed: ${error.message}`
+                  : "Heartbeat failed",
             });
           }
         }

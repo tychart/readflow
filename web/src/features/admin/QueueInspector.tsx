@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../../lib/api";
 import { useAppStore } from "../../state/store";
-import type { AdminQueue, QueueBatch, QueueChunk, QueueJobGroup } from "../../types/api";
+import type {
+  AdminQueue,
+  QueueBatch,
+  QueueChunk,
+  QueueJobGroup,
+} from "../../types/api";
 
 /* ── Formatting helpers ───────────────────────────────────── */
 
@@ -37,15 +42,22 @@ const PRIORITY_STYLES: Record<number, string> = {
 };
 
 const STATUS_STYLES: Record<string, string> = {
-  planned: "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
+  planned:
+    "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
   queued: "border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]",
-  rendering: "border-[var(--amber)]/30 bg-[var(--amber)]/15 text-[var(--amber)]",
-  written: "border-[var(--emerald)]/20 bg-[var(--emerald)]/10 text-[var(--emerald)]",
+  rendering:
+    "border-[var(--amber)]/30 bg-[var(--amber)]/15 text-[var(--amber)]",
+  written:
+    "border-[var(--emerald)]/20 bg-[var(--emerald)]/10 text-[var(--emerald)]",
   failed: "border-[var(--rose)]/20 bg-[var(--rose)]/10 text-[var(--rose)]",
-  stale: "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
-  reprocessing: "border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]",
-  max_retries_exceeded: "border-[var(--rose)]/20 bg-[var(--rose)]/10 text-[var(--rose)]",
-  paused: "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
+  stale:
+    "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
+  reprocessing:
+    "border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)]",
+  max_retries_exceeded:
+    "border-[var(--rose)]/20 bg-[var(--rose)]/10 text-[var(--rose)]",
+  paused:
+    "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]",
 };
 
 const STATUS_GLYPHS: Record<string, { glyph: string; className: string }> = {
@@ -62,7 +74,10 @@ const STATUS_GLYPHS: Record<string, { glyph: string; className: string }> = {
 function StatusGlyph({ status }: { status: string }) {
   const entry = STATUS_GLYPHS[status] ?? STATUS_GLYPHS.planned;
   return (
-    <span aria-hidden="true" className={`w-4 shrink-0 text-center text-xs ${entry.className}`}>
+    <span
+      aria-hidden="true"
+      className={`w-4 shrink-0 text-center text-xs ${entry.className}`}
+    >
       {entry.glyph}
     </span>
   );
@@ -133,8 +148,12 @@ function BatchStrip({
 function MetadataRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-1">
-      <dt className="text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]">{label}</dt>
-      <dd className="text-right text-xs break-words text-[var(--ink-primary)]">{value}</dd>
+      <dt className="text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]">
+        {label}
+      </dt>
+      <dd className="text-right text-xs break-words text-[var(--ink-primary)]">
+        {value}
+      </dd>
     </div>
   );
 }
@@ -182,10 +201,13 @@ function JobGroupCard({
         <span className="ml-auto flex flex-wrap items-center gap-x-3 text-[11px] text-[var(--ink-secondary)]">
           <span>voice {group.voice_id}</span>
           <span>
-            buffer {group.job_buffered_seconds.toFixed(0)}s / {group.job_target_buffer_seconds}s
+            buffer {group.job_buffered_seconds.toFixed(0)}s /{" "}
+            {group.job_target_buffer_seconds}s
           </span>
           {group.unplanned_chars > 0 && (
-            <span>{group.unplanned_chars.toLocaleString()} chars unplanned</span>
+            <span>
+              {group.unplanned_chars.toLocaleString()} chars unplanned
+            </span>
           )}
         </span>
       </button>
@@ -209,7 +231,9 @@ function JobGroupCard({
                 <button
                   aria-current={isSelected ? "true" : undefined}
                   className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition ${
-                    isSelected ? "bg-[var(--amber-soft)]" : "hover:bg-[var(--surface-raised)]"
+                    isSelected
+                      ? "bg-[var(--amber-soft)]"
+                      : "hover:bg-[var(--surface-raised)]"
                   }`}
                   key={key}
                   onClick={() => onSelect(item)}
@@ -229,13 +253,18 @@ function JobGroupCard({
                   >
                     {item.text.trim().slice(0, 120) || "(empty chunk)"}
                   </span>
-                  {item.is_pending && item.in_next_batch && !item.is_rendering && (
-                    <span className="shrink-0 rounded-md border border-[var(--emerald)]/20 bg-[var(--emerald)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--emerald)]">
-                      Next
-                    </span>
-                  )}
+                  {item.is_pending &&
+                    item.in_next_batch &&
+                    !item.is_rendering && (
+                      <span className="shrink-0 rounded-md border border-[var(--emerald)]/20 bg-[var(--emerald)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--emerald)]">
+                        Next
+                      </span>
+                    )}
                   {item.is_pending ? (
-                    <PriorityBadge band={item.priority_band} label={item.priority_label} />
+                    <PriorityBadge
+                      band={item.priority_band}
+                      label={item.priority_label}
+                    />
                   ) : (
                     item.status === "written" && (
                       <span className="shrink-0 text-[11px] text-[var(--ink-secondary)]">
@@ -250,7 +279,8 @@ function JobGroupCard({
           )}
           {group.unplanned_chars > 0 && (
             <div className="px-4 py-2 text-[11px] italic text-[var(--ink-secondary)]">
-              · {group.unplanned_chars.toLocaleString()} more characters not yet planned
+              · {group.unplanned_chars.toLocaleString()} more characters not yet
+              planned
             </div>
           )}
         </div>
@@ -269,7 +299,9 @@ export function QueueInspector() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [collapsedJobs, setCollapsedJobs] = useState<Set<string>>(() => new Set());
+  const [collapsedJobs, setCollapsedJobs] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<{
     type: "success" | "error";
@@ -286,7 +318,9 @@ export function QueueInspector() {
       setSnapshot(next);
       setLoadError(null);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to load the queue");
+      setLoadError(
+        error instanceof Error ? error.message : "Unable to load the queue",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -333,13 +367,21 @@ export function QueueInspector() {
   const voiceOptions = useMemo(() => {
     const list = [...voices];
     if (draftVoice && !list.some((voice) => voice.id === draftVoice)) {
-      list.unshift({ id: draftVoice, display_name: draftVoice, description: null });
+      list.unshift({
+        id: draftVoice,
+        display_name: draftVoice,
+        description: null,
+      });
     }
     return list;
   }, [voices, draftVoice]);
 
   const runAction = useCallback(
-    async (key: string, action: () => Promise<unknown>, successText: string) => {
+    async (
+      key: string,
+      action: () => Promise<unknown>,
+      successText: string,
+    ) => {
       setActionPending(key);
       setActionMessage(null);
       try {
@@ -417,7 +459,9 @@ export function QueueInspector() {
   const activeBatch = snapshot?.active_batch ?? null;
   const nextBatch = snapshot?.next_batch ?? null;
   const elapsedSeconds =
-    activeBatch?.started_at != null ? Math.max(0, now - activeBatch.started_at) : null;
+    activeBatch?.started_at != null
+      ? Math.max(0, now - activeBatch.started_at)
+      : null;
 
   if (isLoading && !snapshot) {
     return (
@@ -437,11 +481,14 @@ export function QueueInspector() {
           <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
             Scheduler
           </p>
-          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">Synthesis queue</h2>
+          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
+            Synthesis queue
+          </h2>
           <p className="mt-1 max-w-3xl text-sm leading-relaxed text-[var(--ink-secondary)]">
-            Every job's full chunk lifecycle — written, rendering, planned, and how much text the
-            planner has not reached yet. Priority bands, batch grouping, and the predicted next
-            batch come straight from the scheduler.
+            Every job's full chunk lifecycle — written, rendering, planned, and
+            how much text the planner has not reached yet. Priority bands, batch
+            grouping, and the predicted next batch come straight from the
+            scheduler.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -467,7 +514,9 @@ export function QueueInspector() {
           live
         />
       )}
-      {!activeBatch && nextBatch && <BatchStrip batch={nextBatch} label="Up next" />}
+      {!activeBatch && nextBatch && (
+        <BatchStrip batch={nextBatch} label="Up next" />
+      )}
 
       {loadError && (
         <div className="mb-4 rounded-lg border border-[var(--rose)]/20 bg-[var(--rose)]/10 px-4 py-3 text-xs font-medium text-[var(--rose)]">
@@ -539,14 +588,19 @@ export function QueueInspector() {
                   <StatusChip status={selected.job_status} />
                   <span className="text-xs text-[var(--ink-secondary)]">
                     chunk #{selected.index} · v{selected.version}
-                    {selected.is_pending ? ` · rank ${selected.rank}` : " · not pending"}
+                    {selected.is_pending
+                      ? ` · rank ${selected.rank}`
+                      : " · not pending"}
                   </span>
                 </div>
               </div>
 
               {selected.is_pending ? (
                 <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] p-3">
-                  <PriorityBadge band={selected.priority_band} label={selected.priority_label} />
+                  <PriorityBadge
+                    band={selected.priority_band}
+                    label={selected.priority_label}
+                  />
                   <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-primary)]">
                     {selected.priority_reason}
                   </p>
@@ -554,7 +608,9 @@ export function QueueInspector() {
                     band {selected.priority_band} · buffer{" "}
                     {selected.job_buffered_seconds.toFixed(1)}s / target{" "}
                     {selected.job_target_buffer_seconds}s ·{" "}
-                    {selected.job_is_active_listening ? "active listener" : "not listening"}
+                    {selected.job_is_active_listening
+                      ? "active listener"
+                      : "not listening"}
                     {selected.in_next_batch ? " · in next batch" : ""}
                   </p>
                 </div>
@@ -585,7 +641,9 @@ export function QueueInspector() {
                 <MetadataRow label="Voice" value={selected.voice_id} />
                 <MetadataRow
                   label="Model"
-                  value={selected.model_id.split("/").pop() ?? selected.model_id}
+                  value={
+                    selected.model_id.split("/").pop() ?? selected.model_id
+                  }
                 />
                 <MetadataRow label="Language" value={selected.language} />
                 <MetadataRow
@@ -607,8 +665,14 @@ export function QueueInspector() {
                     value={formatSeconds(selected.estimated_duration_seconds)}
                   />
                 )}
-                <MetadataRow label="Created" value={formatAge(selected.created_at)} />
-                <MetadataRow label="Updated" value={formatAge(selected.updated_at)} />
+                <MetadataRow
+                  label="Created"
+                  value={formatAge(selected.created_at)}
+                />
+                <MetadataRow
+                  label="Updated"
+                  value={formatAge(selected.updated_at)}
+                />
               </dl>
 
               {selected.error && (
@@ -631,10 +695,13 @@ export function QueueInspector() {
                             : "border-[var(--line)] bg-[var(--surface)] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
                         }`}
                         disabled={
-                          version.version === selected.version || actionPending !== null
+                          version.version === selected.version ||
+                          actionPending !== null
                         }
                         key={version.version}
-                        onClick={() => handleSetActive(selected, version.version)}
+                        onClick={() =>
+                          handleSetActive(selected, version.version)
+                        }
                         type="button"
                       >
                         v{version.version} · {version.status}
@@ -652,7 +719,9 @@ export function QueueInspector() {
                   onClick={() => handlePauseResume(selected)}
                   type="button"
                 >
-                  {selected.job_status === "paused" ? "Resume job" : "Pause job"}
+                  {selected.job_status === "paused"
+                    ? "Resume job"
+                    : "Pause job"}
                 </button>
                 <button
                   className="rounded-lg bg-[var(--amber)] px-3.5 py-2 text-xs font-semibold text-white transition hover:brightness-110 disabled:opacity-50"

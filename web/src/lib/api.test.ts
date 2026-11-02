@@ -2,15 +2,19 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { ApiError, api } from "./api";
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
 
-function mockFailedResponse(status: number, body: unknown, throwOnJson = false) {
-  global.fetch = vi.fn(async () => ({
+function mockFailedResponse(
+  status: number,
+  body: unknown,
+  throwOnJson = false,
+) {
+  globalThis.fetch = vi.fn(async () => ({
     ok: false,
     status,
     json: async () => {
@@ -25,7 +29,9 @@ test("surfaces the backend error detail instead of a bare status", async () => {
   // the user can learn what the actual limit is.
   mockFailedResponse(413, { detail: "Text is too large (limit is 64.0 MB)" });
 
-  await expect(api.activateJob("job-1")).rejects.toThrow("Text is too large (limit is 64.0 MB)");
+  await expect(api.activateJob("job-1")).rejects.toThrow(
+    "Text is too large (limit is 64.0 MB)",
+  );
 });
 
 test("falls back to the status when the error body is not JSON", async () => {
@@ -37,7 +43,9 @@ test("falls back to the status when the error body is not JSON", async () => {
 test("attaches the request path and status to the error", async () => {
   mockFailedResponse(413, { detail: "Text is too large" });
 
-  const error = await api.activateJob("job-1").catch((caught: unknown) => caught);
+  const error = await api
+    .activateJob("job-1")
+    .catch((caught: unknown) => caught);
 
   expect(error).toBeInstanceOf(ApiError);
   expect((error as ApiError).path).toBe("/api/jobs/job-1/activate");
@@ -57,8 +65,11 @@ test("getAdminQueue requests the admin queue endpoint", async () => {
     status: 200,
     json: async () => payload,
   }));
-  global.fetch = fetchMock as unknown as typeof fetch;
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 
   await expect(api.getAdminQueue()).resolves.toEqual(payload);
-  expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/queue");
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/admin/queue",
+    expect.any(Object),
+  );
 });

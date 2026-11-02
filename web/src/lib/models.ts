@@ -6,5 +6,7 @@ export const MODEL_OPTIONS: { value: string; label: string }[] = [
 
 /** Human label for a model id, falling back to the raw id. */
 export function modelLabel(modelId: string): string {
-  return MODEL_OPTIONS.find((option) => option.value === modelId)?.label ?? modelId;
+  return (
+    MODEL_OPTIONS.find((option) => option.value === modelId)?.label ?? modelId
+  );
 }

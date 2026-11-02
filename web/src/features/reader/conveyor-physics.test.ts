@@ -6,11 +6,14 @@ import {
   advanceSmoothedPlayhead,
   averageDurationSeconds,
   beginDrag,
-  clampSeconds,
   COAST_DECAY_PER_SECOND,
   COAST_REST_SECONDS_PER_SECOND,
+  type ConveyorBounds,
+  type ConveyorGesture,
+  clampSeconds,
   conveyorPxPerSecond,
   conveyorTrackOriginPx,
+  type DraggingGesture,
   endDrag,
   FLICK_VELOCITY_PX_PER_MS,
   gestureCenterSeconds,
@@ -28,9 +31,6 @@ import {
   updateDrag,
   velocityFromSamples,
   visibleSlotIndexes,
-  type ConveyorBounds,
-  type ConveyorGesture,
-  type DraggingGesture,
 } from "./conveyor-physics";
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -58,7 +58,12 @@ function runToRest(gesture: ConveyorGesture, bounds = BOUNDS, maxFrames = 600) {
     finished = step.restSeconds;
     frames += 1;
   }
-  return { frames, restSeconds: finished, center: gestureCenterSeconds(current), gesture: current };
+  return {
+    frames,
+    restSeconds: finished,
+    center: gestureCenterSeconds(current),
+    gesture: current,
+  };
 }
 
 function cumulative(durations: number[]): number[] {
@@ -154,16 +159,37 @@ describe("beginDrag / updateDrag", () => {
   });
 
   test("dragging left moves forward in time", () => {
-    const gesture = updateDrag(beginDrag(10, 200, 0), 150, 16, PX_PER_SECOND, BOUNDS);
+    const gesture = updateDrag(
+      beginDrag(10, 200, 0),
+      150,
+      16,
+      PX_PER_SECOND,
+      BOUNDS,
+    );
     expect(gestureCenterSeconds(gesture)).toBeCloseTo(10.5, 6);
   });
 
   test("cannot be dragged before the start or past the document", () => {
-    const backwards = updateDrag(beginDrag(1, 200, 0), 999, 16, PX_PER_SECOND, BOUNDS);
+    const backwards = updateDrag(
+      beginDrag(1, 200, 0),
+      999,
+      16,
+      PX_PER_SECOND,
+      BOUNDS,
+    );
     expect(gestureCenterSeconds(backwards)).toBeCloseTo(0, 6);
 
-    const forwards = updateDrag(beginDrag(10, 0, 0), -9999, 16, PX_PER_SECOND, BOUNDS);
-    expect(gestureCenterSeconds(forwards)).toBeCloseTo(BOUNDS.maxVisualSeconds, 6);
+    const forwards = updateDrag(
+      beginDrag(10, 0, 0),
+      -9999,
+      16,
+      PX_PER_SECOND,
+      BOUNDS,
+    );
+    expect(gestureCenterSeconds(forwards)).toBeCloseTo(
+      BOUNDS.maxVisualSeconds,
+      6,
+    );
   });
 
   test("keeps a bounded sample history", () => {
@@ -179,11 +205,20 @@ describe("beginDrag / updateDrag", () => {
 /* ── Release ──────────────────────────────────────────────── */
 
 /** Bounds with room to coast, for isolating the physics from the clamps. */
-const OPEN_BOUNDS: ConveyorBounds = { maxSeekSeconds: 500, maxVisualSeconds: 500 };
+const OPEN_BOUNDS: ConveyorBounds = {
+  maxSeekSeconds: 500,
+  maxVisualSeconds: 500,
+};
 
 describe("endDrag", () => {
   test("a drop settles in place and comes to rest on the spot", () => {
-    const dragging = updateDrag(beginDrag(10, 0, 0), 50, 200, PX_PER_SECOND, BOUNDS);
+    const dragging = updateDrag(
+      beginDrag(10, 0, 0),
+      50,
+      200,
+      PX_PER_SECOND,
+      BOUNDS,
+    );
     const released = endDrag(dragging, 400, PX_PER_SECOND, "animated", BOUNDS);
     expect(released.phase).toBe("settling");
 
@@ -198,7 +233,9 @@ describe("endDrag", () => {
     rightwards = updateDrag(rightwards, 60, 40, PX_PER_SECOND, BOUNDS);
     const back = endDrag(rightwards, 50, PX_PER_SECOND, "animated", BOUNDS);
     expect(back.phase).toBe("coasting");
-    expect(back.phase === "coasting" && back.speedSecondsPerSecond).toBeLessThan(0);
+    expect(
+      back.phase === "coasting" && back.speedSecondsPerSecond,
+    ).toBeLessThan(0);
 
     // A leftwards flick coasts forwards.
     let leftwards = beginDrag(10, 0, 0);
@@ -206,7 +243,9 @@ describe("endDrag", () => {
     leftwards = updateDrag(leftwards, -60, 40, PX_PER_SECOND, BOUNDS);
     const forward = endDrag(leftwards, 50, PX_PER_SECOND, "animated", BOUNDS);
     expect(forward.phase).toBe("coasting");
-    expect(forward.phase === "coasting" && forward.speedSecondsPerSecond).toBeGreaterThan(0);
+    expect(
+      forward.phase === "coasting" && forward.speedSecondsPerSecond,
+    ).toBeGreaterThan(0);
   });
 
   test("a flick travels much further than the finger did", () => {
@@ -239,18 +278,32 @@ describe("endDrag", () => {
   });
 
   test("a tap in the centre is a no-op seek to the current position", () => {
-    const released = endDrag(beginDrag(10, 150, 0), 20, PX_PER_SECOND, "animated", BOUNDS, {
-      alignmentOffsetSeconds: 0,
-    });
+    const released = endDrag(
+      beginDrag(10, 150, 0),
+      20,
+      PX_PER_SECOND,
+      "animated",
+      BOUNDS,
+      {
+        alignmentOffsetSeconds: 0,
+      },
+    );
     const { restSeconds } = runToRest(released);
     expect(restSeconds).toBeCloseTo(10, 6);
   });
 
   test("a tap can never target unrendered audio", () => {
     // Tapped 500px right of centre = +5s, but only 12s is rendered.
-    const released = endDrag(beginDrag(10, 0, 0), 20, PX_PER_SECOND, "animated", BOUNDS, {
-      alignmentOffsetSeconds: 5,
-    });
+    const released = endDrag(
+      beginDrag(10, 0, 0),
+      20,
+      PX_PER_SECOND,
+      "animated",
+      BOUNDS,
+      {
+        alignmentOffsetSeconds: 5,
+      },
+    );
     const { restSeconds } = runToRest(released);
     expect(restSeconds).toBeCloseTo(BOUNDS.maxSeekSeconds, 6);
   });
@@ -259,17 +312,29 @@ describe("endDrag", () => {
     // Commits normally clamp to the end of contiguous rendered audio (12s here),
     // but a chunk at 14s already has audio, so tapping it is an explicit request
     // to go there — the same thing a click on the main timeline does.
-    const released = endDrag(beginDrag(0, 0, 0), 20, PX_PER_SECOND, "animated", BOUNDS, {
-      alignmentOffsetSeconds: 14,
-      allowsUnrenderedTarget: true,
-    });
+    const released = endDrag(
+      beginDrag(0, 0, 0),
+      20,
+      PX_PER_SECOND,
+      "animated",
+      BOUNDS,
+      {
+        alignmentOffsetSeconds: 14,
+        allowsUnrenderedTarget: true,
+      },
+    );
 
     expect(runToRest(released).restSeconds).toBeCloseTo(14, 6);
   });
 
   test("momentum never gets to land past rendered audio", () => {
     const { restSeconds, center } = runToRest(
-      { phase: "coasting", baseSeconds: 0, offsetSeconds: 0, speedSecondsPerSecond: 500 },
+      {
+        phase: "coasting",
+        baseSeconds: 0,
+        offsetSeconds: 0,
+        speedSecondsPerSecond: 500,
+      },
       BOUNDS,
     );
     expect(restSeconds).toBeCloseTo(BOUNDS.maxSeekSeconds, 6);
@@ -278,9 +343,18 @@ describe("endDrag", () => {
 
   test("settles back to the rendered boundary when the drag is released past it", () => {
     // Dragged well past the rendered end, then released slowly (not a flick).
-    let dragging = updateDrag(beginDrag(6, 0, 0), -2000, 16, PX_PER_SECOND, BOUNDS);
+    let dragging = updateDrag(
+      beginDrag(6, 0, 0),
+      -2000,
+      16,
+      PX_PER_SECOND,
+      BOUNDS,
+    );
     dragging = updateDrag(dragging, -2000, 400, PX_PER_SECOND, BOUNDS);
-    expect(gestureCenterSeconds(dragging)).toBeCloseTo(BOUNDS.maxVisualSeconds, 6);
+    expect(gestureCenterSeconds(dragging)).toBeCloseTo(
+      BOUNDS.maxVisualSeconds,
+      6,
+    );
 
     const { restSeconds, center } = runToRest(
       endDrag(dragging, 600, PX_PER_SECOND, "animated", BOUNDS),
@@ -301,8 +375,12 @@ describe("endDrag", () => {
     expect(released.phase === "settling" && released.offsetSeconds).toBe(
       released.phase === "settling" ? released.targetOffsetSeconds : null,
     );
-    expect(released.phase === "settling" && released.speedSecondsPerSecond).toBe(0);
-    expect(advanceConveyor(released, FRAME_SECONDS, BOUNDS).restSeconds).not.toBeNull();
+    expect(
+      released.phase === "settling" && released.speedSecondsPerSecond,
+    ).toBe(0);
+    expect(
+      advanceConveyor(released, FRAME_SECONDS, BOUNDS).restSeconds,
+    ).not.toBeNull();
   });
 });
 
@@ -313,7 +391,9 @@ describe("advanceConveyor", () => {
 
   test("a dragging gesture never reports rest", () => {
     const dragging = beginDrag(10, 0, 0);
-    expect(advanceConveyor(dragging, FRAME_SECONDS, BOUNDS).restSeconds).toBeNull();
+    expect(
+      advanceConveyor(dragging, FRAME_SECONDS, BOUNDS).restSeconds,
+    ).toBeNull();
   });
 
   test("a coast slows down monotonically and hands over to the spring", () => {
@@ -330,8 +410,10 @@ describe("advanceConveyor", () => {
       const step = advanceConveyor(gesture, FRAME_SECONDS, OPEN);
       gesture = step.gesture;
       // The coast hands over to the settle spring with its leftover speed.
-      if (gesture.phase === "settling") handoverSpeed = gesture.speedSecondsPerSecond;
-      else if (gesture.phase === "coasting") speeds.push(Math.abs(gesture.speedSecondsPerSecond));
+      if (gesture.phase === "settling")
+        handoverSpeed = gesture.speedSecondsPerSecond;
+      else if (gesture.phase === "coasting")
+        speeds.push(Math.abs(gesture.speedSecondsPerSecond));
       else break;
     }
 
@@ -348,12 +430,20 @@ describe("advanceConveyor", () => {
     // Total travel is (speed - restSpeed) / decay, independent of the zoom.
     const speed = 20;
     const { center } = runToRest(
-      { phase: "coasting", baseSeconds: 0, offsetSeconds: 0, speedSecondsPerSecond: speed },
+      {
+        phase: "coasting",
+        baseSeconds: 0,
+        offsetSeconds: 0,
+        speedSecondsPerSecond: speed,
+      },
       OPEN,
     );
     expect(center).toBeGreaterThan(8.5);
     expect(center).toBeLessThan(9.5);
-    expect(center).toBeCloseTo((speed - COAST_REST_SECONDS_PER_SECOND) / COAST_DECAY_PER_SECOND, 1);
+    expect(center).toBeCloseTo(
+      (speed - COAST_REST_SECONDS_PER_SECOND) / COAST_DECAY_PER_SECOND,
+      1,
+    );
   });
 
   test("comes to rest exactly once, on the commit target", () => {
@@ -414,7 +504,11 @@ describe("stepSettleSpring / isSettleAtRest", () => {
   test("converges on the target", () => {
     let state = { offsetSeconds: -2, speedSecondsPerSecond: 0 };
     const target = 0;
-    for (let frame = 0; frame < 600 && !isSettleAtRest(state, target); frame += 1) {
+    for (
+      let frame = 0;
+      frame < 600 && !isSettleAtRest(state, target);
+      frame += 1
+    ) {
       state = stepSettleSpring(state, target, FRAME_SECONDS);
     }
     expect(isSettleAtRest(state, target)).toBe(true);
@@ -447,7 +541,11 @@ describe("stepSettleSpring / isSettleAtRest", () => {
   });
 
   test("is stable over a long frame (backgrounded tab)", () => {
-    const state = stepSettleSpring({ offsetSeconds: -2, speedSecondsPerSecond: 0 }, 0, 0.064);
+    const state = stepSettleSpring(
+      { offsetSeconds: -2, speedSecondsPerSecond: 0 },
+      0,
+      0.064,
+    );
     expect(Number.isFinite(state.offsetSeconds)).toBe(true);
     expect(Math.abs(state.offsetSeconds)).toBeLessThan(2.5);
   });
@@ -519,17 +617,32 @@ describe("visibleSlotIndexes", () => {
   const starts = cumulative([4, 4, 4, 4, 4]);
 
   test("returns every slot overlapping the window", () => {
-    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 0, 8)).toEqual({ first: 0, last: 1 });
-    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 4, 12)).toEqual({ first: 1, last: 2 });
+    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 0, 8)).toEqual({
+      first: 0,
+      last: 1,
+    });
+    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 4, 12)).toEqual({
+      first: 1,
+      last: 2,
+    });
   });
 
   test("includes a slot the window starts inside", () => {
-    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 6, 7)).toEqual({ first: 1, last: 1 });
+    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 6, 7)).toEqual({
+      first: 1,
+      last: 1,
+    });
   });
 
   test("clamps to the document at both ends", () => {
-    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), -50, 1)).toEqual({ first: 0, last: 0 });
-    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 18, 50)).toEqual({ first: 4, last: 4 });
+    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), -50, 1)).toEqual({
+      first: 0,
+      last: 0,
+    });
+    expect(visibleSlotIndexes(starts, slots([4, 4, 4, 4, 4]), 18, 50)).toEqual({
+      first: 4,
+      last: 4,
+    });
   });
 
   test("reports an empty range for no slots", () => {

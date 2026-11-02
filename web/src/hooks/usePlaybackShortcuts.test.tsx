@@ -6,8 +6,8 @@ import {
   FINE_SKIP_SECONDS,
   PLAYBACK_SHORTCUT_GUIDE,
   resolvePlaybackShortcut,
-  shouldIgnorePlaybackShortcut,
   SKIP_STEP_SECONDS,
+  shouldIgnorePlaybackShortcut,
   usePlaybackShortcuts,
 } from "./usePlaybackShortcuts";
 
@@ -15,7 +15,12 @@ afterEach(cleanup);
 
 /* ── Pure key resolution ──────────────────────────────────── */
 
-function keyEvent(key: string, modifiers: Partial<Record<"shiftKey" | "ctrlKey" | "metaKey" | "altKey", boolean>> = {}) {
+function keyEvent(
+  key: string,
+  modifiers: Partial<
+    Record<"shiftKey" | "ctrlKey" | "metaKey" | "altKey", boolean>
+  > = {},
+) {
   return {
     key,
     shiftKey: false,
@@ -45,11 +50,15 @@ describe("resolvePlaybackShortcut", () => {
   });
 
   test("Shift turns the horizontal arrows into a 5s nudge", () => {
-    expect(resolvePlaybackShortcut(keyEvent("ArrowRight", { shiftKey: true }))).toEqual({
+    expect(
+      resolvePlaybackShortcut(keyEvent("ArrowRight", { shiftKey: true })),
+    ).toEqual({
       kind: "skip",
       deltaSeconds: FINE_SKIP_SECONDS,
     });
-    expect(resolvePlaybackShortcut(keyEvent("ArrowLeft", { shiftKey: true }))).toEqual({
+    expect(
+      resolvePlaybackShortcut(keyEvent("ArrowLeft", { shiftKey: true })),
+    ).toEqual({
       kind: "skip",
       deltaSeconds: -FINE_SKIP_SECONDS,
     });
@@ -78,9 +87,15 @@ describe("resolvePlaybackShortcut", () => {
   });
 
   test("leaves modified chords and unrelated keys alone", () => {
-    expect(resolvePlaybackShortcut(keyEvent(" ", { metaKey: true }))).toBeNull();
-    expect(resolvePlaybackShortcut(keyEvent("ArrowRight", { ctrlKey: true }))).toBeNull();
-    expect(resolvePlaybackShortcut(keyEvent("ArrowUp", { altKey: true }))).toBeNull();
+    expect(
+      resolvePlaybackShortcut(keyEvent(" ", { metaKey: true })),
+    ).toBeNull();
+    expect(
+      resolvePlaybackShortcut(keyEvent("ArrowRight", { ctrlKey: true })),
+    ).toBeNull();
+    expect(
+      resolvePlaybackShortcut(keyEvent("ArrowUp", { altKey: true })),
+    ).toBeNull();
     expect(resolvePlaybackShortcut(keyEvent("a"))).toBeNull();
     expect(resolvePlaybackShortcut(keyEvent("Enter"))).toBeNull();
   });
@@ -93,7 +108,9 @@ describe("resolvePlaybackShortcut", () => {
       "↑ / ↓",
       "J / L",
     ]);
-    expect(PLAYBACK_SHORTCUT_GUIDE.some((entry) => entry.action.includes("10s"))).toBe(true);
+    expect(
+      PLAYBACK_SHORTCUT_GUIDE.some((entry) => entry.action.includes("10s")),
+    ).toBe(true);
   });
 });
 
@@ -124,7 +141,9 @@ describe("shouldIgnorePlaybackShortcut", () => {
 
   test("allows the document, plain elements and window", () => {
     expect(shouldIgnorePlaybackShortcut(document.body)).toBe(false);
-    expect(shouldIgnorePlaybackShortcut(document.createElement("div"))).toBe(false);
+    expect(shouldIgnorePlaybackShortcut(document.createElement("div"))).toBe(
+      false,
+    );
     expect(shouldIgnorePlaybackShortcut(window)).toBe(false);
     expect(shouldIgnorePlaybackShortcut(null)).toBe(false);
   });
@@ -132,7 +151,13 @@ describe("shouldIgnorePlaybackShortcut", () => {
 
 /* ── Window binding ───────────────────────────────────────── */
 
-function Probe({ onToggle, onSkip }: { onToggle: () => void; onSkip: (delta: number) => void }) {
+function Probe({
+  onToggle,
+  onSkip,
+}: {
+  onToggle: () => void;
+  onSkip: (delta: number) => void;
+}) {
   usePlaybackShortcuts({ togglePlay: onToggle, skipBy: onSkip });
   return (
     <div>

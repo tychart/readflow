@@ -1,4 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createConveyorScene, paintConveyor } from "../lib/conveyor-canvas";
@@ -6,7 +13,8 @@ import type { TimelineSlotData } from "../types/timeline";
 import { ChunkConveyor } from "./ChunkConveyor";
 
 vi.mock("../lib/conveyor-canvas", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/conveyor-canvas")>();
+  const actual =
+    await importOriginal<typeof import("../lib/conveyor-canvas")>();
   return {
     ...actual,
     createConveyorScene: vi.fn(actual.createConveyorScene),
@@ -15,12 +23,15 @@ vi.mock("../lib/conveyor-canvas", async (importOriginal) => {
 });
 
 beforeEach(() => {
-  vi.stubGlobal("matchMedia", vi.fn((media: string) => ({
-    media,
-    matches: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  })));
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  );
   vi.mocked(createConveyorScene).mockClear();
   vi.mocked(paintConveyor).mockClear();
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
@@ -72,7 +83,9 @@ function buildSlots(count: number, durationSeconds = 4): TimelineSlotData[] {
   }));
 }
 
-function buildProps(overrides: Partial<Parameters<typeof ChunkConveyor>[0]> = {}) {
+function buildProps(
+  overrides: Partial<Parameters<typeof ChunkConveyor>[0]> = {},
+) {
   return {
     slots: buildSlots(6),
     waveforms: new Map<number, Float32Array>(),
@@ -135,8 +148,12 @@ describe("ChunkConveyor rendering", () => {
     expect(canvas).toHaveAttribute("aria-hidden", "true");
     expect(canvas.style.transform).toBe("");
     expect(canvas.style.filter).toBe("");
-    expect(container.querySelectorAll('[role="slider"], [data-waveform-slot]')).toHaveLength(0);
-    expect(lastPaint().scene.slots.map(slot => slot.chunkIndex)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(
+      container.querySelectorAll('[role="slider"], [data-waveform-slot]'),
+    ).toHaveLength(0);
+    expect(lastPaint().scene.slots.map((slot) => slot.chunkIndex)).toEqual([
+      0, 1, 2, 3, 4, 5,
+    ]);
   });
 
   test("shows an empty state before any chunk is planned", () => {
@@ -150,24 +167,36 @@ describe("ChunkConveyor rendering", () => {
   test("a larger window setting makes each chunk narrower", () => {
     mockLayout();
     const { unmount } = render(
-      <ChunkConveyor {...buildProps({ playheadSeconds: 8, windowSizeSetting: 3 })} />,
+      <ChunkConveyor
+        {...buildProps({ playheadSeconds: 8, windowSizeSetting: 3 })}
+      />,
     );
     const wideScale = lastPaint().scene.pxPerSecond;
     unmount();
 
-    render(<ChunkConveyor {...buildProps({ playheadSeconds: 8, windowSizeSetting: 5 })} />);
+    render(
+      <ChunkConveyor
+        {...buildProps({ playheadSeconds: 8, windowSizeSetting: 5 })}
+      />,
+    );
     expect(wideScale).toBeGreaterThan(lastPaint().scene.pxPerSecond);
   });
 
   test("reduced motion snaps the strip to the chunk boundary instead of sliding", () => {
     mockLayout();
-    const { unmount } = render(<ChunkConveyor {...buildProps({ playheadSeconds: 6 })} />);
+    const { unmount } = render(
+      <ChunkConveyor {...buildProps({ playheadSeconds: 6 })} />,
+    );
     expect(screen.getByTestId("conveyor-readout")).toHaveTextContent("0:06");
     unmount();
 
     // With reduced motion the window advances one chunk at a time, so the
     // readout sits on the start of the chunk containing the playhead.
-    render(<ChunkConveyor {...buildProps({ motion: "reduced", playheadSeconds: 6 })} />);
+    render(
+      <ChunkConveyor
+        {...buildProps({ motion: "reduced", playheadSeconds: 6 })}
+      />,
+    );
     expect(screen.getByTestId("conveyor-readout")).toHaveTextContent("0:04");
   });
 });
@@ -287,7 +316,11 @@ describe("ChunkConveyor dragging", () => {
     mockLayout();
     const clock = useDeterministicFrames();
     const onSeek = vi.fn();
-    render(<ChunkConveyor {...buildProps({ maxSeekSeconds: 40, onSeek, playheadSeconds: 8 })} />);
+    render(
+      <ChunkConveyor
+        {...buildProps({ maxSeekSeconds: 40, onSeek, playheadSeconds: 8 })}
+      />,
+    );
 
     // 13px in 10ms is 1.3px/ms — past both the flick threshold and the tap
     // slop, and leftwards so the glide continues forwards well beyond the
@@ -312,7 +345,11 @@ describe("ChunkConveyor dragging", () => {
     mockLayout();
     const clock = useDeterministicFrames();
     const onSeek = vi.fn();
-    render(<ChunkConveyor {...buildProps({ maxSeekSeconds: 40, onSeek, playheadSeconds: 8 })} />);
+    render(
+      <ChunkConveyor
+        {...buildProps({ maxSeekSeconds: 40, onSeek, playheadSeconds: 8 })}
+      />,
+    );
 
     fireEvent.pointerDown(strip(), { button: 0, clientX: 400, pointerId: 1 });
     clock.wait(10);
@@ -382,8 +419,15 @@ describe("ChunkConveyor tapping beyond gaps", () => {
     { chunkIndex: 2, state: "ready", durationSeconds: 4 },
   ];
 
-  function buildGapProps(overrides: Partial<Parameters<typeof ChunkConveyor>[0]> = {}) {
-    return buildProps({ maxSeekSeconds: 4, playheadSeconds: 0, slots: GAP_SLOTS, ...overrides });
+  function buildGapProps(
+    overrides: Partial<Parameters<typeof ChunkConveyor>[0]> = {},
+  ) {
+    return buildProps({
+      maxSeekSeconds: 4,
+      playheadSeconds: 0,
+      slots: GAP_SLOTS,
+      ...overrides,
+    });
   }
 
   test("a tap on a rendered chunk past a gap commits exactly there", async () => {
@@ -496,7 +540,9 @@ describe("ChunkConveyor idle slide", () => {
     clock.frame();
     clock.frame();
 
-    rerender(<ChunkConveyor {...props} isPlaying={false} playheadSeconds={8} />);
+    rerender(
+      <ChunkConveyor {...props} isPlaying={false} playheadSeconds={8} />,
+    );
     const paused = trackX();
     clock.frame();
     clock.frame();

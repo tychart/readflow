@@ -1,9 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
-import { JobCreateForm } from "./JobCreateForm";
 import { useAppStore } from "../../state/store";
 import type { RuntimeStatus } from "../../types/api";
+import { JobCreateForm } from "./JobCreateForm";
 
 const SMALL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base";
 const LARGE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base";
@@ -24,7 +23,7 @@ function status(overrides: Partial<RuntimeStatus> = {}): RuntimeStatus {
 }
 
 function mockApi(statusBody: RuntimeStatus | null) {
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/voices")) {
       return { ok: true, json: async () => VOICES };
@@ -32,8 +31,8 @@ function mockApi(statusBody: RuntimeStatus | null) {
     if (url.endsWith("/api/status")) {
       return { ok: true, json: async () => statusBody };
     }
-    return { ok: true, json: async () => null };
-  }) as typeof fetch;
+    return { ok: true, json: async (): Promise<null> => null };
+  }) as unknown as typeof fetch;
 }
 
 beforeEach(() => {
@@ -76,6 +75,26 @@ test("includes voice_id and model_id in form data", async () => {
   expect(formData.get("model_id")).toBe(LARGE);
 });
 
+test("shows an error when voices fail to load", async () => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/voices")) {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: "voices unavailable" }),
+      } as unknown as Response;
+    }
+    return { ok: true, json: async () => null } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  render(<JobCreateForm onSubmit={vi.fn()} />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    /could not load voices/i,
+  );
+});
+
 test("shows model and voice dropdowns", async () => {
   render(<JobCreateForm onSubmit={vi.fn()} />);
 
@@ -89,10 +108,14 @@ test("defaults to the model and voice currently in GPU memory", async () => {
   render(<JobCreateForm onSubmit={vi.fn()} />);
 
   await waitFor(() =>
-    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(LARGE),
+    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(
+      LARGE,
+    ),
   );
   await waitFor(() =>
-    expect((screen.getByLabelText(/voice/i) as HTMLSelectElement).value).toBe("howard"),
+    expect((screen.getByLabelText(/voice/i) as HTMLSelectElement).value).toBe(
+      "howard",
+    ),
   );
 });
 
@@ -103,7 +126,9 @@ test("warns and confirms before scheduling a different model", async () => {
 
   render(<JobCreateForm onSubmit={onSubmit} />);
   await waitFor(() =>
-    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(SMALL),
+    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(
+      SMALL,
+    ),
   );
 
   await user.type(screen.getByLabelText(/text source/i), "Long-form content");
@@ -130,7 +155,9 @@ test("going back from the model confirmation cancels the submit", async () => {
 
   render(<JobCreateForm onSubmit={onSubmit} />);
   await waitFor(() =>
-    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(SMALL),
+    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(
+      SMALL,
+    ),
   );
 
   await user.type(screen.getByLabelText(/text source/i), "Long-form content");
@@ -150,13 +177,17 @@ test("a voice-only change only shows the mild note", async () => {
 
   render(<JobCreateForm onSubmit={onSubmit} />);
   await waitFor(() =>
-    expect((screen.getByLabelText(/voice/i) as HTMLSelectElement).value).toBe("suzy"),
+    expect((screen.getByLabelText(/voice/i) as HTMLSelectElement).value).toBe(
+      "suzy",
+    ),
   );
 
   await user.type(screen.getByLabelText(/text source/i), "Long-form content");
   await user.selectOptions(screen.getByLabelText(/voice/i), "howard");
 
-  expect(screen.getByTestId("residency-notice")).toHaveTextContent(/different voice/i);
+  expect(screen.getByTestId("residency-notice")).toHaveTextContent(
+    /different voice/i,
+  );
   await user.click(screen.getByRole("button", { name: /create job/i }));
 
   // No model reload, so no confirmation dialog.
@@ -171,7 +202,9 @@ test("'don't warn again' skips later model confirmations", async () => {
 
   render(<JobCreateForm onSubmit={onSubmit} />);
   await waitFor(() =>
-    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(SMALL),
+    expect((screen.getByLabelText(/model/i) as HTMLSelectElement).value).toBe(
+      SMALL,
+    ),
   );
 
   await user.type(screen.getByLabelText(/text source/i), "First");

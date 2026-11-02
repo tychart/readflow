@@ -1,4 +1,4 @@
-import { render, screen, cleanup, act } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { useElementWidth } from "./useElementWidth";

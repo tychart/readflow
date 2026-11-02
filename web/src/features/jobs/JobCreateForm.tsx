@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
@@ -52,19 +52,21 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
   const [voiceId, setVoiceId] = useState("");
   const [modelId, setModelId] = useState(MODEL_OPTIONS[0].value);
   const [voices, setVoices] = useState<Voice[]>([]);
+  const [voicesError, setVoicesError] = useState<string | null>(null);
   const [voiceTouched, setVoiceTouched] = useState(false);
   const [modelTouched, setModelTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pendingFormData, setPendingFormData] = useState<FormData | null>(null);
   const [dontAskAgain, setDontAskAgain] = useState(false);
-  const [skipModelWarning, setSkipModelWarning] = useState(readSkipModelWarning);
+  const [skipModelWarning, setSkipModelWarning] =
+    useState(readSkipModelWarning);
 
   const status = useRuntimeStatus();
   const residentModelId = status?.resident_model_id ?? null;
   const residentVoiceId = status?.resident_voice_id ?? null;
   const modelResidencyBatches = status?.model_residency_batches ?? 10;
   const voiceResidencyBatches = status?.voice_residency_batches ?? 3;
-  const canSubmit = (text.trim() || file) && !submitting;
+  const canSubmit = Boolean(text.trim() || file) && !submitting;
 
   useEffect(() => {
     let isCancelled = false;
@@ -73,6 +75,12 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
       .then((nextVoices) => {
         if (isCancelled) return;
         setVoices(nextVoices);
+      })
+      .catch(() => {
+        if (isCancelled) return;
+        // Without voices the select is empty and the job cannot be created
+        // meaningfully; say so instead of leaving a silent dead control.
+        setVoicesError("Could not load voices. Reload the page to try again.");
       });
     return () => {
       isCancelled = true;
@@ -89,7 +97,10 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
 
   useEffect(() => {
     if (voiceTouched) return;
-    if (residentVoiceId && voices.some((voice) => voice.id === residentVoiceId)) {
+    if (
+      residentVoiceId &&
+      voices.some((voice) => voice.id === residentVoiceId)
+    ) {
       setVoiceId(residentVoiceId);
       return;
     }
@@ -99,13 +110,17 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
   }, [residentVoiceId, voices, voiceTouched, voiceId]);
 
   const voiceLabel = useCallback(
-    (id: string | null) => voices.find((voice) => voice.id === id)?.display_name ?? id ?? "—",
+    (id: string | null) =>
+      voices.find((voice) => voice.id === id)?.display_name ?? id ?? "—",
     [voices],
   );
 
   const modelDiffers = Boolean(residentModelId && modelId !== residentModelId);
   const voiceDiffers = Boolean(
-    residentModelId && !modelDiffers && residentVoiceId && voiceId !== residentVoiceId,
+    residentModelId &&
+      !modelDiffers &&
+      residentVoiceId &&
+      voiceId !== residentVoiceId,
   );
 
   const buildFormData = useCallback(() => {
@@ -165,7 +180,8 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
     setDontAskAgain(false);
   }, []);
 
-  let residencyNotice: { tone: "warn" | "info" | "good"; text: string } | null = null;
+  let residencyNotice: { tone: "warn" | "info" | "good"; text: string } | null =
+    null;
   if (residentModelId) {
     const residentVoice = voiceLabel(residentVoiceId);
     if (modelDiffers) {
@@ -240,6 +256,11 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
                   </option>
                 ))}
               </select>
+              {voicesError ? (
+                <p className="mt-1.5 text-xs text-[var(--rose)]" role="alert">
+                  {voicesError}
+                </p>
+              ) : null}
             </div>
             <div>
               <label className={labelClass()} htmlFor="model-select">
@@ -333,9 +354,9 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
                 {voiceLabel(residentVoiceId)}.
               </p>
               <p className="mt-2">
-                Your job uses {modelLabel(modelId)}, so it waits until the current
-                model rotates (about {modelResidencyBatches} batches) or its queue
-                finishes. The GPU can only hold one model at a time.
+                Your job uses {modelLabel(modelId)}, so it waits until the
+                current model rotates (about {modelResidencyBatches} batches) or
+                its queue finishes. The GPU can only hold one model at a time.
               </p>
             </>
           }

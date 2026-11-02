@@ -1,9 +1,15 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
-
-import { ReaderPage } from "./ReaderPage";
 import {
   getReaderSettings,
   invalidateReaderSettingsCache,
@@ -11,12 +17,16 @@ import {
   setReaderSettings,
 } from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
-import type { Chunk } from "../../types/api";
+import type { Chunk, JobDetail, JobStatus } from "../../types/api";
+import { ReaderPage } from "./ReaderPage";
+
 /** The reader's <audio> element lives in a shadow root (see ShadowAudio), so it
  *  is deliberately invisible to `document.querySelector(".reader audio")`-style
  *  lookups — reach it through the host element instead. */
 function readerAudio(container: HTMLElement): HTMLAudioElement {
-  const host = container.querySelector<HTMLElement>('[data-testid="reader-audio-host"]');
+  const host = container.querySelector<HTMLElement>(
+    '[data-testid="reader-audio-host"]',
+  );
   const audio = host?.shadowRoot?.querySelector("audio");
   if (!audio) {
     throw new Error("reader audio element not found");
@@ -44,22 +54,25 @@ Object.defineProperty(window, "PointerEvent", {
   value: TestPointerEvent,
 });
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 const originalMediaSource = window.MediaSource;
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  global.fetch = originalFetch;
-  Object.defineProperty(window, "MediaSource", { writable: true, value: originalMediaSource });
+  globalThis.fetch = originalFetch;
+  Object.defineProperty(window, "MediaSource", {
+    writable: true,
+    value: originalMediaSource,
+  });
   useAppStore.setState({ runtimeStatus: null });
 });
 
 function buildReaderJob(
   chunkCount: number,
-  status: "queued" | "rendering" | "playing" | "paused" = "queued",
-) {
+  status: JobStatus = "queued",
+): JobDetail {
   return {
     id: "job-1",
     title: "Reader job",
@@ -121,9 +134,11 @@ function buildManifest(chunkCount: number) {
 
 function buildReaderJobWithChunks(
   chunks: Chunk[],
-  status: "queued" | "rendering" | "playing" | "paused" = "queued",
-) {
-  const writtenChunkCount = chunks.filter((chunk) => chunk.status === "written").length;
+  status: JobStatus = "queued",
+): JobDetail {
+  const writtenChunkCount = chunks.filter(
+    (chunk) => chunk.status === "written",
+  ).length;
   return {
     ...buildReaderJob(0, status),
     status,
@@ -134,8 +149,6 @@ function buildReaderJobWithChunks(
     buffered_seconds: chunks
       .filter((chunk) => chunk.status === "written")
       .reduce((total, chunk) => total + chunk.duration_seconds, 0),
-    total_versioned_chunks: chunks.length,
-    total_versioned_completed: writtenChunkCount,
     audio_epoch: 0,
     chunks,
   };
@@ -156,7 +169,9 @@ function buildManifestFromChunks(chunks: Chunk[]) {
   };
 }
 
-function seedStore(overrides?: Partial<ReturnType<typeof useAppStore.getState>>) {
+function seedStore(
+  overrides?: Partial<ReturnType<typeof useAppStore.getState>>,
+) {
   useAppStore.setState({
     jobs: {},
     voices: [
@@ -202,37 +217,39 @@ test("loads a job and sends play plus voice actions", async () => {
   const user = userEvent.setup();
   seedStore();
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJob(1) };
-    }
-    if (url.endsWith("/api/jobs/job-1/manifest")) {
-      return { ok: true, json: async () => buildManifest(1) };
-    }
-    if (url.endsWith("/activate")) {
-      return { ok: true, json: async () => buildReaderJob(1, "playing") };
-    }
-    if (url.endsWith("/pause")) {
-      return { ok: true, json: async () => buildReaderJob(1, "paused") };
-    }
-    if (url.endsWith("/playback")) {
-      return { ok: true, json: async () => buildReaderJob(1, "playing") };
-    }
-    if (url.endsWith("/voice")) {
-      return {
-        ok: true,
-        json: async () => ({
-          ...buildReaderJob(1),
-          voice_id: "howard",
-          plan_version: 2,
-        }),
-      };
-    }
-    void init;
-    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  });
-  global.fetch = fetchMock as typeof fetch;
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJob(1) };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifest(1) };
+      }
+      if (url.endsWith("/activate")) {
+        return { ok: true, json: async () => buildReaderJob(1, "playing") };
+      }
+      if (url.endsWith("/pause")) {
+        return { ok: true, json: async () => buildReaderJob(1, "paused") };
+      }
+      if (url.endsWith("/playback")) {
+        return { ok: true, json: async () => buildReaderJob(1, "playing") };
+      }
+      if (url.endsWith("/voice")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ...buildReaderJob(1),
+            voice_id: "howard",
+            plan_version: 2,
+          }),
+        };
+      }
+      void init;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    },
+  );
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -242,14 +259,22 @@ test("loads a job and sends play plus voice actions", async () => {
     </MemoryRouter>,
   );
 
-  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText("Reader job")).toBeInTheDocument(),
+  );
   await user.click(screen.getByRole("button", { name: "Play" }));
   await user.selectOptions(screen.getByRole("combobox"), "howard");
   // Every voice change is confirmed: the dialog names what will be rebuilt.
   await user.click(await screen.findByRole("button", { name: "Change voice" }));
 
-  expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object));
-  expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/voice", expect.any(Object));
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/jobs/job-1/activate",
+    expect.any(Object),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/jobs/job-1/voice",
+    expect.any(Object),
+  );
   const voiceCall = fetchMock.mock.calls.find(([input]) =>
     String(input).endsWith("/api/jobs/job-1/voice"),
   );
@@ -265,41 +290,48 @@ test("full re-render rebuilds written audio and resets playback", async () => {
 
   const writtenChunk = buildReaderJob(1).chunks[0];
   const plannedChunks = [
-    { ...writtenChunk, status: "planned" as const, segment_url: null, duration_seconds: 0 },
+    {
+      ...writtenChunk,
+      status: "planned" as const,
+      segment_url: null,
+      duration_seconds: 0,
+    },
   ];
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJob(1) };
-    }
-    if (url.endsWith("/api/jobs/job-1/manifest")) {
-      return { ok: true, json: async () => buildManifest(1) };
-    }
-    if (url.endsWith("/activate")) {
-      return { ok: true, json: async () => buildReaderJob(1, "playing") };
-    }
-    if (url.endsWith("/pause")) {
-      return { ok: true, json: async () => buildReaderJob(1, "paused") };
-    }
-    if (url.endsWith("/playback")) {
-      return { ok: true, json: async () => buildReaderJob(1, "playing") };
-    }
-    if (url.endsWith("/voice")) {
-      return {
-        ok: true,
-        json: async () => ({
-          ...buildReaderJobWithChunks(plannedChunks, "queued"),
-          voice_id: "howard",
-          plan_version: 2,
-          audio_epoch: 1,
-        }),
-      };
-    }
-    void init;
-    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  });
-  global.fetch = fetchMock as typeof fetch;
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJob(1) };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifest(1) };
+      }
+      if (url.endsWith("/activate")) {
+        return { ok: true, json: async () => buildReaderJob(1, "playing") };
+      }
+      if (url.endsWith("/pause")) {
+        return { ok: true, json: async () => buildReaderJob(1, "paused") };
+      }
+      if (url.endsWith("/playback")) {
+        return { ok: true, json: async () => buildReaderJob(1, "playing") };
+      }
+      if (url.endsWith("/voice")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ...buildReaderJobWithChunks(plannedChunks, "queued"),
+            voice_id: "howard",
+            plan_version: 2,
+            audio_epoch: 1,
+          }),
+        };
+      }
+      void init;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    },
+  );
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -309,13 +341,19 @@ test("full re-render rebuilds written audio and resets playback", async () => {
     </MemoryRouter>,
   );
 
-  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText("Reader job")).toBeInTheDocument(),
+  );
   await user.click(screen.getByRole("button", { name: "Play" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument(),
+  );
 
   await user.selectOptions(screen.getByRole("combobox"), "howard");
   // The re-render choice lives inside the confirmation dialog.
-  await user.click(await screen.findByLabelText(/Also re-render already-rendered chunks/));
+  await user.click(
+    await screen.findByLabelText(/Also re-render already-rendered chunks/),
+  );
   await user.click(screen.getByRole("button", { name: "Change voice" }));
 
   const voiceCall = fetchMock.mock.calls.find(([input]) =>
@@ -326,7 +364,9 @@ test("full re-render rebuilds written audio and resets playback", async () => {
     rerender_written: true,
   });
   // The whole job was invalidated, so the reader must not keep claiming to play.
-  await waitFor(() => expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument(),
+  );
 });
 
 test("re-render all can be chosen later without changing the voice", async () => {
@@ -335,32 +375,39 @@ test("re-render all can be chosen later without changing the voice", async () =>
 
   const writtenChunk = buildReaderJob(1).chunks[0];
   const plannedChunks = [
-    { ...writtenChunk, status: "planned" as const, segment_url: null, duration_seconds: 0 },
+    {
+      ...writtenChunk,
+      status: "planned" as const,
+      segment_url: null,
+      duration_seconds: 0,
+    },
   ];
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJob(1) };
-    }
-    if (url.endsWith("/api/jobs/job-1/manifest")) {
-      return { ok: true, json: async () => buildManifest(1) };
-    }
-    if (url.endsWith("/voice")) {
-      return {
-        ok: true,
-        json: async () => ({
-          ...buildReaderJobWithChunks(plannedChunks, "queued"),
-          voice_id: "suzy",
-          plan_version: 2,
-          audio_epoch: 1,
-        }),
-      };
-    }
-    void init;
-    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  });
-  global.fetch = fetchMock as typeof fetch;
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJob(1) };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifest(1) };
+      }
+      if (url.endsWith("/voice")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ...buildReaderJobWithChunks(plannedChunks, "queued"),
+            voice_id: "suzy",
+            plan_version: 2,
+            audio_epoch: 1,
+          }),
+        };
+      }
+      void init;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    },
+  );
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -370,9 +417,15 @@ test("re-render all can be chosen later without changing the voice", async () =>
     </MemoryRouter>,
   );
 
-  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
-  await user.click(screen.getByRole("button", { name: /Re-render all rendered chunks/ }));
-  await user.click(await screen.findByRole("button", { name: "Re-render all" }));
+  await waitFor(() =>
+    expect(screen.getByText("Reader job")).toBeInTheDocument(),
+  );
+  await user.click(
+    screen.getByRole("button", { name: /Re-render all rendered chunks/ }),
+  );
+  await user.click(
+    await screen.findByRole("button", { name: "Re-render all" }),
+  );
 
   const voiceCall = fetchMock.mock.calls.find(([input]) =>
     String(input).endsWith("/api/jobs/job-1/voice"),
@@ -388,20 +441,25 @@ test("asks the backend to render the rest of the job", async () => {
   const user = userEvent.setup();
   seedStore();
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJob(2) };
-    }
-    if (url.endsWith("/api/jobs/job-1/manifest")) {
-      return { ok: true, json: async () => buildManifest(2) };
-    }
-    if (url.endsWith("/render-to-end")) {
-      return { ok: true, json: async () => ({ ...buildReaderJob(2), render_to_end: true }) };
-    }
-    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  });
-  global.fetch = fetchMock as typeof fetch;
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => buildReaderJob(2) };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifest(2) };
+      }
+      if (url.endsWith("/render-to-end")) {
+        return {
+          ok: true,
+          json: async () => ({ ...buildReaderJob(2), render_to_end: true }),
+        };
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    },
+  );
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -411,26 +469,32 @@ test("asks the backend to render the rest of the job", async () => {
     </MemoryRouter>,
   );
 
-  await waitFor(() => expect(screen.getByText("Reader job")).toBeInTheDocument());
-  await user.click(screen.getByRole("button", { name: /Render the rest of this job now/ }));
+  await waitFor(() =>
+    expect(screen.getByText("Reader job")).toBeInTheDocument(),
+  );
+  await user.click(
+    screen.getByRole("button", { name: /Render the rest of this job now/ }),
+  );
 
   const renderCall = fetchMock.mock.calls.find(([input]) =>
     String(input).endsWith("/api/jobs/job-1/render-to-end"),
   );
   expect(JSON.parse(String(renderCall?.[1]?.body))).toEqual({ enabled: true });
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: /already renders to the end/ })).toBeDisabled(),
+    expect(
+      screen.getByRole("button", { name: /already renders to the end/ }),
+    ).toBeDisabled(),
   );
 });
 
 test("redirects to the jobs page when the job id does not exist", async () => {
   seedStore();
 
-  global.fetch = vi.fn(async () => ({
+  globalThis.fetch = vi.fn(async () => ({
     ok: false,
     status: 404,
     json: async () => ({ detail: "Job not found" }),
-  })) as typeof fetch;
+  })) as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/missing-job"]}>
@@ -451,14 +515,18 @@ test("retries a transient load failure, then redirects home once the backend rep
   vi.useFakeTimers();
 
   let calls = 0;
-  global.fetch = vi.fn(async () => {
+  globalThis.fetch = vi.fn(async () => {
     calls += 1;
     // First attempt: the API is still restarting, so fetch rejects. Later
     // attempts reach the restarted backend, which no longer knows the job.
     if (calls === 1) {
       throw new TypeError("Failed to fetch");
     }
-    return { ok: false, status: 404, json: async () => ({ detail: "Job not found" }) };
+    return {
+      ok: false,
+      status: 404,
+      json: async () => ({ detail: "Job not found" }),
+    };
   }) as unknown as typeof fetch;
 
   render(
@@ -482,10 +550,14 @@ test("revalidates the loaded job and redirects when the live link reconnects to 
   seedStore(); // websocketStatus starts "open"
 
   let jobGone = false;
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (jobGone) {
-      return { ok: false, status: 404, json: async () => ({ detail: "Job not found" }) };
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: "Job not found" }),
+      };
     }
     if (url.endsWith("/api/jobs/job-1")) {
       return { ok: true, json: async () => buildReaderJob(1) };
@@ -523,7 +595,7 @@ test("shows a calm reconnect state while retrying, then the error once retries a
   seedStore();
   vi.useFakeTimers();
 
-  global.fetch = vi.fn(async () => {
+  globalThis.fetch = vi.fn(async () => {
     throw new TypeError("Failed to fetch");
   }) as unknown as typeof fetch;
 
@@ -562,10 +634,10 @@ test("shows waiting copy when play is armed before the first chunk exists", asyn
     total_chunks_emitted: 1,
     total_chunks_completed: 0,
     buffered_seconds: 0,
-    chunks: [],
+    chunks: [] as Chunk[],
   };
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
       return { ok: true, json: async () => job };
@@ -600,10 +672,17 @@ test("shows waiting copy when play is armed before the first chunk exists", asyn
       };
     }
     if (url.endsWith("/playback")) {
-      return { ok: true, json: async () => ({ ...job, status: "playing", is_active_listening: true }) };
+      return {
+        ok: true,
+        json: async () => ({
+          ...job,
+          status: "playing",
+          is_active_listening: true,
+        }),
+      };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -618,7 +697,9 @@ test("shows waiting copy when play is armed before the first chunk exists", asyn
 
   // The Playbar shows "Preparing stream…" when waiting for first chunk
   expect(await screen.findByText(/Preparing stream/i)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Download not available" })).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: "Download not available" }),
+  ).toBeDisabled();
 
   // After WS event with chunk data, the chunk counter updates
   job = buildReaderJob(1, "playing");
@@ -668,6 +749,8 @@ test("stays in buffering mode when playback reaches the end of the current conti
       peaks_url: "/api/jobs/job-1/chunks/0/peaks",
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 1,
@@ -681,6 +764,8 @@ test("stays in buffering mode when playback reaches the end of the current conti
       peaks_url: "/api/jobs/job-1/chunks/1/peaks",
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 2,
@@ -694,6 +779,8 @@ test("stays in buffering mode when playback reaches the end of the current conti
       peaks_url: "/api/jobs/job-1/chunks/2/peaks",
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 3,
@@ -704,27 +791,39 @@ test("stays in buffering mode when playback reaches the end of the current conti
       version: 0,
       voice_id: "suzy",
       segment_url: null,
+      peaks_url: null,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "queued"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
     }
     if (url.endsWith("/activate")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "playing"),
+      };
     }
     if (url.endsWith("/playback")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "playing"),
+      };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const { container } = render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -761,9 +860,14 @@ test("stays in buffering mode when playback reaches the end of the current conti
       duration_seconds: 0.5,
       start_seconds: 12,
       plan_version: 1,
+      version: 0,
       voice_id: "suzy",
       segment_url: "/api/jobs/job-1/chunks/3",
       peaks_url: "/api/jobs/job-1/chunks/3/peaks",
+      deprecated: false,
+      reprocessing: false,
+      char_start: 60,
+      char_end: 79,
     },
   ];
 
@@ -816,6 +920,8 @@ test("shows a stall banner when the producer stops and can retry", async () => {
       peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     }));
     chunks.push({
       index: 3,
@@ -826,28 +932,40 @@ test("shows a stall banner when the producer stops and can retry", async () => {
       version: 0,
       voice_id: "suzy",
       segment_url: null,
+      peaks_url: null,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     });
 
     let activateCalls = 0;
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/api/jobs/job-1")) {
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "queued"),
+        };
       }
       if (url.endsWith("/api/jobs/job-1/manifest")) {
         return { ok: true, json: async () => buildManifestFromChunks(chunks) };
       }
       if (url.endsWith("/activate")) {
         activateCalls += 1;
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "playing"),
+        };
       }
       if (url.endsWith("/playback")) {
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "playing"),
+        };
       }
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const { container } = render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -869,14 +987,18 @@ test("shows a stall banner when the producer stops and can retry", async () => {
     });
 
     await screen.findByText(/Buffering/i);
-    expect(screen.queryByText(/Rendering seems stalled/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Rendering seems stalled/i),
+    ).not.toBeInTheDocument();
 
     // No new chunk for longer than the stall threshold.
     await act(async () => {
       vi.advanceTimersByTime(30_000);
     });
 
-    expect(await screen.findByText(/Rendering seems stalled/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Rendering seems stalled/i),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(activateCalls).toBeGreaterThan(0));
@@ -901,22 +1023,27 @@ test("renders analyzed waveform bars fetched from the backend", async () => {
       peaks_url: "/api/jobs/job-1/chunks/0/peaks",
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/peaks")) {
       return { ok: true, json: async () => ({ bins: 2, peaks: [0.25, 0.75] }) };
     }
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "queued"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const { container } = render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -945,7 +1072,7 @@ test("sidebar toggle button stays stable across re-renders and toggles the sideb
   const user = userEvent.setup();
   seedStore();
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
       return { ok: true, json: async () => buildReaderJob(1) };
@@ -954,7 +1081,7 @@ test("sidebar toggle button stays stable across re-renders and toggles the sideb
       return { ok: true, json: async () => buildManifest(1) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -967,7 +1094,9 @@ test("sidebar toggle button stays stable across re-renders and toggles the sideb
   await screen.findByText("Reader job");
 
   // Large screen: the reader header toggle is the first "Close sidebar" button.
-  const toggleButton = screen.getAllByRole("button", { name: "Close sidebar" })[0];
+  const toggleButton = screen.getAllByRole("button", {
+    name: "Close sidebar",
+  })[0];
 
   // A job_updated event re-renders the page (as playback polling does).
   act(() => {
@@ -979,13 +1108,19 @@ test("sidebar toggle button stays stable across re-renders and toggles the sideb
 
   // The toggle must be the same DOM node — the content subtree must not
   // unmount/remount on re-renders (that swallowed clicks during playback).
-  expect(screen.getAllByRole("button", { name: "Close sidebar" })[0]).toBe(toggleButton);
+  expect(screen.getAllByRole("button", { name: "Close sidebar" })[0]).toBe(
+    toggleButton,
+  );
 
   // And toggling still works: close, then reopen.
   await user.click(toggleButton);
-  expect(screen.getByRole("button", { name: "Open sidebar" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Open sidebar" }),
+  ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Open sidebar" }));
-  expect(screen.getAllByRole("button", { name: "Close sidebar" }).length).toBeGreaterThan(0);
+  expect(
+    screen.getAllByRole("button", { name: "Close sidebar" }).length,
+  ).toBeGreaterThan(0);
 });
 
 test("returns to Play (no spinner) after a completed job finishes playing", async () => {
@@ -1017,13 +1152,18 @@ test("returns to Play (no spinner) after a completed job finishes playing", asyn
       peaks_url: "/api/jobs/job-1/chunks/0/peaks",
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "completed") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "completed"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
@@ -1032,7 +1172,7 @@ test("returns to Play (no spinner) after a completed job finishes playing", asyn
       return { ok: true, json: async () => ({ bins: 1, peaks: [0.5] }) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const { container } = render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -1053,7 +1193,9 @@ test("returns to Play (no spinner) after a completed job finishes playing", asyn
   });
 
   // The button must return to Play with no spinner / no stuck Pause state.
-  await waitFor(() => expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument(),
+  );
   expect(container.querySelector(".animate-spin")).toBeNull();
 });
 
@@ -1076,22 +1218,31 @@ test("highlights the chunk under the playhead without remounting the other block
     char_end: index * 5 + 4,
   }));
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "playing"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
     }
     if (url.endsWith("/activate")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "playing"),
+      };
     }
     if (url.endsWith("/playback")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "playing"),
+      };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const { container } = render(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -1104,7 +1255,9 @@ test("highlights the chunk under the playhead without remounting the other block
   await screen.findByText("Reader job");
 
   const chunkState = (index: number) =>
-    container.querySelector(`[data-chunk-block="${index}"]`)?.getAttribute("data-chunk-state");
+    container
+      .querySelector(`[data-chunk-block="${index}"]`)
+      ?.getAttribute("data-chunk-state");
 
   // Playback starts at 0, so the first chunk is the active one.
   expect(chunkState(0)).toBe("active");
@@ -1114,7 +1267,10 @@ test("highlights the chunk under the playhead without remounting the other block
   const audio = readerAudio(container);
 
   act(() => {
-    Object.defineProperty(audio!, "currentTime", { configurable: true, value: 6 });
+    Object.defineProperty(audio!, "currentTime", {
+      configurable: true,
+      value: 6,
+    });
     audio!.dispatchEvent(new Event("timeupdate"));
   });
 
@@ -1124,33 +1280,50 @@ test("highlights the chunk under the playhead without remounting the other block
   expect(chunkState(2)).toBe("idle");
   // Blocks whose highlighting did not change keep their DOM node, which is what
   // makes a 300-chunk document affordable to re-render ~20x/s during playback.
-  expect(container.querySelector('[data-chunk-block="2"]')).toBe(untouchedBlock);
+  expect(container.querySelector('[data-chunk-block="2"]')).toBe(
+    untouchedBlock,
+  );
 });
 
 /* ── Reader navigation controls ───────────────────────────── */
 
 /** Fetch mock for a reader job whose chunks are all rendered. */
-function mockReaderFetch(chunks: Chunk[], status: "paused" | "playing" = "paused") {
+function mockReaderFetch(
+  chunks: Chunk[],
+  status: "paused" | "playing" = "paused",
+) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, status) };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, status),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
     }
     if (url.endsWith("/activate")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "playing"),
+      };
     }
     if (url.endsWith("/pause")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "paused") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "paused"),
+      };
     }
     if (url.endsWith("/playback")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, status) };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, status),
+      };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
-  global.fetch = fetchMock;
+  }) as unknown as typeof fetch;
+  globalThis.fetch = fetchMock;
   return fetchMock;
 }
 
@@ -1181,12 +1354,17 @@ test("the chunk jump button moves the playhead without starting playback", async
   await screen.findByText("Reader job");
 
   // Chunk 2 starts 4s into the document.
-  await user.click(screen.getByRole("button", { name: "Jump playback to chunk 2" }));
+  await user.click(
+    screen.getByRole("button", { name: "Jump playback to chunk 2" }),
+  );
 
   // Both the playbar clock and the conveyor readout follow the jump.
   expect(screen.getByTestId("conveyor-readout")).toHaveTextContent("0:04");
   // A seek on a paused reader must not activate backend scheduling.
-  expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything());
+  expect(fetchMock).not.toHaveBeenCalledWith(
+    "/api/jobs/job-1/activate",
+    expect.anything(),
+  );
 });
 
 test("the now-playing equalizer only runs while audio is actually playing", async () => {
@@ -1211,7 +1389,10 @@ test("the now-playing equalizer only runs while audio is actually playing", asyn
   // player correctly re-derives its state from that flag — so a test that wants
   // "audio is running" has to say so on the element, as a browser would.
   act(() => {
-    Object.defineProperty(audio, "paused", { configurable: true, value: false });
+    Object.defineProperty(audio, "paused", {
+      configurable: true,
+      value: false,
+    });
     audio!.dispatchEvent(new Event("playing"));
   });
   expect(container.querySelector("[data-now-playing]")).toHaveAttribute(
@@ -1227,12 +1408,16 @@ test("reader settings can remove the per-chunk jump controls", async () => {
 
   renderReader();
   await screen.findByText("Reader job");
-  expect(screen.getByRole("button", { name: "Jump playback to chunk 2" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Jump playback to chunk 2" }),
+  ).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Reader settings" }));
   await user.click(screen.getByLabelText("Show chunk jump buttons"));
 
-  expect(screen.queryByRole("button", { name: "Jump playback to chunk 2" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Jump playback to chunk 2" }),
+  ).toBeNull();
 });
 
 test("the settings panel exposes the conveyor controls", async () => {
@@ -1277,9 +1462,14 @@ test("space toggles playback without focusing the controls first", async () => {
   });
 
   await waitFor(() =>
-    expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.anything()),
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/job-1/activate",
+      expect.anything(),
+    ),
   );
-  expect(await screen.findByRole("button", { name: "Pause" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Pause" }),
+  ).toBeInTheDocument();
 });
 
 test("the ±10s buttons seek within the rendered stream", async () => {
@@ -1353,7 +1543,10 @@ test("a skip back into evicted audio reopens the stream instead of clamping", as
       return new TestSourceBuffer() as unknown as SourceBuffer;
     }
   }
-  Object.defineProperty(window, "MediaSource", { writable: true, value: TestMediaSource });
+  Object.defineProperty(window, "MediaSource", {
+    writable: true,
+    value: TestMediaSource,
+  });
 
   // Buffered audio the test can move: 3 chunks of 4s = 12s.
   let bufferedStart = 0;
@@ -1370,10 +1563,13 @@ test("a skip back into evicted audio reopens the stream instead of clamping", as
   });
 
   const chunks = buildTextChunks(3);
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "paused") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "paused"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
@@ -1381,12 +1577,18 @@ test("a skip back into evicted audio reopens the stream instead of clamping", as
     if (url.endsWith("/init")) {
       bufferedStart = 0;
       bufferedEnd = 0.5;
-      return { ok: true, arrayBuffer: async () => new Uint8Array([255]).buffer };
+      return {
+        ok: true,
+        arrayBuffer: async () => new Uint8Array([255]).buffer,
+      };
     }
     const index = Number(url.split("/").at(-1));
     bufferedStart = 0;
     bufferedEnd = (index + 1) * 4;
-    return { ok: true, arrayBuffer: async () => new Uint8Array([index]).buffer };
+    return {
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([index]).buffer,
+    };
   }) as unknown as typeof fetch;
 
   renderReader();
@@ -1431,6 +1633,8 @@ describe("chunk versioning & reprocessing", () => {
         peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: true,
         reprocessing: false,
+        char_start: 0,
+        char_end: 0,
       },
       {
         index: 0,
@@ -1444,6 +1648,8 @@ describe("chunk versioning & reprocessing", () => {
         peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: false,
         reprocessing: false,
+        char_start: 0,
+        char_end: 0,
       },
     ];
 
@@ -1453,7 +1659,9 @@ describe("chunk versioning & reprocessing", () => {
         const url = String(input);
         if (url.endsWith("/api/jobs/job-1")) {
           return new Response(
-            JSON.stringify(buildReaderJobWithChunks(multiVersionChunks, "queued")),
+            JSON.stringify(
+              buildReaderJobWithChunks(multiVersionChunks, "queued"),
+            ),
             { status: 200, headers: { "Content-Type": "application/json" } },
           );
         }
@@ -1501,6 +1709,8 @@ describe("chunk versioning & reprocessing", () => {
         peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: false,
         reprocessing: false,
+        char_start: 0,
+        char_end: 0,
       },
     ];
 
@@ -1515,10 +1725,10 @@ describe("chunk versioning & reprocessing", () => {
           );
         }
         if (url.endsWith("/api/jobs/job-1/manifest")) {
-          return new Response(
-            JSON.stringify(buildManifestFromChunks(chunks)),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
+          return new Response(JSON.stringify(buildManifestFromChunks(chunks)), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
         return new Response(new Uint8Array([1]).buffer, {
           status: 200,
@@ -1557,6 +1767,8 @@ describe("chunk versioning & reprocessing", () => {
         peaks_url: "/api/jobs/job-1/chunks/0/peaks",
         deprecated: false,
         reprocessing: false,
+        char_start: 0,
+        char_end: 0,
       },
     ];
 
@@ -1571,10 +1783,10 @@ describe("chunk versioning & reprocessing", () => {
           );
         }
         if (url.endsWith("/api/jobs/job-1/manifest")) {
-          return new Response(
-            JSON.stringify(buildManifestFromChunks(chunks)),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
+          return new Response(JSON.stringify(buildManifestFromChunks(chunks)), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
         return new Response(new Uint8Array([1]).buffer, {
           status: 200,
@@ -1613,6 +1825,8 @@ describe("chunk versioning & reprocessing", () => {
       peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     }));
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1621,14 +1835,17 @@ describe("chunk versioning & reprocessing", () => {
         return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
       }
       if (url.endsWith("/api/jobs/job-1")) {
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "paused") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "paused"),
+        };
       }
       if (url.endsWith("/api/jobs/job-1/manifest")) {
         return { ok: true, json: async () => buildManifestFromChunks(chunks) };
       }
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
     });
-    global.fetch = fetchMock as typeof fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -1658,11 +1875,18 @@ describe("chunk versioning & reprocessing", () => {
     const slotEls = timeline.querySelectorAll<HTMLElement>("[data-slot-state]");
     expect(slotEls.length).toBe(3);
 
-    fireEvent.pointerDown(slotEls[2], { button: 0, clientX: 225, pointerId: 1 });
+    fireEvent.pointerDown(slotEls[2], {
+      button: 0,
+      clientX: 225,
+      pointerId: 1,
+    });
     fireEvent.pointerUp(slotEls[2], { clientX: 225, pointerId: 1 });
 
     // A paused seek must not re-activate the job for backend scheduling.
-    expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object));
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/jobs/job-1/activate",
+      expect.any(Object),
+    );
     // The player stays paused.
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
 
@@ -1674,7 +1898,9 @@ describe("chunk versioning & reprocessing", () => {
     await waitFor(() => {
       const bars = timeline.querySelectorAll<HTMLElement>("[data-wave-bar]");
       expect(bars.length).toBe(3);
-      const fills = Array.from(bars).map((bar) => bar.querySelector<HTMLElement>("[data-wave-fill]"));
+      const fills = Array.from(bars).map((bar) =>
+        bar.querySelector<HTMLElement>("[data-wave-fill]"),
+      );
       expect(fills[0]?.style.width).toBe("100%");
       expect(fills[1]?.style.width).toBe("100%");
       expect(fills[2]?.style.width).toBe("25%");
@@ -1699,6 +1925,8 @@ describe("chunk versioning & reprocessing", () => {
       peaks_url: `/api/jobs/job-1/chunks/${index}/peaks`,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     }));
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -1707,20 +1935,29 @@ describe("chunk versioning & reprocessing", () => {
         return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
       }
       if (url.endsWith("/api/jobs/job-1")) {
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "playing"),
+        };
       }
       if (url.endsWith("/api/jobs/job-1/manifest")) {
         return { ok: true, json: async () => buildManifestFromChunks(chunks) };
       }
       if (url.endsWith("/activate")) {
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "playing"),
+        };
       }
       if (url.endsWith("/playback")) {
-        return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "playing") };
+        return {
+          ok: true,
+          json: async () => buildReaderJobWithChunks(chunks, "playing"),
+        };
       }
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
     });
-    global.fetch = fetchMock as typeof fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     render(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
@@ -1733,7 +1970,10 @@ describe("chunk versioning & reprocessing", () => {
     await screen.findByText("Reader job");
     await user.click(screen.getByRole("button", { name: "Play" }));
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/activate", expect.any(Object)),
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/jobs/job-1/activate",
+        expect.any(Object),
+      ),
     );
 
     // 300px maps to 12s of timeline, so x=225 → 9s → 1s into chunk 2.
@@ -1751,7 +1991,11 @@ describe("chunk versioning & reprocessing", () => {
     } as DOMRect);
 
     const slotEls = timeline.querySelectorAll<HTMLElement>("[data-slot-state]");
-    fireEvent.pointerDown(slotEls[2], { button: 0, clientX: 225, pointerId: 1 });
+    fireEvent.pointerDown(slotEls[2], {
+      button: 0,
+      clientX: 225,
+      pointerId: 1,
+    });
     fireEvent.pointerUp(slotEls[2], { clientX: 225, pointerId: 1 });
 
     // The playing seek re-activates the job (play activation + seek activation).
@@ -1768,7 +2012,8 @@ describe("chunk versioning & reprocessing", () => {
 
 /* ── Long-document reader behavior ───────────────────────── */
 
-const LONG_SOURCE = "First chunk sentence. Second chunk sentence the planner has not reached yet.";
+const LONG_SOURCE =
+  "First chunk sentence. Second chunk sentence the planner has not reached yet.";
 
 function buildLongReaderJob(chunks: Chunk[]) {
   return {
@@ -1778,7 +2023,7 @@ function buildLongReaderJob(chunks: Chunk[]) {
 }
 
 function mockLongJobFetch(chunks: Chunk[]) {
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
       return { ok: true, json: async () => buildLongReaderJob(chunks) };
@@ -1790,7 +2035,7 @@ function mockLongJobFetch(chunks: Chunk[]) {
       return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 function renderReader() {
@@ -1839,6 +2084,7 @@ test("merges a streamed chunk delta without losing the document text", async () 
           voice_id: "suzy",
           model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
           is_active_listening: false,
+          render_to_end: false,
           total_chunks_emitted: 1,
           total_chunks_completed: 1,
           buffered_seconds: 4,
@@ -1869,7 +2115,9 @@ test("merges a streamed chunk delta without losing the document text", async () 
   // The chunk reached the timeline (manifest merge) and split the document: the
   // first sentence is now a chunk block and the tail is the remaining text, so
   // the merged summary must not have dropped source_text.
-  expect(await screen.findByRole("slider", { name: /^Chunk 1:/ })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("slider", { name: /^Chunk 1:/ }),
+  ).toBeInTheDocument();
   expect(screen.queryByText(LONG_SOURCE)).not.toBeInTheDocument();
   expect(
     screen.getByText("Second chunk sentence the planner has not reached yet."),
@@ -1887,12 +2135,18 @@ test("merges a streamed chunk delta without losing the document text", async () 
  */
 describe("phone layout", () => {
   afterEach(() => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
   });
 
   test("puts the transport and the conveyor in a bottom dock", async () => {
     seedStore();
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390,
+    });
     mockReaderFetch(buildTextChunks(4));
 
     renderReader();
@@ -1902,7 +2156,9 @@ describe("phone layout", () => {
     expect(dock).toBeInTheDocument();
 
     // Exactly one transport, and it lives in the dock.
-    expect(within(dock).getByRole("button", { name: "Play" })).toBeInTheDocument();
+    expect(
+      within(dock).getByRole("button", { name: "Play" }),
+    ).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Play" })).toHaveLength(1);
     expect(within(dock).getByTestId("chunk-conveyor")).toBeInTheDocument();
     expect(screen.getAllByTestId("chunk-conveyor")).toHaveLength(1);
@@ -1910,21 +2166,29 @@ describe("phone layout", () => {
 
   test("uses on-screen sizes for the dock controls", async () => {
     seedStore();
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390,
+    });
     mockReaderFetch(buildTextChunks(4));
 
     renderReader();
     await screen.findByText("Reader job");
 
     // Larger tap targets than the compact desktop playbar.
-    const play = within(screen.getByTestId("reader-dock")).getByRole("button", { name: "Play" });
+    const play = within(screen.getByTestId("reader-dock")).getByRole("button", {
+      name: "Play",
+    });
     expect(play.style.width).toBe("52px");
   });
 
   test("phone dock follows the show-conveyor setting", async () => {
     const user = userEvent.setup();
     seedStore();
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390,
+    });
     mockReaderFetch(buildTextChunks(4));
 
     renderReader();
@@ -1946,16 +2210,16 @@ describe("playback speed control", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.endsWith("/api/jobs/job-1")) {
-          return new Response(
-            JSON.stringify(buildReaderJob(2, "completed")),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
+          return new Response(JSON.stringify(buildReaderJob(2, "completed")), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
         if (url.endsWith("/api/jobs/job-1/manifest")) {
-          return new Response(
-            JSON.stringify(buildManifest(2)),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
+          return new Response(JSON.stringify(buildManifest(2)), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
         return new Response(new Uint8Array([1]).buffer, {
           status: 200,
@@ -2011,18 +2275,29 @@ describe("playback speed control", () => {
   test("starts at 1x with no speed badge in the playbar", async () => {
     await openSettings();
 
-    expect(screen.getByRole("slider", { name: /playback speed slider/i })).toHaveValue("1");
-    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1");
-    expect(screen.queryByTestId("playback-rate-indicator")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("slider", { name: /playback speed slider/i }),
+    ).toHaveValue("1");
+    expect(
+      screen.getByRole("textbox", { name: /playback speed value/i }),
+    ).toHaveValue("1");
+    expect(
+      screen.queryByTestId("playback-rate-indicator"),
+    ).not.toBeInTheDocument();
   });
 
   test("slider and typed value both update the live speed", async () => {
     await openSettings();
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
-    fireEvent.change(screen.getByRole("slider", { name: /playback speed slider/i }), {
-      target: { value: "2" },
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
     });
+    fireEvent.change(
+      screen.getByRole("slider", { name: /playback speed slider/i }),
+      {
+        target: { value: "2" },
+      },
+    );
     expect(input).toHaveValue("2");
 
     fireEvent.change(input, { target: { value: "0.75" } });
@@ -2035,10 +2310,14 @@ describe("playback speed control", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "1.5×" }));
 
-    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.5");
+    expect(
+      screen.getByRole("textbox", { name: /playback speed value/i }),
+    ).toHaveValue("1.5");
     // Remembered per device, so the next reader opens at the same rate.
     expect(getReaderSettings().playbackRate).toBe(1.5);
-    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent("1.5×");
+    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent(
+      "1.5×",
+    );
   });
 
   test("adopts the remembered speed when the reader opens", async () => {
@@ -2046,14 +2325,20 @@ describe("playback speed control", () => {
 
     await openSettings();
 
-    expect(screen.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.75");
-    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent("1.75×");
+    expect(
+      screen.getByRole("textbox", { name: /playback speed value/i }),
+    ).toHaveValue("1.75");
+    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent(
+      "1.75×",
+    );
   });
 
   test("invalid speed input reverts to the current value", async () => {
     await openSettings();
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
 
     // Type nonsense and blur: the field reverts to the current speed.
     fireEvent.change(input, { target: { value: "abc" } });
@@ -2079,6 +2364,8 @@ test("shows a waiting note when the job's model is not resident", async () => {
       peaks_url: "/api/jobs/job-1/chunks/0/peaks",
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
     {
       index: 1,
@@ -2092,19 +2379,24 @@ test("shows a waiting note when the job's model is not resident", async () => {
       peaks_url: null,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "queued"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   useAppStore.setState({
     runtimeStatus: {
@@ -2143,19 +2435,24 @@ test("keeps the reader's audio element out of page-wide media queries", async ()
       peaks_url: null,
       deprecated: false,
       reprocessing: false,
+      char_start: 0,
+      char_end: 0,
     },
   ];
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs/job-1")) {
-      return { ok: true, json: async () => buildReaderJobWithChunks(chunks, "queued") };
+      return {
+        ok: true,
+        json: async () => buildReaderJobWithChunks(chunks, "queued"),
+      };
     }
     if (url.endsWith("/api/jobs/job-1/manifest")) {
       return { ok: true, json: async () => buildManifestFromChunks(chunks) };
     }
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   renderReader();
   await screen.findByText("Reader job");

@@ -1,11 +1,22 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-
-import { barFillFraction, isNonFillState, isSlotDimmed } from "../lib/waveform-timeline";
+import {
+  BAR_GAP_PX,
+  BAR_RADIUS_PX,
+  BAR_WIDTH_PX,
+  MIN_BAR_HEIGHT,
+} from "../lib/waveform-style";
+import {
+  barFillFraction,
+  isNonFillState,
+  isSlotDimmed,
+} from "../lib/waveform-timeline";
 import type { TimelineSlotData } from "../types/timeline";
 
-import { BAR_GAP_PX, BAR_RADIUS_PX, BAR_WIDTH_PX, MIN_BAR_HEIGHT } from "../lib/waveform-style";
-
-export { BAR_GAP_PX, BAR_WIDTH_PX, SLOT_H_PADDING_PX } from "../lib/waveform-style";
+export {
+  BAR_GAP_PX,
+  BAR_WIDTH_PX,
+  SLOT_H_PADDING_PX,
+} from "../lib/waveform-style";
 
 /* ── Interaction ──────────────────────────────────────────── */
 
@@ -15,10 +26,22 @@ export { BAR_GAP_PX, BAR_WIDTH_PX, SLOT_H_PADDING_PX } from "../lib/waveform-sty
  * identity without the slot component knowing about seeking.
  */
 export interface WaveformSlotInteraction {
-  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => void;
-  onPointerMove: (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => void;
-  onPointerUp: (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => void;
-  onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>, slot: TimelineSlotData) => void;
+  onPointerDown: (
+    event: ReactPointerEvent<HTMLDivElement>,
+    slot: TimelineSlotData,
+  ) => void;
+  onPointerMove: (
+    event: ReactPointerEvent<HTMLDivElement>,
+    slot: TimelineSlotData,
+  ) => void;
+  onPointerUp: (
+    event: ReactPointerEvent<HTMLDivElement>,
+    slot: TimelineSlotData,
+  ) => void;
+  onPointerCancel: (
+    event: ReactPointerEvent<HTMLDivElement>,
+    slot: TimelineSlotData,
+  ) => void;
   /** Click / Enter / Space activation, as opposed to a drag-scrub. */
   onActivate: (slot: TimelineSlotData) => void;
 }
@@ -80,12 +103,19 @@ export function WaveformSlot({
   const isGap = slot.state === "ready_after_gap";
   const dimmed = isSlotDimmed(slot, slotStartSeconds, playheadSeconds);
   /** Labels fade out (and end up fully transparent) as the playbar compacts. */
-  const labelOpacity = fadeLabels ? "calc(1 - var(--scroll-progress, 0) * 2)" : 1;
+  const labelOpacity = fadeLabels
+    ? "calc(1 - var(--scroll-progress, 0) * 2)"
+    : 1;
 
+  // A named slider when interactive; hidden from assistive tech when it only
+  // draws (the conveyor handles its own gestures at strip level).
   return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: role and label are conditional; only the interactive variant carries a label.
     <div
       aria-hidden={interactive ? undefined : true}
-      aria-label={interactive ? `Chunk ${slot.chunkIndex + 1}: ${slot.state}` : undefined}
+      aria-label={
+        interactive ? `Chunk ${slot.chunkIndex + 1}: ${slot.state}` : undefined
+      }
       className={`relative flex h-full items-end overflow-hidden transition-colors ${
         interactive ? "cursor-pointer" : ""
       } ${dimmed ? "opacity-40" : ""}`}
@@ -102,10 +132,26 @@ export function WaveformSlot({
             }
           : undefined
       }
-      onPointerCancel={interactive ? (event) => interaction.onPointerCancel(event, slot) : undefined}
-      onPointerDown={interactive ? (event) => interaction.onPointerDown(event, slot) : undefined}
-      onPointerMove={interactive ? (event) => interaction.onPointerMove(event, slot) : undefined}
-      onPointerUp={interactive ? (event) => interaction.onPointerUp(event, slot) : undefined}
+      onPointerCancel={
+        interactive
+          ? (event) => interaction.onPointerCancel(event, slot)
+          : undefined
+      }
+      onPointerDown={
+        interactive
+          ? (event) => interaction.onPointerDown(event, slot)
+          : undefined
+      }
+      onPointerMove={
+        interactive
+          ? (event) => interaction.onPointerMove(event, slot)
+          : undefined
+      }
+      onPointerUp={
+        interactive
+          ? (event) => interaction.onPointerUp(event, slot)
+          : undefined
+      }
       role={interactive ? "slider" : undefined}
       style={style}
       tabIndex={interactive ? 0 : undefined}
@@ -153,23 +199,35 @@ export function WaveformSlot({
 
           // Horizontal (left-to-right) fill of this bar:
           // playhead fully right of it → 1, fully left → 0, inside → proportional.
-          const barStartTime = slotStartSeconds + (i / barCount) * slot.durationSeconds;
-          const barEndTime = slotStartSeconds + ((i + 1) / barCount) * slot.durationSeconds;
+          const barStartTime =
+            slotStartSeconds + (i / barCount) * slot.durationSeconds;
+          const barEndTime =
+            slotStartSeconds + ((i + 1) / barCount) * slot.durationSeconds;
           const fillFraction = nonFill
             ? 0
-            : barFillFraction(playheadSeconds, barStartTime, barEndTime, renderedDurationSeconds);
+            : barFillFraction(
+                playheadSeconds,
+                barStartTime,
+                barEndTime,
+                renderedDurationSeconds,
+              );
 
+          // Bars are a fixed positional strip; the absolute start time is
+          // unique per bar and stable while the playhead moves, so it is a
+          // better identity than the array index.
           return (
             <div
               className="relative shrink-0"
               data-wave-bar
-              key={i}
+              key={barStartTime}
               style={{ width: BAR_WIDTH_PX, height: `${amplitude * 100}%` }}
             >
               {nonFill ? (
                 <div
                   className={`absolute inset-0 w-full ${
-                    slot.state === "failed" ? "bg-rose-500/60" : "bg-[var(--waveform-bar-muted)]"
+                    slot.state === "failed"
+                      ? "bg-rose-500/60"
+                      : "bg-[var(--waveform-bar-muted)]"
                   }`}
                   style={{ borderRadius: BAR_RADIUS_PX }}
                 />
@@ -178,7 +236,9 @@ export function WaveformSlot({
                   {/* Muted background — full bar height & width */}
                   <div
                     className={`absolute inset-0 w-full ${
-                      isGap ? "bg-[var(--waveform-bar-dim)]/50" : "bg-[var(--waveform-bar-dim)]"
+                      isGap
+                        ? "bg-[var(--waveform-bar-dim)]/50"
+                        : "bg-[var(--waveform-bar-dim)]"
                     }`}
                     style={{ borderRadius: BAR_RADIUS_PX }}
                   />

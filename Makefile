@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 UV_CACHE_DIR := /tmp/readflow-uv-cache
 
-.PHONY: install dev test-web test-server test-e2e test lint typecheck test-real-model \
+.PHONY: install dev test-web test-server test-e2e test lint lint-fix typecheck test-real-model \
         cuda-install docker-build docker-build-flash docker-build-cpu docker-build-all \
         docker-run docker-run-cpu docker-logs docker-down docker-smoke docker-clean
 
@@ -31,10 +31,17 @@ test-e2e:
 
 test: test-web test-server
 
+# Biome owns formatting + linting for web/ (biome.jsonc at the repo root);
+# ruff owns the same for server/.
 lint:
 	cd web && bun run lint
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff check .
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff format --check .
+
+lint-fix:
+	cd web && bun run lint:fix
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff check --fix .
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff format .
 
 typecheck:
 	cd web && bun run typecheck

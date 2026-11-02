@@ -4,7 +4,9 @@ import type { RefObject } from "react";
 import { ShadowAudio } from "./ShadowAudio";
 
 function hostOf(container: HTMLElement) {
-  return container.querySelector<HTMLElement>('[data-testid="reader-audio-host"]');
+  return container.querySelector<HTMLElement>(
+    '[data-testid="reader-audio-host"]',
+  );
 }
 
 test("hosts the audio element in a shadow root that page-level queries cannot reach", () => {
@@ -27,13 +29,17 @@ test("hosts the audio element in a shadow root that page-level queries cannot re
 
 test("keeps one element identity across re-renders and clears the ref on unmount", () => {
   const audioRef: RefObject<HTMLAudioElement | null> = { current: null };
-  const { container, rerender, unmount } = render(<ShadowAudio audioRef={audioRef} />);
+  const { container, rerender, unmount } = render(
+    <ShadowAudio audioRef={audioRef} />,
+  );
   const first = audioRef.current;
   expect(first).toBeInstanceOf(HTMLAudioElement);
 
   rerender(<ShadowAudio audioRef={audioRef} />);
   expect(audioRef.current).toBe(first);
-  expect(hostOf(container)!.shadowRoot?.querySelectorAll("audio")).toHaveLength(1);
+  expect(hostOf(container)!.shadowRoot?.querySelectorAll("audio")).toHaveLength(
+    1,
+  );
 
   unmount();
   expect(audioRef.current).toBeNull();

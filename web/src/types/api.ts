@@ -1,4 +1,10 @@
-export type JobStatus = "queued" | "rendering" | "paused" | "playing" | "completed" | "failed";
+export type JobStatus =
+  | "queued"
+  | "rendering"
+  | "paused"
+  | "playing"
+  | "completed"
+  | "failed";
 export type ChunkStatus =
   | "planned"
   | "queued"
@@ -195,5 +201,8 @@ export interface RuntimeStatus {
 }
 
 // Re-export types that moved to events.ts to keep existing imports working
-export type { AdminState, TelemetrySnapshot as AdminStateTelemetry } from "./events";
-export type { WsEnvelope } from "./events";
+export type {
+  AdminState,
+  TelemetrySnapshot as AdminStateTelemetry,
+  WsEnvelope,
+} from "./events";

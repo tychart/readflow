@@ -8,7 +8,10 @@ import {
 } from "react";
 
 import { formatSpeed } from "../../lib/format";
-import { PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN } from "../../state/reader-settings";
+import {
+  PLAYBACK_RATE_MAX,
+  PLAYBACK_RATE_MIN,
+} from "../../state/reader-settings";
 
 const SLIDER_MIN = 0.5;
 const SLIDER_MAX = 3.0;
@@ -36,7 +39,10 @@ interface PlaybackSpeedControlProps {
  * slider caps at its bounds when the typed value is outside, while the input
  * displays the actual value.
  */
-export function PlaybackSpeedControl({ value, onChange }: PlaybackSpeedControlProps) {
+export function PlaybackSpeedControl({
+  value,
+  onChange,
+}: PlaybackSpeedControlProps) {
   const [inputText, setInputText] = useState(formatSpeed(value));
   const prevValueRef = useRef(value);
 
@@ -54,7 +60,9 @@ export function PlaybackSpeedControl({ value, onChange }: PlaybackSpeedControlPr
         setInputText(formatSpeed(value));
         return;
       }
-      onChange(Math.min(PLAYBACK_RATE_MAX, Math.max(PLAYBACK_RATE_MIN, parsed)));
+      onChange(
+        Math.min(PLAYBACK_RATE_MAX, Math.max(PLAYBACK_RATE_MIN, parsed)),
+      );
     },
     [onChange, value],
   );
@@ -68,9 +76,12 @@ export function PlaybackSpeedControl({ value, onChange }: PlaybackSpeedControlPr
     [onChange],
   );
 
-  const handleInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setInputText(event.target.value);
-  }, []);
+  const handleInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setInputText(event.target.value);
+    },
+    [],
+  );
 
   const handleInputBlur = useCallback(
     (event: FocusEvent<HTMLInputElement>) => {

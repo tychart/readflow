@@ -1,18 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 import { useShallow } from "zustand/shallow";
-
-import { AdminPage } from "../features/admin/AdminPage";
-import { JobsPage } from "../features/jobs/JobsPage";
-import { ReaderPage } from "../features/reader/ReaderPage";
-import { ThemeToggle } from "../components/ThemeToggle";
-import { useAppStore } from "../state/store";
-import { useTheme } from "../hooks/useTheme";
-import { useScrollProgressVar } from "../hooks/useScrollProgress";
-import type { WebSocketStatus } from "../types/events";
 import readflowIcon from "../assets/brand/readflow-icon.svg";
 import readflowLockupDark from "../assets/brand/readflow-lockup-dark.svg";
 import readflowLockupLight from "../assets/brand/readflow-lockup-light.svg";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+import { ThemeToggle } from "../components/ThemeToggle";
+import { AdminPage } from "../features/admin/AdminPage";
+import { JobsPage } from "../features/jobs/JobsPage";
+import { ReaderPage } from "../features/reader/ReaderPage";
+import { useScrollProgressVar } from "../hooks/useScrollProgress";
+import { useTheme } from "../hooks/useTheme";
+import { useAppStore } from "../state/store";
+import type { WebSocketStatus } from "../types/events";
 
 /* ── Connection Badge ─────────────────────────────────────── */
 
@@ -51,7 +59,8 @@ function ConnectionBadge() {
 
   // Derive visual state
   const isHealthy = websocketStatus === "open" && !isSocketStale;
-  const isConnecting = websocketStatus === "connecting" || websocketStatus === "reconnecting";
+  const isConnecting =
+    websocketStatus === "connecting" || websocketStatus === "reconnecting";
   const isError = websocketStatus === "error";
 
   const label = isSocketStale
@@ -73,6 +82,7 @@ function ConnectionBadge() {
               ? "border-rose-900/30 bg-rose-950/30 text-rose-400"
               : "border-[var(--line)] bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
       }`}
+      role="status"
       title={lastSocketError ?? "WebSocket connection status"}
     >
       {/* Status dot */}
@@ -88,8 +98,12 @@ function ConnectionBadge() {
                 : "bg-[var(--ink-secondary)]"
         } ${isConnecting ? "animate-pulse" : ""}`}
       />
-      <span className="hidden font-medium uppercase tracking-wider sm:inline">{label}</span>
-      <span className="hidden opacity-60 sm:inline">{formatSocketMessageAge(lastSocketMessageAt)}</span>
+      <span className="hidden font-medium uppercase tracking-wider sm:inline">
+        {label}
+      </span>
+      <span className="hidden opacity-60 sm:inline">
+        {formatSocketMessageAge(lastSocketMessageAt)}
+      </span>
     </div>
   );
 }
@@ -217,15 +231,19 @@ function Shell() {
         </div>
       </header>
 
-      {/* Main content — each page owns its own layout container */}
+      {/* Main content — each page owns its own layout container.
+          Keyed by pathname so navigating away from a crashed page resets the
+          boundary instead of leaving the fallback in place. */}
       <main className="flex-1">
-        <Routes>
-          <Route element={<JobsPage />} path="/" />
-          <Route element={<ReaderPage />} path="/jobs/:jobId" />
-          <Route element={<AdminPage />} path="/admin" />
-          {/* Unknown URLs redirect to the jobs page (replace keeps history clean) */}
-          <Route element={<Navigate replace to="/" />} path="*" />
-        </Routes>
+        <ErrorBoundary key={location.pathname}>
+          <Routes>
+            <Route element={<JobsPage />} path="/" />
+            <Route element={<ReaderPage />} path="/jobs/:jobId" />
+            <Route element={<AdminPage />} path="/admin" />
+            {/* Unknown URLs redirect to the jobs page (replace keeps history clean) */}
+            <Route element={<Navigate replace to="/" />} path="*" />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

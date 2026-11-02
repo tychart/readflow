@@ -34,7 +34,10 @@ export interface ReaderTextSegment {
  * as long as it is cheap to render) makes the whole paste visible from the
  * start while keeping the chunk blocks that drive highlighting and seeking.
  */
-export function buildReaderTextSegments(chunks: Chunk[], sourceText: string): ReaderTextSegment[] {
+export function buildReaderTextSegments(
+  chunks: Chunk[],
+  sourceText: string,
+): ReaderTextSegment[] {
   const segments: ReaderTextSegment[] = [];
   let cursor = 0;
   for (const chunk of sortChunks(chunks)) {
@@ -61,7 +64,8 @@ export function buildReaderTextSegments(chunks: Chunk[], sourceText: string): Re
 
   const remaining = sourceText.length - cursor;
   if (remaining > 0) {
-    const rendered = remaining <= FULL_TAIL_RENDER_CHARS ? remaining : UPCOMING_PREVIEW_CHARS;
+    const rendered =
+      remaining <= FULL_TAIL_RENDER_CHARS ? remaining : UPCOMING_PREVIEW_CHARS;
     segments.push({
       key: "upcoming",
       kind: "upcoming",

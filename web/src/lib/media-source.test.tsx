@@ -1,24 +1,38 @@
 import { act, render, waitFor } from "@testing-library/react";
 import { useEffect, useState } from "react";
-
+import type { Chunk, JobManifest } from "../types/api";
 import { useMediaSourcePlayer } from "./media-source";
-import type { JobManifest } from "../types/api";
 
 const originalMediaSource = window.MediaSource;
+
+function buildManifestChunk(
+  index: number,
+  overrides: Partial<Chunk> = {},
+): Chunk {
+  return {
+    index,
+    status: "written",
+    duration_seconds: 2,
+    start_seconds: index * 2,
+    plan_version: 1,
+    version: 0,
+    voice_id: "suzy",
+    segment_url: `/api/jobs/job-1/chunks/${index}`,
+    peaks_url: null,
+    deprecated: false,
+    reprocessing: false,
+    char_start: 0,
+    char_end: 0,
+    ...overrides,
+  };
+}
 
 function buildManifest(chunkIndexes: number[]): JobManifest {
   return {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
-    chunks: chunkIndexes.map((index) => ({
-      index,
-      status: "written",
-      duration_seconds: 2,
-      start_seconds: index * 2,
-      plan_version: 1,
-      voice_id: "suzy",
-      segment_url: `/api/jobs/job-1/chunks/${index}`,
-    })),
+    audio_epoch: 0,
+    chunks: chunkIndexes.map((index) => buildManifestChunk(index)),
   };
 }
 
@@ -31,13 +45,18 @@ function buildPendingManifest(): JobManifest {
   };
 }
 
-function installRecordingMediaSource(recording: number[], getBufferedEnd: () => number) {
+function installRecordingMediaSource(
+  recording: number[],
+  getBufferedEnd: () => number,
+) {
   class RecordingSourceBuffer extends EventTarget {
     public updating = false;
 
     appendBuffer(buffer: BufferSource) {
       const bytes =
-        buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer.buffer);
+        buffer instanceof ArrayBuffer
+          ? new Uint8Array(buffer)
+          : new Uint8Array(buffer.buffer);
       recording.push(bytes[0] ?? 0);
       this.updating = true;
       queueMicrotask(() => {
@@ -85,7 +104,9 @@ function installBufferedAudioState(getBufferedEnd: () => number) {
 }
 
 /** Install an arbitrary set of buffered ranges (for window / eviction tests). */
-function installBufferedRanges(getRanges: () => Array<{ start: number; end: number }>) {
+function installBufferedRanges(
+  getRanges: () => Array<{ start: number; end: number }>,
+) {
   Object.defineProperty(HTMLMediaElement.prototype, "buffered", {
     configurable: true,
     get() {
@@ -127,7 +148,9 @@ function installStreamingMediaSource(log: StreamLog) {
 
     appendBuffer(buffer: BufferSource) {
       const bytes =
-        buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer.buffer);
+        buffer instanceof ArrayBuffer
+          ? new Uint8Array(buffer)
+          : new Uint8Array(buffer.buffer);
       const marker = bytes[0] ?? 0;
       const remainingFailures = log.remainingAppendFailures.get(marker) ?? 0;
       if (remainingFailures > 0) {
@@ -172,15 +195,24 @@ function installStreamingMediaSource(log: StreamLog) {
     }
   }
 
-  Object.defineProperty(window, "MediaSource", { writable: true, value: LoggingMediaSource });
+  Object.defineProperty(window, "MediaSource", {
+    writable: true,
+    value: LoggingMediaSource,
+  });
 }
 
 /** Fetch mock for the window tests: `/chunks/<index>` returns the index as byte 0. */
-function installSegmentFetch(onChunk: (index: number) => void, gate?: Map<number, Promise<void>>) {
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+function installSegmentFetch(
+  onChunk: (index: number) => void,
+  gate?: Map<number, Promise<void>>,
+) {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
-      return { ok: true, arrayBuffer: async () => new Uint8Array([255]).buffer };
+      return {
+        ok: true,
+        arrayBuffer: async () => new Uint8Array([255]).buffer,
+      };
     }
     const index = Number(url.split("/").at(-1));
     const waitFor = gate?.get(index);
@@ -188,7 +220,10 @@ function installSegmentFetch(onChunk: (index: number) => void, gate?: Map<number
       await waitFor;
     }
     onChunk(index);
-    return { ok: true, arrayBuffer: async () => new Uint8Array([index % 250]).buffer };
+    return {
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([index % 250]).buffer,
+    };
   }) as unknown as typeof fetch;
 }
 
@@ -210,7 +245,7 @@ test("appends init and media chunks in ascending index order", async () => {
   installBufferedAudioState(() => bufferedEnd);
   installRecordingMediaSource(appendedMarkers, () => bufferedEnd);
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -222,7 +257,7 @@ test("appends init and media chunks in ascending index order", async () => {
     }
     bufferedEnd = 4;
     return { ok: true, arrayBuffer: async () => new Uint8Array([2]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
     const { audioRef, appendedChunksCount, isReady } = useMediaSourcePlayer({
@@ -233,7 +268,10 @@ test("appends init and media chunks in ascending index order", async () => {
       isTerminal: false,
     });
     return (
-      <div data-appended={String(appendedChunksCount)} data-ready={isReady ? "yes" : "no"}>
+      <div
+        data-appended={String(appendedChunksCount)}
+        data-ready={isReady ? "yes" : "no"}
+      >
         <audio ref={audioRef} />
       </div>
     );
@@ -241,8 +279,12 @@ test("appends init and media chunks in ascending index order", async () => {
 
   const { container } = render(<Harness />);
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-ready", "yes"));
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "2"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-ready", "yes"),
+  );
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-appended", "2"),
+  );
   expect(appendedMarkers).toEqual([9, 1, 2]);
 });
 
@@ -286,7 +328,7 @@ test("uses sequence mode so independently packaged chunks play in append order",
   });
   installBufferedAudioState(() => bufferedEnd);
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -294,7 +336,7 @@ test("uses sequence mode so independently packaged chunks play in append order",
     }
     bufferedEnd = 2;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
     const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
@@ -313,7 +355,9 @@ test("uses sequence mode so independently packaged chunks play in append order",
 
   const { container } = render(<Harness />);
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "1"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-appended", "1"),
+  );
   expect(sourceBufferMode).toBe("sequence");
 });
 
@@ -327,7 +371,9 @@ test("does not recreate the media source when the manifest object changes but th
 
     appendBuffer(buffer: BufferSource) {
       const bytes =
-        buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer.buffer);
+        buffer instanceof ArrayBuffer
+          ? new Uint8Array(buffer)
+          : new Uint8Array(buffer.buffer);
       appendedMarkers.push(bytes[0] ?? 0);
       this.updating = true;
       queueMicrotask(() => {
@@ -360,7 +406,7 @@ test("does not recreate the media source when the manifest object changes but th
   });
   installBufferedAudioState(() => bufferedEnd);
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -372,7 +418,7 @@ test("does not recreate the media source when the manifest object changes but th
     }
     bufferedEnd = 4;
     return { ok: true, arrayBuffer: async () => new Uint8Array([2]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness({
     manifest,
@@ -395,13 +441,19 @@ test("does not recreate the media source when the manifest object changes but th
     );
   }
 
-  const { container, rerender } = render(<Harness manifest={buildManifest([0])} />);
+  const { container, rerender } = render(
+    <Harness manifest={buildManifest([0])} />,
+  );
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "1"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-appended", "1"),
+  );
 
   rerender(<Harness manifest={buildManifest([0, 1])} />);
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "2"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-appended", "2"),
+  );
   expect(mediaSourceCount).toBe(1);
   expect(appendedMarkers).toEqual([9, 1, 2]);
 });
@@ -414,16 +466,22 @@ test("tries to resume playback after waiting when play intent remains true and n
   installRecordingMediaSource([], () => bufferedEnd);
   HTMLMediaElement.prototype.play = playMock;
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
     }
     bufferedEnd = 3;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
-  function Harness({ manifest, playIntent }: { manifest: JobManifest; playIntent: boolean }) {
+  function Harness({
+    manifest,
+    playIntent,
+  }: {
+    manifest: JobManifest;
+    playIntent: boolean;
+  }) {
     const { audioRef } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest,
@@ -457,7 +515,7 @@ test("starts playback after the first hydrated chunk arrives when play was press
   installRecordingMediaSource([], () => bufferedEnd);
   HTMLMediaElement.prototype.play = playMock;
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -465,9 +523,15 @@ test("starts playback after the first hydrated chunk arrives when play was press
     }
     bufferedEnd = 3;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
-  function Harness({ manifest, playIntent }: { manifest: JobManifest; playIntent: boolean }) {
+  function Harness({
+    manifest,
+    playIntent,
+  }: {
+    manifest: JobManifest;
+    playIntent: boolean;
+  }) {
     const { audioRef } = useMediaSourcePlayer({
       jobId: "job-1",
       manifest,
@@ -478,7 +542,9 @@ test("starts playback after the first hydrated chunk arrives when play was press
     return <audio ref={audioRef} />;
   }
 
-  const { rerender } = render(<Harness manifest={buildPendingManifest()} playIntent={true} />);
+  const { rerender } = render(
+    <Harness manifest={buildPendingManifest()} playIntent={true} />,
+  );
 
   rerender(<Harness manifest={buildManifest([0])} playIntent={true} />);
 
@@ -487,13 +553,15 @@ test("starts playback after the first hydrated chunk arrives when play was press
 
 test("surfaces autoplay blocking when automatic resume is rejected by the browser", async () => {
   let bufferedEnd = 0;
-  const blockedPlay = vi.fn().mockRejectedValue(new DOMException("blocked", "NotAllowedError"));
+  const blockedPlay = vi
+    .fn()
+    .mockRejectedValue(new DOMException("blocked", "NotAllowedError"));
 
   installBufferedAudioState(() => bufferedEnd);
   installRecordingMediaSource([], () => bufferedEnd);
   HTMLMediaElement.prototype.play = blockedPlay;
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -501,16 +569,17 @@ test("surfaces autoplay blocking when automatic resume is rejected by the browse
     }
     bufferedEnd = 3;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
-    const { audioRef, isAutoplayBlocked, lastPlayerError } = useMediaSourcePlayer({
-      jobId: "job-1",
-      manifest: buildManifest([0]),
-      playbackAnchorIndex: 0,
-      playIntent: true,
-      isTerminal: false,
-    });
+    const { audioRef, isAutoplayBlocked, lastPlayerError } =
+      useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: true,
+        isTerminal: false,
+      });
     return (
       <div data-autoplay-blocked={isAutoplayBlocked ? "yes" : "no"}>
         <audio ref={audioRef} />
@@ -521,7 +590,12 @@ test("surfaces autoplay blocking when automatic resume is rejected by the browse
 
   const { container } = render(<Harness />);
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-autoplay-blocked", "yes"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute(
+      "data-autoplay-blocked",
+      "yes",
+    ),
+  );
 });
 
 test("clamps custom timeline seeking to currently buffered audio", async () => {
@@ -530,7 +604,7 @@ test("clamps custom timeline seeking to currently buffered audio", async () => {
   installBufferedAudioState(() => bufferedEnd);
   installRecordingMediaSource([], () => bufferedEnd);
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -538,16 +612,17 @@ test("clamps custom timeline seeking to currently buffered audio", async () => {
     }
     bufferedEnd = 2;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
-    const { audioRef, bufferedUntilSeconds, seekToSeconds } = useMediaSourcePlayer({
-      jobId: "job-1",
-      manifest: buildManifest([0]),
-      playbackAnchorIndex: 0,
-      playIntent: false,
-      isTerminal: false,
-    });
+    const { audioRef, bufferedUntilSeconds, seekToSeconds } =
+      useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0]),
+        playbackAnchorIndex: 0,
+        playIntent: false,
+        isTerminal: false,
+      });
 
     useEffect(() => {
       if (bufferedUntilSeconds < 2) {
@@ -588,7 +663,7 @@ test("keeps the custom player clock in sync while audio time advances live", asy
     .spyOn(window, "cancelAnimationFrame")
     .mockImplementation(() => {});
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -596,7 +671,7 @@ test("keeps the custom player clock in sync while audio time advances live", asy
     }
     bufferedEnd = 4;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
     const { audioRef, currentTimeSeconds } = useMediaSourcePlayer({
@@ -638,28 +713,32 @@ test("keeps the custom player clock in sync while audio time advances live", asy
     nextFrame?.(performance.now());
   });
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-current-time", "1.2"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-current-time", "1.2"),
+  );
 
   requestAnimationFrameSpy.mockRestore();
   cancelAnimationFrameSpy.mockRestore();
 });
 
 describe("playbackRate", () => {
-
   test("starts at 1.0x", async () => {
     let bufferedEnd = 0;
     installBufferedAudioState(() => bufferedEnd);
     installRecordingMediaSource([], () => bufferedEnd);
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/init")) {
         bufferedEnd = 0.5;
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness() {
       const { audioRef, playbackRate } = useMediaSourcePlayer({
@@ -689,15 +768,18 @@ describe("playbackRate", () => {
     installBufferedAudioState(() => bufferedEnd);
     installRecordingMediaSource([], () => bufferedEnd);
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/init")) {
         bufferedEnd = 0.5;
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness() {
       const { audioRef, playbackRate, setPlaybackRate } = useMediaSourcePlayer({
@@ -734,14 +816,17 @@ describe("playbackRate", () => {
     installBufferedAudioState(() => bufferedEnd);
     installRecordingMediaSource([], () => bufferedEnd);
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/init")) {
         bufferedEnd = 0.5;
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness() {
       const { audioRef, setPlaybackRate, playbackRate } = useMediaSourcePlayer({
@@ -778,23 +863,27 @@ describe("playbackRate", () => {
     installBufferedAudioState(() => bufferedEnd);
     installRecordingMediaSource([], () => bufferedEnd);
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/init")) {
         bufferedEnd = 0.5;
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness() {
-      const { audioRef, setPlaybackRate, playbackRate, isStreamPrimed } = useMediaSourcePlayer({
-        jobId: "job-1",
-        manifest: buildManifest([0]),
-        playbackAnchorIndex: 0,
-        playIntent: false,
-        isTerminal: false,
-      });
+      const { audioRef, setPlaybackRate, playbackRate, isStreamPrimed } =
+        useMediaSourcePlayer({
+          jobId: "job-1",
+          manifest: buildManifest([0]),
+          playbackAnchorIndex: 0,
+          playIntent: false,
+          isTerminal: false,
+        });
       setPlaybackRateFromHook = setPlaybackRate;
       return (
         <div
@@ -832,14 +921,17 @@ describe("playbackRate", () => {
     installBufferedAudioState(() => bufferedEnd);
     installRecordingMediaSource([], () => bufferedEnd);
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/init")) {
         bufferedEnd = 0.5;
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness() {
       const { audioRef, setPlaybackRate, playbackRate } = useMediaSourcePlayer({
@@ -886,7 +978,10 @@ describe("playbackRate", () => {
     // source loads, and jsdom does not. Emulate it, otherwise this test would
     // pass even if only `playbackRate` were set — which is exactly the bug that
     // made the reader look like it "forgot" the speed on a chunk jump.
-    const srcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
+    const srcDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLMediaElement.prototype,
+      "src",
+    )!;
     Object.defineProperty(HTMLMediaElement.prototype, "src", {
       configurable: true,
       get: srcDescriptor.get,
@@ -896,15 +991,18 @@ describe("playbackRate", () => {
       },
     });
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/init")) {
         bufferedEnd = 0.5;
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness({ anchor }: { anchor: number }) {
       const { audioRef, setPlaybackRate, playbackRate } = useMediaSourcePlayer({
@@ -936,7 +1034,10 @@ describe("playbackRate", () => {
       rerender(<Harness anchor={1} />);
 
       await waitFor(() =>
-        expect(container.firstChild).toHaveAttribute("data-playback-rate", "1.75"),
+        expect(container.firstChild).toHaveAttribute(
+          "data-playback-rate",
+          "1.75",
+        ),
       );
       expect(audio!.playbackRate).toBe(1.75);
       expect(audio!.defaultPlaybackRate).toBe(1.75);
@@ -966,17 +1067,23 @@ describe("playbackRate", () => {
         throw new Error("AudioContext must not be created for plain playback");
       }
     }
-    const originalAudioContext = (window as unknown as { AudioContext?: unknown }).AudioContext;
-    (window as unknown as { AudioContext?: unknown }).AudioContext = ForbiddenAudioContext;
+    const originalAudioContext = (
+      window as unknown as { AudioContext?: unknown }
+    ).AudioContext;
+    (window as unknown as { AudioContext?: unknown }).AudioContext =
+      ForbiddenAudioContext;
 
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/init")) {
-        return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([9]).buffer,
+        };
       }
       bufferedEnd = 4;
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     function Harness() {
       const { audioRef, setPlaybackRate } = useMediaSourcePlayer({
@@ -1002,7 +1109,8 @@ describe("playbackRate", () => {
       expect(audio!.playbackRate).toBe(2);
       expect(audio!.defaultPlaybackRate).toBe(2);
     } finally {
-      (window as unknown as { AudioContext?: unknown }).AudioContext = originalAudioContext;
+      (window as unknown as { AudioContext?: unknown }).AudioContext =
+        originalAudioContext;
     }
   });
 });
@@ -1019,29 +1127,14 @@ test("applies a pending seek only after the new stream (anchor change) is primed
   const manifestAnchor1: JobManifest = {
     mime_type: 'audio/mp4; codecs="mp4a.40.2"',
     init_segment_url: "/api/jobs/job-1/chunks/init",
+    audio_epoch: 0,
     chunks: [
-      {
-        index: 1,
-        status: "written",
-        duration_seconds: 2,
-        start_seconds: 0,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/1",
-      },
-      {
-        index: 2,
-        status: "written",
-        duration_seconds: 2,
-        start_seconds: 2,
-        plan_version: 1,
-        voice_id: "suzy",
-        segment_url: "/api/jobs/job-1/chunks/2",
-      },
+      buildManifestChunk(1, { start_seconds: 0 }),
+      buildManifestChunk(2, { start_seconds: 2 }),
     ],
   };
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -1057,21 +1150,25 @@ test("applies a pending seek only after the new stream (anchor change) is primed
     }
     bufferedEnd = 4;
     return { ok: true, arrayBuffer: async () => new Uint8Array([3]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const onSeekApplied = vi.fn();
 
   function Harness() {
-    const [seekIntent, setSeekIntent] = useState<{ anchor: number; target: number } | null>(null);
-    const { audioRef, currentTimeSeconds, isStreamPrimed } = useMediaSourcePlayer({
-      jobId: "job-1",
-      manifest: seekIntent ? manifestAnchor1 : manifestAnchor0,
-      playbackAnchorIndex: seekIntent?.anchor ?? 0,
-      playIntent: false,
-      isTerminal: false,
-      pendingSeekSeconds: seekIntent?.target ?? null,
-      onSeekApplied,
-    });
+    const [seekIntent, setSeekIntent] = useState<{
+      anchor: number;
+      target: number;
+    } | null>(null);
+    const { audioRef, currentTimeSeconds, isStreamPrimed } =
+      useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: seekIntent ? manifestAnchor1 : manifestAnchor0,
+        playbackAnchorIndex: seekIntent?.anchor ?? 0,
+        playIntent: false,
+        isTerminal: false,
+        pendingSeekSeconds: seekIntent?.target ?? null,
+        onSeekApplied,
+      });
 
     useEffect(() => {
       const audio = audioRef.current;
@@ -1088,9 +1185,15 @@ test("applies a pending seek only after the new stream (anchor change) is primed
     }, [audioRef]);
 
     return (
-      <div data-current-time={currentTimeSeconds.toFixed(1)} data-primed={isStreamPrimed ? "yes" : "no"}>
+      <div
+        data-current-time={currentTimeSeconds.toFixed(1)}
+        data-primed={isStreamPrimed ? "yes" : "no"}
+      >
         <audio ref={audioRef} />
-        <button onClick={() => setSeekIntent({ anchor: 1, target: 1.2 })} type="button">
+        <button
+          onClick={() => setSeekIntent({ anchor: 1, target: 1.2 })}
+          type="button"
+        >
           seek
         </button>
       </div>
@@ -1129,7 +1232,7 @@ test("shows waiting for data when playback stalls at the rendered boundary witho
   installRecordingMediaSource([], () => bufferedEnd);
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -1137,7 +1240,7 @@ test("shows waiting for data when playback stalls at the rendered boundary witho
     }
     bufferedEnd = 4;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
     const { audioRef, isWaitingForData, playerState } = useMediaSourcePlayer({
@@ -1167,7 +1270,10 @@ test("shows waiting for data when playback stalls at the rendered boundary witho
     }, [audioRef]);
 
     return (
-      <div data-state={playerState} data-waiting={isWaitingForData ? "yes" : "no"}>
+      <div
+        data-state={playerState}
+        data-waiting={isWaitingForData ? "yes" : "no"}
+      >
         <audio ref={audioRef} />
       </div>
     );
@@ -1183,7 +1289,9 @@ test("shows waiting for data when playback stalls at the rendered boundary witho
     audio?.dispatchEvent(new Event("timeupdate"));
   });
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-state", "playing"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-state", "playing"),
+  );
 
   act(() => {
     simulatedCurrentTime = 4;
@@ -1220,7 +1328,7 @@ test("reconciles a terminal job that stops at the end of the stream to ended (no
     .spyOn(window, "cancelAnimationFrame")
     .mockImplementation(() => {});
 
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/init")) {
       bufferedEnd = 0.5;
@@ -1228,16 +1336,17 @@ test("reconciles a terminal job that stops at the end of the stream to ended (no
     }
     bufferedEnd = 4;
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   function Harness() {
-    const { audioRef, isActuallyPlaying, isWaitingForData, playerState } = useMediaSourcePlayer({
-      jobId: "job-1",
-      manifest: buildManifest([0, 1]),
-      playbackAnchorIndex: 0,
-      playIntent: true,
-      isTerminal: true,
-    });
+    const { audioRef, isActuallyPlaying, isWaitingForData, playerState } =
+      useMediaSourcePlayer({
+        jobId: "job-1",
+        manifest: buildManifest([0, 1]),
+        playbackAnchorIndex: 0,
+        playIntent: true,
+        isTerminal: true,
+      });
 
     useEffect(() => {
       const audio = audioRef.current;
@@ -1281,7 +1390,9 @@ test("reconciles a terminal job that stops at the end of the stream to ended (no
     audio?.dispatchEvent(new Event("timeupdate"));
   });
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-state", "playing"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-state", "playing"),
+  );
 
   // …then the playhead freezes at the end without a browser 'ended' event.
   act(() => {
@@ -1295,7 +1406,9 @@ test("reconciles a terminal job that stops at the end of the stream to ended (no
     audio?.dispatchEvent(new Event("timeupdate"));
   });
 
-  await waitFor(() => expect(container.firstChild).toHaveAttribute("data-state", "ended"));
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-state", "ended"),
+  );
   expect(container.firstChild).toHaveAttribute("data-playing", "no");
   expect(container.firstChild).toHaveAttribute("data-waiting", "no");
   expect(pauseMock).toHaveBeenCalled();
@@ -1316,7 +1429,9 @@ describe("streaming window", () => {
     const log = createStreamLog();
     installStreamingMediaSource(log);
     let bufferedEnd = 0;
-    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+    installBufferedRanges(() =>
+      bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : [],
+    );
 
     const chunkCount = LONG_JOB_SECONDS / 2;
     const fetchedIndexes: number[] = [];
@@ -1328,7 +1443,9 @@ describe("streaming window", () => {
     function Harness() {
       const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
         jobId: "job-1",
-        manifest: buildManifest(Array.from({ length: chunkCount }, (_, index) => index)),
+        manifest: buildManifest(
+          Array.from({ length: chunkCount }, (_, index) => index),
+        ),
         playbackAnchorIndex: 0,
         playIntent: false,
         isTerminal: false,
@@ -1344,7 +1461,9 @@ describe("streaming window", () => {
 
     // 240s of lookahead / 2s chunks = chunks 0..119. Chunk 120 starts *at* the
     // window edge and must never be fetched.
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "120"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-appended", "120"),
+    );
     expect(fetchedIndexes).toContain(119);
     expect(fetchedIndexes).not.toContain(120);
     expect(fetchedIndexes).not.toContain(400);
@@ -1356,7 +1475,9 @@ describe("streaming window", () => {
     installStreamingMediaSource(log);
     let bufferedEnd = 0;
     let playhead = 0;
-    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+    installBufferedRanges(() =>
+      bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : [],
+    );
     installSegmentFetch((index) => {
       bufferedEnd = (index + 1) * 2;
     });
@@ -1366,7 +1487,9 @@ describe("streaming window", () => {
     function Harness() {
       const { audioRef, appendedChunksCount } = useMediaSourcePlayer({
         jobId: "job-1",
-        manifest: buildManifest(Array.from({ length: chunkCount }, (_, index) => index)),
+        manifest: buildManifest(
+          Array.from({ length: chunkCount }, (_, index) => index),
+        ),
         playbackAnchorIndex: 0,
         playIntent: false,
         isTerminal: false,
@@ -1394,7 +1517,9 @@ describe("streaming window", () => {
     }
 
     const { container } = render(<Harness />);
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "120"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-appended", "120"),
+    );
 
     // Halfway through the buffered window: the lookahead is topped back up from
     // the new playhead instead of the stream growing to the whole document.
@@ -1403,7 +1528,9 @@ describe("streaming window", () => {
       container.querySelector("audio")?.dispatchEvent(new Event("timeupdate"));
     });
 
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "200"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-appended", "200"),
+    );
   });
 
   test("evicts played audio behind the keep-behind margin without rebuilding the stream", async () => {
@@ -1411,7 +1538,9 @@ describe("streaming window", () => {
     installStreamingMediaSource(log);
     let bufferedEnd = 0;
     let playhead = 0;
-    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+    installBufferedRanges(() =>
+      bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : [],
+    );
     installSegmentFetch((index) => {
       bufferedEnd = (index + 1) * 2;
     });
@@ -1447,7 +1576,9 @@ describe("streaming window", () => {
     }
 
     const { container } = render(<Harness />);
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "5"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-appended", "5"),
+    );
 
     act(() => {
       playhead = 100;
@@ -1471,7 +1602,9 @@ describe("streaming window", () => {
     installStreamingMediaSource(log);
     let bufferedEnd = 0;
     let playhead = 0;
-    installBufferedRanges(() => (bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : []));
+    installBufferedRanges(() =>
+      bufferedEnd > 0 ? [{ start: 0, end: bufferedEnd }] : [],
+    );
 
     let releaseChunk: () => void = () => {};
     const chunkGate = new Promise<void>((resolve) => {
@@ -1534,7 +1667,9 @@ describe("streaming window", () => {
 
     // The stream is primed and buffered through chunk 4 (10s); chunk 5 — which
     // holds the 11s target — is still in flight.
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-primed", "yes"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-primed", "yes"),
+    );
     await waitFor(() => expect(log.appended).toHaveLength(5 + 1));
 
     act(() => {
@@ -1553,7 +1688,9 @@ describe("streaming window", () => {
     });
 
     await waitFor(() => expect(onSeekApplied).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-time", "11.0"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-time", "11.0"),
+    );
     expect(container.firstChild).toHaveAttribute("data-loading", "no");
     expect(playhead).toBeCloseTo(11, 5);
   });
@@ -1573,19 +1710,20 @@ describe("streaming window", () => {
     function Harness() {
       const [pendingSeek, setPendingSeek] = useState<number | null>(null);
       const [restartKey, setRestartKey] = useState(0);
-      const { audioRef, isLoadingAudio, currentTimeSeconds } = useMediaSourcePlayer({
-        jobId: "job-1",
-        manifest: buildManifest([0, 1, 2, 3, 4, 5]),
-        playbackAnchorIndex: 0,
-        playIntent: false,
-        isTerminal: false,
-        pendingSeekSeconds: pendingSeek,
-        onSeekApplied: () => {
-          setPendingSeek(null);
-          onSeekApplied();
-        },
-        streamRestartKey: restartKey,
-      });
+      const { audioRef, isLoadingAudio, currentTimeSeconds } =
+        useMediaSourcePlayer({
+          jobId: "job-1",
+          manifest: buildManifest([0, 1, 2, 3, 4, 5]),
+          playbackAnchorIndex: 0,
+          playIntent: false,
+          isTerminal: false,
+          pendingSeekSeconds: pendingSeek,
+          onSeekApplied: () => {
+            setPendingSeek(null);
+            onSeekApplied();
+          },
+          streamRestartKey: restartKey,
+        });
 
       useEffect(() => {
         const audio = audioRef.current;
@@ -1648,13 +1786,14 @@ describe("streaming window", () => {
     installSegmentFetch(() => {});
 
     function Harness() {
-      const { audioRef, appendedChunksCount, lastPlayerError } = useMediaSourcePlayer({
-        jobId: "job-1",
-        manifest: buildManifest([0, 1, 2, 3, 4]),
-        playbackAnchorIndex: 0,
-        playIntent: false,
-        isTerminal: false,
-      });
+      const { audioRef, appendedChunksCount, lastPlayerError } =
+        useMediaSourcePlayer({
+          jobId: "job-1",
+          manifest: buildManifest([0, 1, 2, 3, 4]),
+          playbackAnchorIndex: 0,
+          playIntent: false,
+          isTerminal: false,
+        });
 
       useEffect(() => {
         const audio = audioRef.current;
@@ -1680,7 +1819,9 @@ describe("streaming window", () => {
 
     const { container } = render(<Harness />);
 
-    await waitFor(() => expect(container.firstChild).toHaveAttribute("data-appended", "5"));
+    await waitFor(() =>
+      expect(container.firstChild).toHaveAttribute("data-appended", "5"),
+    );
     expect(log.removed.length).toBeGreaterThan(0);
     expect(container.querySelector("span")).toBeEmptyDOMElement();
   });
@@ -1712,7 +1853,9 @@ describe("streaming window", () => {
     const { container } = render(<Harness />);
     const error = container.querySelector('[data-testid="error"]');
 
-    await waitFor(() => expect(error).toHaveTextContent(/ran out of audio buffer space/i));
+    await waitFor(() =>
+      expect(error).toHaveTextContent(/ran out of audio buffer space/i),
+    );
     // The raw browser message never reaches the listener.
     expect(error).not.toHaveTextContent(/appendBuffer/i);
     expect(log.removed).toEqual([]);

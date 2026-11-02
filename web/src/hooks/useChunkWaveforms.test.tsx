@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Chunk } from "../types/api";
 import { parsePeaks, useChunkWaveforms } from "./useChunkWaveforms";
 
-function makeChunk(index: number, version = 0, peaksUrl: string | null = null): Chunk {
+function makeChunk(
+  index: number,
+  version = 0,
+  peaksUrl: string | null = null,
+): Chunk {
   return {
     index,
     status: "written",
@@ -94,7 +98,9 @@ describe("useChunkWaveforms", () => {
         json: async () => ({ peaks: [] }),
       })),
     );
-    const { result } = renderHook(() => useChunkWaveforms([makeChunk(0, 0, "/peaks/0")]));
+    const { result } = renderHook(() =>
+      useChunkWaveforms([makeChunk(0, 0, "/peaks/0")]),
+    );
     expect(result.current.size).toBe(0);
   });
 });

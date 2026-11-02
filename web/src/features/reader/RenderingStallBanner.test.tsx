@@ -10,7 +10,9 @@ test("explains the stall and offers retry plus dismiss", async () => {
 
   render(<RenderingStallBanner onDismiss={onDismiss} onRetry={onRetry} />);
 
-  expect(screen.getByRole("status")).toHaveTextContent(/rendering seems stalled/i);
+  expect(screen.getByRole("status")).toHaveTextContent(
+    /rendering seems stalled/i,
+  );
 
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(onRetry).toHaveBeenCalledTimes(1);

@@ -62,7 +62,9 @@ let currentTheme: Theme = resolveTheme();
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => {
+    listener();
+  });
 }
 
 /**

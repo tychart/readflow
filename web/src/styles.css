@@ -20,10 +20,11 @@
   --slate: #475569;
   --waveform-bar: rgba(255, 255, 255, 0.35);
   --waveform-bar-dim: rgba(255, 255, 255, 0.18);
-  --waveform-bar-muted: rgba(255, 255, 255, 0.10);
+  --waveform-bar-muted: rgba(255, 255, 255, 0.1);
   --waveform-sep: rgba(255, 255, 255, 0.08);
   --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
 }
 
@@ -60,17 +61,25 @@ body {
   font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.3s ease, color 0.3s ease;
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
 }
 
 /* Respect reduced motion — kills all animations and transitions */
 @media (prefers-reduced-motion: reduce) {
+  /* `!important` is deliberate: this block must beat component-declared
+     transitions regardless of specificity. */
   *,
   *::before,
   *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win the cascade. */
     animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win the cascade. */
     animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win the cascade. */
     transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win the cascade. */
     scroll-behavior: auto !important;
   }
 }

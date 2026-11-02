@@ -15,7 +15,8 @@ function buildChunk(
     plan_version: 1,
     version: 0,
     voice_id: "suzy",
-    segment_url: status === "written" ? `/api/jobs/job-1/chunks/${index}` : null,
+    segment_url:
+      status === "written" ? `/api/jobs/job-1/chunks/${index}` : null,
     peaks_url: null,
     deprecated: false,
     reprocessing: false,
@@ -25,7 +26,10 @@ function buildChunk(
   };
 }
 
-function buildJob(chunkCount: number, status: "queued" | "rendering" | "playing" = "queued") {
+function buildJob(
+  chunkCount: number,
+  status: "queued" | "rendering" | "playing" = "queued",
+) {
   return {
     id: "job-1",
     title: "Playwright job",
@@ -293,7 +297,9 @@ test("jobs page creates a job", async ({ page }) => {
   await expect(page.getByText("Playwright job")).toBeVisible();
 });
 
-test("reader updates live when a new chunk arrives without a reload", async ({ page }) => {
+test("reader updates live when a new chunk arrives without a reload", async ({
+  page,
+}) => {
   let chunkCount = 1;
 
   await page.route("**/api/jobs/job-1", async (route) => {
@@ -325,7 +331,9 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByRole("heading", { name: "Playwright job" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Playwright job" }),
+  ).toBeVisible();
   await expect(page.getByText(/1\/1 chunks/i)).toBeVisible();
 
   chunkCount = 2;
@@ -381,7 +389,9 @@ test("reader updates live when a new chunk arrives without a reload", async ({ p
   await expect(page.getByText(/Chunk 2/).first()).toBeVisible();
 });
 
-test("reader shows a visible fallback warning when the socket disconnects", async ({ page }) => {
+test("reader shows a visible fallback warning when the socket disconnects", async ({
+  page,
+}) => {
   await page.route("**/api/jobs/job-1", async (route) => {
     await route.fulfill({ json: buildJob(1, "rendering") });
   });
@@ -396,7 +406,9 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByRole("heading", { name: "Playwright job" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Playwright job" }),
+  ).toBeVisible();
 
   await page.evaluate(() => {
     const mockWindow = globalThis as typeof globalThis & {
@@ -411,7 +423,9 @@ test("reader shows a visible fallback warning when the socket disconnects", asyn
     }
   });
 
-  await expect(page.getByText(/Live updates degraded, using fallback sync/i)).toBeVisible();
+  await expect(
+    page.getByText(/Live updates degraded, using fallback sync/i),
+  ).toBeVisible();
   await expect(page.getByLabel(/Connection: reconnecting/)).toBeVisible();
 });
 
@@ -436,23 +450,22 @@ test("reader renders missing gap slots and allows a manual jump to a later ready
 
   await page.goto("/jobs/job-1");
   await expect(page.getByText(/4\/6 chunks/i)).toBeVisible();
-  await expect(page.getByRole("slider", { name: "Chunk 4: missing_expected" })).toHaveAttribute(
-    "data-slot-state",
-    "missing_expected",
-  );
-  await expect(page.getByRole("slider", { name: "Chunk 5: missing_expected" })).toHaveAttribute(
-    "data-slot-state",
-    "missing_expected",
-  );
-  await expect(page.getByRole("slider", { name: "Chunk 6: ready_after_gap" })).toHaveAttribute(
-    "data-slot-state",
-    "ready_after_gap",
-  );
+  await expect(
+    page.getByRole("slider", { name: "Chunk 4: missing_expected" }),
+  ).toHaveAttribute("data-slot-state", "missing_expected");
+  await expect(
+    page.getByRole("slider", { name: "Chunk 5: missing_expected" }),
+  ).toHaveAttribute("data-slot-state", "missing_expected");
+  await expect(
+    page.getByRole("slider", { name: "Chunk 6: ready_after_gap" }),
+  ).toHaveAttribute("data-slot-state", "ready_after_gap");
 
   await page.getByRole("slider", { name: "Chunk 6: ready_after_gap" }).click();
 
   // Seeking to the later ready chunk anchors playback on it.
-  await expect(page.getByRole("slider", { name: "Chunk 6: playing" })).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Chunk 6: playing" }),
+  ).toBeVisible();
 });
 
 test("reader jumps playback to a chunk from the text", async ({ page }) => {
@@ -482,7 +495,9 @@ test("reader jumps playback to a chunk from the text", async ({ page }) => {
   // Both the playbar clock and the conveyor follow the jump.
   await expect(page.getByTestId("conveyor-readout")).toHaveText("0:08");
   // The anchored chunk becomes the one playback is sitting on.
-  await expect(page.getByRole("slider", { name: "Chunk 3: playing" })).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Chunk 3: playing" }),
+  ).toBeVisible();
 });
 
 test("the chunk conveyor seeks when dragged and keeps the strip under the playhead", async ({
@@ -511,7 +526,9 @@ test("the chunk conveyor seeks when dragged and keeps the strip under the playhe
 
   await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, centreY);
   await page.mouse.down();
-  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 + 40, centreY, { steps: 12 });
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 + 40, centreY, {
+    steps: 12,
+  });
   await page.mouse.up();
 
   // The drag starts at the live position, so dragging forward from 0 clamps to
@@ -521,48 +538,67 @@ test("the chunk conveyor seeks when dragged and keeps the strip under the playhe
   // Dragging left moves forward in time and commits a seek on release.
   await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, centreY);
   await page.mouse.down();
-  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 - 120, centreY, { steps: 12 });
+  await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2 - 120, centreY, {
+    steps: 12,
+  });
   await page.mouse.up();
 
   await expect(page.getByTestId("conveyor-readout")).not.toHaveText("0:00");
 });
 
-test("the conveyor draws into a fixed canvas and repaints on resize and theme changes", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("readflow-theme", "dark"));
-  await page.route("**/api/jobs/job-1", route => route.fulfill({ json: buildJob(6) }));
-  await page.route("**/api/jobs/job-1/manifest", route => route.fulfill({ json: buildManifest(6) }));
-  await page.route("**/api/jobs/job-1/chunks/**", route => route.fulfill({ body: "abc" }));
+test("the conveyor draws into a fixed canvas and repaints on resize and theme changes", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("readflow-theme", "dark"),
+  );
+  await page.route("**/api/jobs/job-1", (route) =>
+    route.fulfill({ json: buildJob(6) }),
+  );
+  await page.route("**/api/jobs/job-1/manifest", (route) =>
+    route.fulfill({ json: buildManifest(6) }),
+  );
+  await page.route("**/api/jobs/job-1/chunks/**", (route) =>
+    route.fulfill({ body: "abc" }),
+  );
   await page.goto("/jobs/job-1");
   const canvas = page.getByTestId("conveyor-canvas");
   await expect(canvas).toBeVisible();
-  const pixels = () => canvas.evaluate((element: HTMLCanvasElement) => {
-    const ctx = element.getContext("2d")!;
-    const data = ctx.getImageData(0, 0, element.width, element.height).data;
-    let painted = 0;
-    let checksum = 0;
-    for (let i = 0; i < data.length; i += 1) {
-      checksum = (checksum + data[i]) >>> 0;
-      if (i % 4 === 3 && data[i] > 0) painted += 1;
-    }
-    return {
-      painted, checksum, width: element.width,
-      expectedWidth: Math.round(element.clientWidth * devicePixelRatio),
-      height: element.height,
-      expectedHeight: Math.round(element.clientHeight * devicePixelRatio),
-      transform: getComputedStyle(element).transform,
-      filter: getComputedStyle(element).filter,
-    };
-  });
+  const pixels = () =>
+    canvas.evaluate((element: HTMLCanvasElement) => {
+      const ctx = element.getContext("2d")!;
+      const data = ctx.getImageData(0, 0, element.width, element.height).data;
+      let painted = 0;
+      let checksum = 0;
+      for (let i = 0; i < data.length; i += 1) {
+        checksum = (checksum + data[i]) >>> 0;
+        if (i % 4 === 3 && data[i] > 0) painted += 1;
+      }
+      return {
+        painted,
+        checksum,
+        width: element.width,
+        expectedWidth: Math.round(element.clientWidth * devicePixelRatio),
+        height: element.height,
+        expectedHeight: Math.round(element.clientHeight * devicePixelRatio),
+        transform: getComputedStyle(element).transform,
+        filter: getComputedStyle(element).filter,
+      };
+    });
   await expect.poll(async () => (await pixels()).painted).toBeGreaterThan(500);
   const before = await pixels();
   expect(before.width).toBe(before.expectedWidth);
   expect(before.height).toBe(before.expectedHeight);
   expect(before.transform).toBe("none");
   expect(before.filter).toBe("none");
-  await expect(page.getByTestId("chunk-conveyor").locator("[data-waveform-slot]")).toHaveCount(0);
+  await expect(
+    page.getByTestId("chunk-conveyor").locator("[data-waveform-slot]"),
+  ).toHaveCount(0);
 
   await page.getByRole("button", { name: "Switch to light mode" }).click();
-  await expect.poll(async () => (await pixels()).checksum).not.toBe(before.checksum);
+  await expect
+    .poll(async () => (await pixels()).checksum)
+    .not.toBe(before.checksum);
   await page.setViewportSize({ width: 1000, height: 800 });
   await expect.poll(async () => (await pixels()).width).not.toBe(before.width);
   const resized = await pixels();
@@ -571,10 +607,18 @@ test("the conveyor draws into a fixed canvas and repaints on resize and theme ch
   expect(resized.painted).toBeGreaterThan(500);
 });
 
-test("native cached contours remain rigid across fractional playback positions", async ({ page }) => {
-  await page.route("**/api/jobs/job-1", route => route.fulfill({ json: buildJob(6) }));
-  await page.route("**/api/jobs/job-1/manifest", route => route.fulfill({ json: buildManifest(6) }));
-  await page.route("**/api/jobs/job-1/chunks/**", route => route.fulfill({ body: "abc" }));
+test("native cached contours remain rigid across fractional playback positions", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", (route) =>
+    route.fulfill({ json: buildJob(6) }),
+  );
+  await page.route("**/api/jobs/job-1/manifest", (route) =>
+    route.fulfill({ json: buildManifest(6) }),
+  );
+  await page.route("**/api/jobs/job-1/chunks/**", (route) =>
+    route.fulfill({ body: "abc" }),
+  );
   await page.goto("/jobs/job-1");
   const mismatches = await page.evaluate(async () => {
     // The selected look is native Canvas2D image filtering, not per-frame
@@ -586,11 +630,15 @@ test("native cached contours remain rigid across fractional playback positions",
     const { createConveyorScene, paintConveyor } = await import(moduleUrl);
     const scene = createConveyorScene(
       [{ chunkIndex: 0, state: "playing", durationSeconds: 1000.03 }],
-      [0], new Map([[0, new Float32Array([0.2, 1, 0.3, 0.8, 0.4, 0.9])]]), 5.2,
+      [0],
+      new Map([[0, new Float32Array([0.2, 1, 0.3, 0.8, 0.4, 0.9])]]),
+      5.2,
     );
     const palette = {
-      amber: "#f59e0b", active: "rgba(245,158,11,0.15)",
-      bar: "rgba(255,255,255,0.18)", muted: "rgba(255,255,255,0.10)",
+      amber: "#f59e0b",
+      active: "rgba(245,158,11,0.15)",
+      bar: "rgba(255,255,255,0.18)",
+      muted: "rgba(255,255,255,0.10)",
     };
     let differingChannels = 0;
     for (const dpr of [1, 1.5, 2]) {
@@ -607,15 +655,29 @@ test("native cached contours remain rigid across fractional playback positions",
         const centerSeconds = 500 + phase / 8 / 5.2;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         paintConveyor(ctx, scene, {
-          width: 1800, height: 64, centerSeconds,
-          renderedDurationSeconds: 1000.03, palette,
+          width: 1800,
+          height: 64,
+          centerSeconds,
+          renderedDurationSeconds: 1000.03,
+          palette,
         });
         expectedCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
         expectedCtx.clearRect(0, 0, 1800, 64);
-        expectedCtx.drawImage(image, 900 - centerSeconds * 5.2, 0, image.width / dpr, image.height / dpr);
+        expectedCtx.drawImage(
+          image,
+          900 - centerSeconds * 5.2,
+          0,
+          image.width / dpr,
+          image.height / dpr,
+        );
         // Entirely before the fixed playhead; includes varied-height contours.
         const actual = ctx.getImageData(128 * dpr, 0, 656 * dpr, 64 * dpr).data;
-        const expected = expectedCtx.getImageData(128 * dpr, 0, 656 * dpr, 64 * dpr).data;
+        const expected = expectedCtx.getImageData(
+          128 * dpr,
+          0,
+          656 * dpr,
+          64 * dpr,
+        ).data;
         for (let i = 0; i < actual.length; i += 1) {
           if (actual[i] !== expected[i]) differingChannels += 1;
         }
@@ -641,7 +703,9 @@ test("reader settings hide the per-chunk jump controls", async ({ page }) => {
   await expect(page.getByTestId("chunk-1-jump")).toBeVisible();
 
   await page.getByRole("button", { name: "Reader settings" }).click();
-  await expect(page.getByRole("dialog", { name: "Reader settings" })).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Reader settings" }),
+  ).toBeVisible();
   await page.getByLabel("Show chunk jump buttons").uncheck();
 
   await expect(page.getByTestId("chunk-1-jump")).toBeHidden();
@@ -650,7 +714,9 @@ test("reader settings hide the per-chunk jump controls", async ({ page }) => {
   await expect(page.getByTestId("shortcut-guide")).toBeVisible();
 });
 
-test("phone widths get a bottom dock and keep the top bar as an overview", async ({ page }) => {
+test("phone widths get a bottom dock and keep the top bar as an overview", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 });
 
   await page.route("**/api/jobs/job-1", async (route) => {
@@ -672,8 +738,12 @@ test("phone widths get a bottom dock and keep the top bar as an overview", async
   // Transport lives in the dock and nowhere else — the top bar is the overview.
   // `exact` matters: Playwright's accessible-name match is substring based, and
   // "Jump playback to chunk N" would otherwise count as a Play button.
-  await expect(page.getByRole("button", { name: "Play", exact: true })).toHaveCount(1);
-  await expect(dock.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Play", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    dock.getByRole("button", { name: "Play", exact: true }),
+  ).toBeVisible();
   // Secondary metadata is dropped on phone widths.
   await expect(page.getByText(/6\/6 chunks/i)).toBeHidden();
 
@@ -684,14 +754,18 @@ test("phone widths get a bottom dock and keep the top bar as an overview", async
   const toggleBox = await toggle.boundingBox();
   expect(dockBox).not.toBeNull();
   expect(toggleBox).not.toBeNull();
-  expect((toggleBox?.y ?? 0) + (toggleBox?.height ?? 0)).toBeLessThanOrEqual(dockBox?.y ?? 0);
+  expect((toggleBox?.y ?? 0) + (toggleBox?.height ?? 0)).toBeLessThanOrEqual(
+    dockBox?.y ?? 0,
+  );
 
   // The dock controls stay reachable and still seek.
   await dock.getByRole("button", { name: "Forward 10 seconds" }).click();
   await expect(dock.getByTestId("conveyor-readout")).toBeVisible();
 });
 
-test("the now-playing marker only moves while audio is actually running", async ({ page }) => {
+test("the now-playing marker only moves while audio is actually running", async ({
+  page,
+}) => {
   await page.route("**/api/jobs/job-1", async (route) => {
     await route.fulfill({ json: buildJob(4, "queued") });
   });
@@ -726,7 +800,9 @@ test("the now-playing marker only moves while audio is actually running", async 
   // ...and it must actually animate once playback is reported as running, so the
   // test cannot pass by the animation never being applied at all.
   await marker.evaluate((element) => {
-    element.closest("[data-now-playing]")?.setAttribute("data-now-playing", "running");
+    element
+      .closest("[data-now-playing]")
+      ?.setAttribute("data-now-playing", "running");
   });
   const running = await sampleFrames();
   expect(new Set(running).size).toBeGreaterThan(1);
@@ -780,9 +856,14 @@ test("the playbar shrinks continuously with scroll instead of flipping states", 
     });
 
   const scrollTo = async (top: number) => {
-    await page.evaluate((value) => window.scrollTo({ top: value, behavior: "instant" }), top);
+    await page.evaluate(
+      (value) => window.scrollTo({ top: value, behavior: "instant" }),
+      top,
+    );
     // The write is rAF-coalesced, so wait for the next frame.
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(0))));
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => resolve(0))),
+    );
   };
 
   await scrollTo(0);
@@ -838,7 +919,9 @@ test("playback speed lives in the reader settings sheet and badges the playbar",
   await expect(page.getByText("Playwright job")).toBeVisible();
 
   // The playbar keeps its space: no speed control until the panel is opened.
-  await expect(page.getByRole("slider", { name: /playback speed slider/i })).toHaveCount(0);
+  await expect(
+    page.getByRole("slider", { name: /playback speed slider/i }),
+  ).toHaveCount(0);
   await expect(page.getByTestId("playback-rate-indicator")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Reader settings" }).click();
@@ -847,7 +930,9 @@ test("playback speed lives in the reader settings sheet and badges the playbar",
 
   // One tap on a preset, no dragging (the whole mobile point).
   await panel.getByRole("button", { name: "1.5×", exact: true }).click();
-  await expect(panel.getByRole("textbox", { name: /playback speed value/i })).toHaveValue("1.5");
+  await expect(
+    panel.getByRole("textbox", { name: /playback speed value/i }),
+  ).toHaveValue("1.5");
 
   await page.getByRole("button", { name: "Close settings" }).click();
   await expect(page.getByTestId("playback-rate-indicator")).toHaveText("1.5×");
@@ -899,7 +984,11 @@ test.describe("reader settings sheet gestures", () => {
     await fireTouch(page, "touchstart", fromY);
     for (let step = 1; step <= steps; step += 1) {
       await page.waitForTimeout(stepMs);
-      await fireTouch(page, "touchmove", fromY + ((toY - fromY) * step) / steps);
+      await fireTouch(
+        page,
+        "touchmove",
+        fromY + ((toY - fromY) * step) / steps,
+      );
     }
     await fireTouch(page, "touchend", toY);
   }
@@ -930,9 +1019,14 @@ test.describe("reader settings sheet gestures", () => {
     // clipped behind it. Hit-testing the dock's centre is the real paint-order
     // check: before the portal, the dock's own buttons answered here.
     const dockCovered = await page.evaluate(() => {
-      const dock = document.querySelector('[data-testid="reader-dock"]')?.getBoundingClientRect();
+      const dock = document
+        .querySelector('[data-testid="reader-dock"]')
+        ?.getBoundingClientRect();
       if (!dock) throw new Error("reader dock is not rendered");
-      const hit = document.elementFromPoint(dock.left + dock.width / 2, dock.top + dock.height / 2);
+      const hit = document.elementFromPoint(
+        dock.left + dock.width / 2,
+        dock.top + dock.height / 2,
+      );
       return !hit?.closest('[data-testid="reader-dock"]');
     });
     expect(dockCovered).toBe(true);
@@ -942,13 +1036,21 @@ test.describe("reader settings sheet gestures", () => {
       const rect = element.getBoundingClientRect();
       return { bottom: rect.bottom, viewportHeight: window.innerHeight };
     });
-    expect(Math.abs(geometry.bottom - geometry.viewportHeight)).toBeLessThanOrEqual(2);
+    expect(
+      Math.abs(geometry.bottom - geometry.viewportHeight),
+    ).toBeLessThanOrEqual(2);
 
-    await sheet.getByRole("button", { name: "Reset to defaults" }).scrollIntoViewIfNeeded();
-    await expect(sheet.getByRole("button", { name: "Reset to defaults" })).toBeVisible();
+    await sheet
+      .getByRole("button", { name: "Reset to defaults" })
+      .scrollIntoViewIfNeeded();
+    await expect(
+      sheet.getByRole("button", { name: "Reset to defaults" }),
+    ).toBeVisible();
   });
 
-  test("swiping down closes the sheet without scrolling the page behind it", async ({ page }) => {
+  test("swiping down closes the sheet without scrolling the page behind it", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 390, height: 844 });
 
     await page.route("**/api/jobs/job-1", async (route) => {
@@ -965,7 +1067,9 @@ test.describe("reader settings sheet gestures", () => {
     await expect(page.getByText("Playwright job")).toBeVisible();
 
     // Scroll the reader first, so "the page moved" is detectable.
-    await page.evaluate(() => window.scrollTo({ top: 120, behavior: "instant" }));
+    await page.evaluate(() =>
+      window.scrollTo({ top: 120, behavior: "instant" }),
+    );
     await page.waitForTimeout(120);
 
     await page.getByRole("button", { name: "Reader settings" }).click();
@@ -977,9 +1081,11 @@ test.describe("reader settings sheet gestures", () => {
     await fireTouch(page, "touchstart", 300);
     await page.waitForTimeout(30);
     await fireTouch(page, "touchmove", 324);
-    expect(await sheet.evaluate((element) => (element as HTMLElement).style.transform)).toBe(
-      "translateY(24px)",
-    );
+    expect(
+      await sheet.evaluate(
+        (element) => (element as HTMLElement).style.transform,
+      ),
+    ).toBe("translateY(24px)");
     await fireTouch(page, "touchend", 324);
     expect(await page.evaluate(() => window.scrollY)).toBe(120);
     await expect(sheet).toBeVisible();
@@ -994,40 +1100,61 @@ test.describe("reader settings sheet gestures", () => {
   });
 });
 
+for (const viewport of [
+  { width: 1365, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`admin distinguishes host, ReadFlow, and container memory at ${viewport.width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await page.goto("/admin");
+    await page
+      .getByRole("heading", { name: "System resources" })
+      .scrollIntoViewIfNeeded();
 
-for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
-  test(
-    `admin distinguishes host, ReadFlow, and container memory at ${viewport.width}px`,
-    async ({ page }) => {
-      await page.setViewportSize(viewport);
-      await page.goto("/admin");
-      await page.getByRole("heading", { name: "System resources" }).scrollIntoViewIfNeeded();
-
-      await expect(page.getByText("used of 64 GiB (52%)")).toBeVisible();
-      await expect(page.getByRole("meter", { name: "ReadFlow server (RSS)" })).toHaveAttribute("aria-valuetext", "2 GiB used of 64 GiB");
-      await expect(page.getByText("used of 12 GiB (83%)")).toBeVisible();
-      await expect(page.getByRole("meter", { name: "ReadFlow (PyTorch reserved)" })).toHaveAttribute("aria-valuetext", "2 GiB used of 12 GiB");
-      await expect(page.getByText("Container / cgroup: 2 GiB used of 4 GiB limit (includes cache)")).toBeVisible();
-      const meter = page.getByRole("meter", { name: "System RAM usage" });
-      await expect(meter).toHaveAttribute("aria-valuenow", "33792");
-      await expect(meter).toHaveAttribute("aria-valuemax", "65536");
-      const ratio = await meter.evaluate((element) =>
-        element.firstElementChild!.getBoundingClientRect().width / element.getBoundingClientRect().width,
-      );
-      expect(ratio).toBeCloseTo(33 / 64, 2);
-      const processMeter = page.getByRole("meter", { name: "ReadFlow server (RSS)" });
-      await expect(processMeter).toHaveAttribute("aria-valuemax", "65536");
-      await expect(processMeter).toHaveAttribute("aria-valuenow", "2048");
-      const processRatio = await processMeter.evaluate((element) =>
-        element.firstElementChild!.getBoundingClientRect().width / element.getBoundingClientRect().width,
-      );
-      expect(processRatio).toBeCloseTo(2 / 64, 2);
-      const systemBox = (await meter.boundingBox())!;
-      const processBox = (await processMeter.boundingBox())!;
-      expect(processBox.width).toBeCloseTo(systemBox.width, 1);
-      expect(processBox.x).toBeCloseTo(systemBox.x, 1);
-      await expect(page.getByText("of 64 GiB capacity (3%)")).toBeVisible();
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    },
-  );
+    await expect(page.getByText("used of 64 GiB (52%)")).toBeVisible();
+    await expect(
+      page.getByRole("meter", { name: "ReadFlow server (RSS)" }),
+    ).toHaveAttribute("aria-valuetext", "2 GiB used of 64 GiB");
+    await expect(page.getByText("used of 12 GiB (83%)")).toBeVisible();
+    await expect(
+      page.getByRole("meter", { name: "ReadFlow (PyTorch reserved)" }),
+    ).toHaveAttribute("aria-valuetext", "2 GiB used of 12 GiB");
+    await expect(
+      page.getByText(
+        "Container / cgroup: 2 GiB used of 4 GiB limit (includes cache)",
+      ),
+    ).toBeVisible();
+    const meter = page.getByRole("meter", { name: "System RAM usage" });
+    await expect(meter).toHaveAttribute("aria-valuenow", "33792");
+    await expect(meter).toHaveAttribute("aria-valuemax", "65536");
+    const ratio = await meter.evaluate(
+      (element) =>
+        element.firstElementChild!.getBoundingClientRect().width /
+        element.getBoundingClientRect().width,
+    );
+    expect(ratio).toBeCloseTo(33 / 64, 2);
+    const processMeter = page.getByRole("meter", {
+      name: "ReadFlow server (RSS)",
+    });
+    await expect(processMeter).toHaveAttribute("aria-valuemax", "65536");
+    await expect(processMeter).toHaveAttribute("aria-valuenow", "2048");
+    const processRatio = await processMeter.evaluate(
+      (element) =>
+        element.firstElementChild!.getBoundingClientRect().width /
+        element.getBoundingClientRect().width,
+    );
+    expect(processRatio).toBeCloseTo(2 / 64, 2);
+    const systemBox = (await meter.boundingBox())!;
+    const processBox = (await processMeter.boundingBox())!;
+    expect(processBox.width).toBeCloseTo(systemBox.width, 1);
+    expect(processBox.x).toBeCloseTo(systemBox.x, 1);
+    await expect(page.getByText("of 64 GiB capacity (3%)")).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  });
 }

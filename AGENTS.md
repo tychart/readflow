@@ -161,6 +161,8 @@ repo/
   scripts/
     dev.sh
   .github/workflows/ci.yml
+  .vscode/settings.json      # Biome as formatter (committed, machine-independent)
+  biome.jsonc                # the only JS/TS/JSON/YAML lint + format config
   Makefile
   package.json
   README.md
@@ -177,6 +179,90 @@ Toolchain split — do not mix these up:
   `#!/usr/bin/env node` shebang, and `bun run` executes `node_modules/.bin/*` shims with Node
   by default (that is bun's documented behavior; `bun --bun run` forces bun's runtime instead).
   Playwright in particular requires Node. Do not "fix" this by adding `--bun` everywhere.
+- **Biome** owns all JS/TS/JSON/YAML formatting, linting and import organization. There is
+  no ESLint and no Prettier; do not add either back (see “Formatting and linting: Biome”).
+
+## Formatting and linting: Biome
+
+Biome replaces ESLint and Prettier for the whole JS/TS/JSON/YAML surface. There is no
+`eslint.config.js`, no prettier config, and no `eslint`/`typescript-eslint`/`globals`
+dependency. Do not reintroduce them "just for one rule" — put the rule, the override or a
+documented suppression in `biome.jsonc` instead.
+
+Layout (this is deliberate, not incidental):
+
+- **`biome.jsonc` lives at the repo root** so one config covers `web/**`, the root
+  `package.json`, `compose*.yml` and `.github/workflows/*.yml`.
+- **The binary is installed in `web/`** (`@biomejs/biome`, pinned exactly — Biome warns that
+  the schema drifts between minor versions). `bun install` therefore stays in `web/` and the
+  root `package.json` stays dependency-free.
+- Because the config is one level above the package, the scripts run from `web/` and pass
+  `..`: `bun run lint` = `biome check ..`, `bun run lint:fix` = `biome check --write ..`,
+  `bun run ci` = `biome ci ..`. `make lint` / `make lint-fix` wrap those plus ruff, and CI
+  runs `bun run ci`.
+- Excluded on purpose: `**/*.md` (Biome's markdown formatter is experimental), `web/bun.lock`
+  (bun's file), `web/**/*.tsbuildinfo` (generated, and one of them is unfortunately tracked),
+  and `web/public/**` + `web/src/assets/**` (image assets are files, not DOM — `noSvgWithoutTitle`
+  only makes sense for inline JSX).
+- `css.parser.tailwindDirectives: true` is required for Tailwind v4's `@custom-variant`;
+  without it the stylesheet does not parse at all.
+
+Settings that are intentional:
+
+- `lineWidth: 80`, 2-space indent, double quotes, semicolons: Biome's defaults, chosen during
+  the migration (the one-time reformat touched ~90 files).
+- `assist.actions.source.organizeImports` stays at Biome's default (`on`): imports and exports
+  are sorted/deduped on write and on save.
+- Domains: `react`, `test`, `playwright`, `tailwind`. These are auto-scoped, so hook rules
+  only apply to React code and test rules only to test files.
+- `correctness.useExhaustiveDependencies` sets `reportUnnecessaryDependencies: false`.
+  eslint-plugin-react-hooks never reported *extra* dependencies, and several effects here
+  list values they use only as invalidation keys (canvas backing pixels, stream anchor,
+  `chunkStateSignature`). Missing dependencies are still errors and still fail CI. Do not
+  re-enable the extra-dependency check; it produces fixes that would break the conveyor's
+  repaint contract.
+- Test files (`**/*.test.ts(x)`, `web/setupTests.ts`, `web/e2e/**`) turn off three rules that
+  are wrong for harness code: `a11y/useMediaCaption` (bare `<audio>` fixtures for synthesized
+  speech), `correctness/noComponentHookFactories` (deliberate local hook wrappers) and
+  `style/noNonNullAssertion` (indexing fixed-length fixtures).
+
+Documented inline suppressions that exist today, and why (do not "clean them up"):
+
+- `ChunkConveyor`: `role="group"` (a gesture strip is not a `<fieldset>`), and the decorative
+  `<canvas aria-hidden>` (Biome treats canvas as potentially focusable).
+- `AdminPage`: `role="meter"` on the memory gauge (native `<meter>` cannot render the
+  two-tone bar consistently).
+- `ConfirmDialog` / `ReaderSettingsMenu`: mouse-only backdrop dismissal (Escape is the
+  keyboard path, and both the dialog and the sheet have their own close affordances).
+- `WaveformSlot`: conditional `aria-label`, which only exists on the interactive slider variant.
+- `styles.css`: `!important` in the `prefers-reduced-motion` block must win the cascade.
+
+**Suppression placement is fussy — this cost real time during the migration:**
+
+- A `biome-ignore` comment must be the only comment immediately before the node; a second
+  comment line above it silently breaks the attachment (`suppressions/unused` at the same
+  time as the original error). Move prose into the reason string or elsewhere.
+- A comment before `return (` attaches to *element-level* diagnostics only (e.g. `role=`,
+  `aria-hidden=`). For *attribute-level* diagnostics (e.g. `key={i}` → `noArrayIndexKey`) it
+  works only when the element is single-line or sits directly inside arrow parens; prefer
+  removing the pattern (a positional key derived from time, an explicit `key` field) over
+  fighting the placement.
+- Unused suppressions are reported (`suppressions/unused`) and `biome ci` fails on them, so a
+  stale ignore cannot rot quietly.
+
+**Mandatory: every frontend change ends with `bun run lint` (from `web/`).** That single
+command is `biome check ..` — formatting, lint, and import organization across the whole
+frontend. Run it after touching any file under `web/` (components, hooks, styles, configs,
+tests, e2e specs), before running the tests and before reporting the work as done. Do not
+hand-format, do not leave `bun run lint:fix` for a later commit, and do not report a
+frontend change as complete while Biome reports a single diagnostic. `make lint` runs that
+same check plus ruff for `server/`, and CI fails on it (`bun run ci` in the web job).
+
+Editor setup is committed: `.vscode/settings.json` makes Biome the default formatter with
+format-on-save + `source.fixAll.biome`/`source.organizeImports.biome`, and
+`.vscode/extensions.json` recommends `biomejs.biome`. `.gitignore` deliberately un-ignores
+those two files while keeping the rest of `.vscode/` private (machine-specific paths do not
+belong in the repo).
 
 ## Backend architecture
 
@@ -260,6 +346,8 @@ Key files:
 - `web/src/lib/media-source.ts` (player hook: `<audio>`, `MediaSource`, append queue, eviction)
 - `web/src/components/ShadowAudio.tsx` (hosts the player `<audio>` in a shadow root so page-wide
   media-speed extensions cannot discover or re-rate it)
+- `web/src/components/ErrorBoundary.tsx` (route-level render safety net; `App` keys it by
+  pathname so navigating away from a crashed page resets it)
 - `web/src/lib/media-window.ts` (pure: streaming-window thresholds, eviction range, buffered-range checks)
 - `web/src/lib/waveform-timeline.ts` (pure: timeline geometry, bar math, slot peak selection)
 - `web/src/components/WaveformSlot.tsx` (overview DOM bars), `web/src/lib/waveform-style.ts` (shared bar geometry), `web/src/lib/conveyor-canvas.ts` (conveyor artwork cache/painter)
@@ -1406,7 +1494,8 @@ make test-real-model
 What they mean:
 
 - `make test`: web tests + mocked server tests
-- `make lint`: ESLint + Ruff lint + Ruff format check
+- `make lint`: Biome check (lint + format + imports) + Ruff lint + Ruff format check
+- `make lint-fix`: the fixing counterpart (`biome check --write`, `ruff check --fix`, `ruff format`)
 - `make typecheck`: TypeScript + Pyright
 - `make test-real-model`: opt-in real Qwen tests
 
@@ -1825,29 +1914,28 @@ metadata row (later in the DOM) painted over the anchored settings popover, and
 the Download button intercepted clicks on it. The top row is `z-20` for this
 reason; a Playwright test caught it.
 
-### 12. Test files are not typechecked by default
+### 12. Tests are typechecked — keep them that way
 
-`web/package.json`'s `typecheck` runs `tsconfig.build.json`, which **excludes**
-`src/**/*.test.ts(x)`. Nothing else typechecked them either, so a stale type
-import (e.g. `TimelineSlotData` from a module that had stopped re-exporting it)
-compiled fine and only failed at runtime — and a type-only import does not even
-fail then, esbuild just strips it.
+`bun run typecheck` runs three projects, and the third one is the test suite:
+`tsconfig.build.json` (production source, tests excluded), `tsconfig.node.json`
+(vite/vitest/playwright configs and `e2e/`), and `tsconfig.app.json` (`src` +
+`setupTests.ts`, i.e. the unit tests). It is wired into `make typecheck` and CI.
 
-`bun run typecheck:tests` (`tsconfig.app.json`, which includes `src` and
-`setupTests.ts`) closes the gap, but it currently reports **~97 pre-existing
-errors** across 10 test files, so it is deliberately not wired into
-`typecheck`/CI yet. The backlog is overwhelmingly two mechanical causes:
+That coverage is load-bearing. Test fixtures drift silently otherwise: a stale
+prop name is accepted by React (unknown props are ignored), a type-only import
+disappears at build time (esbuild strips it), and a fixture missing a field only
+fails at runtime — or never. The cleanup that wired this in found ~137 errors:
+stale `playButtonSizePx`-style prop names, unknown `animateNowPlaying` props,
+`Chunk` fixtures without `char_start`/`char_end`, `JobManifest` fixtures without
+`audio_epoch`, `AdminState` fixtures without `memory`, and `global` instead of
+`globalThis`.
 
-- `Cannot find name 'global'` (~38): the app tsconfig lists
-  `types: ["vitest/globals"]`, so Node's globals are not in scope. Either add
-  `"node"` to that list or switch the tests to `globalThis`.
-- unsafe `as typeof fetch` casts on partial fetch mocks (~25): these need
-  `as unknown as typeof fetch`.
-
-The rest is fixture drift — stale `AdminConfig`/`ReaderSettings`/`AdminMemoryStats`
-literals missing fields the types require. Fixing all of it is a worthwhile,
-self-contained change: do it, wire `typecheck:tests` into `make typecheck` and CI,
-and delete this note.
+If a test needs a new fixture field, add it to the fixture builder rather than a
+local cast. `web/src/test-utils/chunks.ts` (`buildChunk`, `buildChunks`,
+`buildJobDetail`) is the shared source for reader fixtures and already carries
+`version`, `peaks_url` and the character range; prefer it over a new inline
+literal. Do not reintroduce `as unknown as` to silence a fixture error — that is
+the drift this check exists to catch.
 
 ### 13. Do not nest ARIA sliders
 
@@ -2297,6 +2385,44 @@ Conveyor smoothness round:
    original 3px bars and the simpler architecture, accepting slight low-DPI
    pulsing. Tests guard that chosen renderer; the GPU prototype is not shipped.
 
+Biome migration round:
+
+1. **ESLint + Prettier → Biome 2.6.4**, pinned in `web/package.json`. Root `biome.jsonc`
+   (lint + format + import organization) is the only config; `eslint`, `typescript-eslint`,
+   `globals` and both react eslint plugins are gone, and `web/eslint.config.js` with them.
+2. **One-time reformat** at `lineWidth: 80` across ~90 files (formatting, import sorting,
+   safe fixes). Behavior-preserving.
+3. **Every finding triaged instead of suppressed**: a11y (`role="status"` on the connection
+   badge, `type="button"` on the sidebar's action buttons, `aria-hidden` on decorative inline
+   icons, an explicit timeline placeholder role), `useIterableCallbackReturn`, `useTemplate`,
+   `useOptionalChain`, `useMathMinMax`, and the two dead `eslint-disable` comments converted
+   to documented Biome suppressions. Only six genuine false positives are suppressed, listed
+   in “Formatting and linting: Biome”.
+4. **Selection/structure fixes instead of lint tricks**: the equalizer's fixed bar list gained
+   explicit keys, and waveform bars are keyed by their absolute start time.
+5. **Tooling wiring**: `make lint` / `make lint-fix`, `bun run lint|lint:fix|ci`, CI runs
+   `biome ci`, `tsconfig.node.json` no longer lists the deleted eslint config, and `.vscode`
+   settings/extensions are committed.
+6. Verified: `biome check` clean, `tsc` clean, 525 vitest tests, 17 Playwright tests, `vite build`.
+
+Frontend audit round (post-Biome):
+
+1. **Silent failures fixed.** A failed admin config save only logged to the console; it now
+   uses the same feedback banner as warm/evict/reset (and the banner's auto-dismiss timer is
+   cleared on unmount). The create form's voices fetch had no `.catch()`, i.e. an unhandled
+   rejection plus an empty select with no explanation; it now renders a `role="alert"` message.
+2. **`api.request` header merge.** `...init` was spread *after* the computed `headers`, so any
+   caller passing headers would silently drop the JSON `Content-Type`. Ordering fixed.
+3. **Route-level `ErrorBoundary`.** One render error used to blank the entire app with no way
+   to navigate out. The boundary lives inside the shell (nav stays usable) and `App` keys it by
+   pathname, so navigating resets it. Covered by `ErrorBoundary.test.tsx`.
+4. **The phone settings sheet is now a real modal.** It declares `aria-modal`, traps Tab
+   (`hooks/useModalFocusTrap.ts`, with the wrap math unit-tested), and returns focus to the
+   gear on every dismissal — backdrop and swipe included, not just Escape.
+5. **Tests are typechecked.** `bun run typecheck` now runs `tsconfig.app.json` too, so the
+   ~137 accumulated test-type errors are gone and cannot come back silently. Pitfall 12 was
+   rewritten from “known debt” to “keep it green”.
+
 ## Agent Workflow Checklist
 
 When making changes, use this checklist.
@@ -2310,9 +2436,10 @@ When making changes, use this checklist.
 
 ### If you change frontend logic
 
+- **always finish with `bun run lint` in `web/` (Biome: format + lint + imports) — required**
 - run targeted web tests first
 - then run `make test`
-- then `make lint`
+- then `make lint` (Biome + ruff; a pure frontend change only needs the Biome half)
 - then `make typecheck`
 - if playback/media behavior changed, also run `bun run test:e2e` in `web/`
 
@@ -2359,4 +2486,5 @@ If you only remember a few things, remember these:
 - `scripts/dev.sh` is the canonical way to run the app locally
 - the Docker images (`server/Dockerfile` + `web/Dockerfile`) are the canonical production path, driven by `compose.yml`
 - keep tests green and run them often
+- run `bun run lint` (Biome) after every frontend change — it is the format + lint gate
 - do not undo the async server test harness without very good reason

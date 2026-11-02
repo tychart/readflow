@@ -1,7 +1,12 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-
-import { api } from "../../lib/api";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
+import { api } from "../../lib/api";
 import { useAppStore } from "../../state/store";
 import type { AdminConfig } from "../../types/api";
 import { QueueInspector } from "./QueueInspector";
@@ -57,7 +62,13 @@ function formatMemory(mib: number | null): string {
     : `${mib.toLocaleString()} MiB`;
 }
 
-function MemoryUsage({ label, used, total, color, highlight = false }: {
+function MemoryUsage({
+  label,
+  used,
+  total,
+  color,
+  highlight = false,
+}: {
   label: string;
   used: number | null;
   total: number | null;
@@ -65,35 +76,52 @@ function MemoryUsage({ label, used, total, color, highlight = false }: {
   highlight?: boolean;
 }) {
   const available = used != null && total != null && total > 0;
-  const percent = available ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
+  const percent = available
+    ? Math.min(100, Math.max(0, (used / total) * 100))
+    : 0;
   return (
-    <div className={`rounded-lg border p-3 ${highlight ? "mt-1 border-[var(--amber)]/25 bg-[var(--amber)]/5" : "border-transparent"}`}>
+    <div
+      className={`rounded-lg border p-3 ${highlight ? "mt-1 border-[var(--amber)]/25 bg-[var(--amber)]/5" : "border-transparent"}`}
+    >
       {highlight ? (
         <>
-          <div className="text-[10px] font-semibold text-[var(--amber)]">{label}</div>
-          <div className="mt-1 whitespace-nowrap text-2xl font-bold text-[var(--amber)]">{formatMemory(used)}</div>
+          <div className="text-[10px] font-semibold text-[var(--amber)]">
+            {label}
+          </div>
+          <div className="mt-1 whitespace-nowrap text-2xl font-bold text-[var(--amber)]">
+            {formatMemory(used)}
+          </div>
         </>
       ) : (
         <>
           <div className="text-[10px] text-[var(--ink-secondary)]">{label}</div>
-          <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">{formatMemory(used)}</div>
+          <div className="mt-1 text-2xl font-bold text-[var(--ink-primary)]">
+            {formatMemory(used)}
+          </div>
         </>
       )}
       {available && (
         <>
           <div className="text-[10px] text-[var(--ink-secondary)]">
-            {highlight ? "of" : "used of"} {formatMemory(total)}{highlight ? " capacity" : ""} ({Math.round(percent)}%)
+            {highlight ? "of" : "used of"} {formatMemory(total)}
+            {highlight ? " capacity" : ""} ({Math.round(percent)}%)
           </div>
+          {/* A gauge, so `role="meter"`; native <meter> cannot render this
+              two-tone capacity bar consistently across engines. */}
+          {/* biome-ignore lint/a11y/useSemanticElements: styled two-tone gauge; see comment above. */}
           <div
             role="meter"
             aria-label={label}
             aria-valuemin={0}
             aria-valuemax={total}
             aria-valuenow={Math.min(total, Math.max(0, used))}
-            aria-valuetext={formatMemory(used) + " used of " + formatMemory(total)}
+            aria-valuetext={`${formatMemory(used)} used of ${formatMemory(total)}`}
             className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--line)]"
           >
-            <div className="h-full rounded-full transition-[width]" style={{ width: percent + "%", backgroundColor: color }} />
+            <div
+              className="h-full rounded-full transition-[width]"
+              style={{ width: `${percent}%`, backgroundColor: color }}
+            />
           </div>
         </>
       )}
@@ -103,7 +131,13 @@ function MemoryUsage({ label, used, total, color, highlight = false }: {
 
 /* ── Stat Card ────────────────────────────────────────────── */
 
-function StatCard({ label, children }: { label: string; children: React.ReactNode }) {
+function StatCard({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
       <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
@@ -121,7 +155,8 @@ function AdminOverview() {
   const setAdminState = useAppStore((state) => state.setAdminState);
   const [formState, setFormState] = useState<AdminConfig | null>(null);
   const hasInitialized = useRef(false);
-  const [modelActionPending, setModelActionPending] = useState<ModelAction>("idle");
+  const [modelActionPending, setModelActionPending] =
+    useState<ModelAction>("idle");
   const [feedbackMessage, setFeedbackMessage] = useState<{
     type: "success" | "error";
     text: string;
@@ -137,6 +172,13 @@ function AdminOverview() {
     }, 5000);
   }
 
+  // The banner auto-dismisses; a pending timer must not outlive the view.
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    };
+  }, []);
+
   async function handleWarmModel() {
     setModelActionPending("warm");
     setFeedbackMessage(null);
@@ -144,7 +186,10 @@ function AdminOverview() {
       await api.warmModel();
       showFeedback("success", "Model warmed up successfully");
     } catch (error) {
-      showFeedback("error", error instanceof Error ? error.message : "Failed to warm model");
+      showFeedback(
+        "error",
+        error instanceof Error ? error.message : "Failed to warm model",
+      );
     } finally {
       setModelActionPending("idle");
     }
@@ -157,7 +202,10 @@ function AdminOverview() {
       await api.evictModel();
       showFeedback("success", "Model evicted successfully");
     } catch (error) {
-      showFeedback("error", error instanceof Error ? error.message : "Failed to evict model");
+      showFeedback(
+        "error",
+        error instanceof Error ? error.message : "Failed to evict model",
+      );
     } finally {
       setModelActionPending("idle");
     }
@@ -168,16 +216,22 @@ function AdminOverview() {
     setFeedbackMessage(null);
     try {
       await api.resetModel();
-      showFeedback("success", "Provider reset — scheduling will resume on the next tick");
+      showFeedback(
+        "success",
+        "Provider reset — scheduling will resume on the next tick",
+      );
     } catch (error) {
-      showFeedback("error", error instanceof Error ? error.message : "Failed to reset provider");
+      showFeedback(
+        "error",
+        error instanceof Error ? error.message : "Failed to reset provider",
+      );
     } finally {
       setModelActionPending("idle");
     }
   }
 
   useEffect(() => {
-    if (adminState && adminState.config && !hasInitialized.current) {
+    if (adminState?.config && !hasInitialized.current) {
       hasInitialized.current = true;
       setFormState({
         ...adminState.config,
@@ -204,15 +258,20 @@ function AdminOverview() {
       setFormState(nextConfig);
       setAdminState({ ...adminState, config: nextConfig });
     } catch (error) {
-      console.error("Failed to update config:", error);
+      showFeedback(
+        "error",
+        error instanceof Error ? error.message : "Failed to save config",
+      );
     }
   };
 
   const hasUnsavedChanges =
     formState.device !== (adminState.config.device ?? "auto") ||
     formState.idle_unload_seconds !== adminState.config.idle_unload_seconds ||
-    formState.max_prebuffer_seconds !== adminState.config.max_prebuffer_seconds ||
-    formState.target_buffer_seconds !== adminState.config.target_buffer_seconds ||
+    formState.max_prebuffer_seconds !==
+      adminState.config.max_prebuffer_seconds ||
+    formState.target_buffer_seconds !==
+      adminState.config.target_buffer_seconds ||
     formState.render_ahead_seconds !== adminState.config.render_ahead_seconds ||
     formState.active_listener_timeout_seconds !==
       adminState.config.active_listener_timeout_seconds ||
@@ -220,14 +279,24 @@ function AdminOverview() {
     formState.vram_soft_limit_mb !== adminState.config.vram_soft_limit_mb ||
     formState.vram_hard_limit_mb !== adminState.config.vram_hard_limit_mb ||
     formState.chunk_max_attempts !== adminState.config.chunk_max_attempts ||
-    formState.model_load_timeout_seconds !== adminState.config.model_load_timeout_seconds ||
-    formState.synthesis_timeout_seconds !== adminState.config.synthesis_timeout_seconds ||
-    formState.model_residency_batches !== adminState.config.model_residency_batches ||
-    formState.voice_residency_batches !== adminState.config.voice_residency_batches ||
-    formState.batch_candidates_small_model.length !== adminState.config.batch_candidates_small_model.length ||
-    formState.batch_candidates_small_model.some((v, i) => v !== adminState.config.batch_candidates_small_model[i]) ||
-    formState.batch_candidates_large_model.length !== adminState.config.batch_candidates_large_model.length ||
-    formState.batch_candidates_large_model.some((v, i) => v !== adminState.config.batch_candidates_large_model[i]);
+    formState.model_load_timeout_seconds !==
+      adminState.config.model_load_timeout_seconds ||
+    formState.synthesis_timeout_seconds !==
+      adminState.config.synthesis_timeout_seconds ||
+    formState.model_residency_batches !==
+      adminState.config.model_residency_batches ||
+    formState.voice_residency_batches !==
+      adminState.config.voice_residency_batches ||
+    formState.batch_candidates_small_model.length !==
+      adminState.config.batch_candidates_small_model.length ||
+    formState.batch_candidates_small_model.some(
+      (v, i) => v !== adminState.config.batch_candidates_small_model[i],
+    ) ||
+    formState.batch_candidates_large_model.length !==
+      adminState.config.batch_candidates_large_model.length ||
+    formState.batch_candidates_large_model.some(
+      (v, i) => v !== adminState.config.batch_candidates_large_model[i],
+    );
 
   const recentBatch = adminState.telemetry?.recent_batches[0];
 
@@ -262,16 +331,21 @@ function AdminOverview() {
             <select
               className={`${inputClass()} mt-1.5`}
               value={formState.device}
-              onChange={(e) => setFormState({ ...formState, device: e.target.value })}
+              onChange={(e) =>
+                setFormState({ ...formState, device: e.target.value })
+              }
             >
               <option value="auto">Auto (GPU priority, CPU fallback)</option>
               <option value="gpu">GPU (CUDA only)</option>
               <option value="cpu">CPU only</option>
             </select>
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              {formState.device === "auto" && "Uses GPU if CUDA is available, otherwise falls back to CPU."}
-              {formState.device === "gpu" && "Forces CUDA. Throws error if no GPU or insufficient VRAM."}
-              {formState.device === "cpu" && "Forces CPU synthesis. Slower, with model weights kept in system RAM."}
+              {formState.device === "auto" &&
+                "Uses GPU if CUDA is available, otherwise falls back to CPU."}
+              {formState.device === "gpu" &&
+                "Forces CUDA. Throws error if no GPU or insufficient VRAM."}
+              {formState.device === "cpu" &&
+                "Forces CPU synthesis. Slower, with model weights kept in system RAM."}
             </span>
           </label>
 
@@ -282,7 +356,12 @@ function AdminOverview() {
               type="number"
               min="0"
               value={formState.idle_unload_seconds}
-              onChange={(e) => setFormState({ ...formState, idle_unload_seconds: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  idle_unload_seconds: Number(e.target.value),
+                })
+              }
             />
           </label>
 
@@ -293,7 +372,12 @@ function AdminOverview() {
               type="number"
               min="0"
               value={formState.target_buffer_seconds}
-              onChange={(e) => setFormState({ ...formState, target_buffer_seconds: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  target_buffer_seconds: Number(e.target.value),
+                })
+              }
             />
           </label>
 
@@ -304,11 +388,16 @@ function AdminOverview() {
               type="number"
               min="0"
               value={formState.max_prebuffer_seconds}
-              onChange={(e) => setFormState({ ...formState, max_prebuffer_seconds: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  max_prebuffer_seconds: Number(e.target.value),
+                })
+              }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Priority threshold: above this an active listener shares the lowest band with
-              background work. It never stops rendering.
+              Priority threshold: above this an active listener shares the
+              lowest band with background work. It never stops rendering.
             </span>
           </label>
 
@@ -320,13 +409,16 @@ function AdminOverview() {
               min="0"
               value={formState.render_ahead_seconds}
               onChange={(e) =>
-                setFormState({ ...formState, render_ahead_seconds: Number(e.target.value) })
+                setFormState({
+                  ...formState,
+                  render_ahead_seconds: Number(e.target.value),
+                })
               }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              0 (default) renders every job to the end; only pausing stops it. A positive value
-              stops planning new chunks once a job has this much audio buffered (chunks already
-              planned still finish).
+              0 (default) renders every job to the end; only pausing stops it. A
+              positive value stops planning new chunks once a job has this much
+              audio buffered (chunks already planned still finish).
             </span>
           </label>
 
@@ -345,8 +437,8 @@ function AdminOverview() {
               }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              How long a job stays "actively listened" without a playback report. The reader syncs
-              every ~3s while playing.
+              How long a job stays "actively listened" without a playback
+              report. The reader syncs every ~3s while playing.
             </span>
           </label>
 
@@ -358,12 +450,15 @@ function AdminOverview() {
               min="1"
               value={formState.plan_ahead_chunks}
               onChange={(e) =>
-                setFormState({ ...formState, plan_ahead_chunks: Number(e.target.value) })
+                setFormState({
+                  ...formState,
+                  plan_ahead_chunks: Number(e.target.value),
+                })
               }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Chunks kept ready per job. Must be at least the largest batch size so a
-              single job can fill a batch.
+              Chunks kept ready per job. Must be at least the largest batch size
+              so a single job can fill a batch.
             </span>
           </label>
 
@@ -374,7 +469,12 @@ function AdminOverview() {
               type="number"
               min="0"
               value={formState.vram_soft_limit_mb}
-              onChange={(e) => setFormState({ ...formState, vram_soft_limit_mb: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  vram_soft_limit_mb: Number(e.target.value),
+                })
+              }
             />
           </label>
 
@@ -385,7 +485,12 @@ function AdminOverview() {
               type="number"
               min="0"
               value={formState.vram_hard_limit_mb}
-              onChange={(e) => setFormState({ ...formState, vram_hard_limit_mb: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  vram_hard_limit_mb: Number(e.target.value),
+                })
+              }
             />
           </label>
 
@@ -396,10 +501,16 @@ function AdminOverview() {
               type="number"
               min="1"
               value={formState.chunk_max_attempts}
-              onChange={(e) => setFormState({ ...formState, chunk_max_attempts: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  chunk_max_attempts: Number(e.target.value),
+                })
+              }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Failed attempts before a chunk is skipped. The rest of the job keeps rendering.
+              Failed attempts before a chunk is skipped. The rest of the job
+              keeps rendering.
             </span>
           </label>
 
@@ -410,10 +521,16 @@ function AdminOverview() {
               type="number"
               min="1"
               value={formState.model_load_timeout_seconds}
-              onChange={(e) => setFormState({ ...formState, model_load_timeout_seconds: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  model_load_timeout_seconds: Number(e.target.value),
+                })
+              }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Generous to allow a first-time model download. A timeout pauses dispatch until Reset provider.
+              Generous to allow a first-time model download. A timeout pauses
+              dispatch until Reset provider.
             </span>
           </label>
 
@@ -424,7 +541,12 @@ function AdminOverview() {
               type="number"
               min="1"
               value={formState.synthesis_timeout_seconds}
-              onChange={(e) => setFormState({ ...formState, synthesis_timeout_seconds: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  synthesis_timeout_seconds: Number(e.target.value),
+                })
+              }
             />
           </label>
 
@@ -435,10 +557,16 @@ function AdminOverview() {
               type="number"
               min="1"
               value={formState.model_residency_batches}
-              onChange={(e) => setFormState({ ...formState, model_residency_batches: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  model_residency_batches: Number(e.target.value),
+                })
+              }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Batches a model stays loaded before rotating to another model. A swap is a full GPU reload.
+              Batches a model stays loaded before rotating to another model. A
+              swap is a full GPU reload.
             </span>
           </label>
 
@@ -449,10 +577,16 @@ function AdminOverview() {
               type="number"
               min="1"
               value={formState.voice_residency_batches}
-              onChange={(e) => setFormState({ ...formState, voice_residency_batches: Number(e.target.value) })}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  voice_residency_batches: Number(e.target.value),
+                })
+              }
             />
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
-              Batches a voice keeps the GPU before another voice group rotates in (no model reload).
+              Batches a voice keeps the GPU before another voice group rotates
+              in (no model reload).
             </span>
           </label>
         </div>
@@ -521,12 +655,30 @@ function AdminOverview() {
           >
             <div className="flex items-center gap-2">
               {feedbackMessage.type === "success" ? (
-                <svg className="h-3.5 w-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
+                <svg
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
+                    clipRule="evenodd"
+                  />
                 </svg>
               ) : (
-                <svg className="h-3.5 w-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+                <svg
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
+                    clipRule="evenodd"
+                  />
                 </svg>
               )}
               <span>{feedbackMessage.text}</span>
@@ -553,10 +705,14 @@ function AdminOverview() {
                 {(() => {
                   const raw = adminState.telemetry?.model_state ?? "";
                   const label = MODEL_STATE_LABELS[raw] ?? (raw || "Unknown");
-                  const colors = MODEL_STATE_COLORS[raw] ?? { dot: "bg-[var(--ink-secondary)]" };
+                  const colors = MODEL_STATE_COLORS[raw] ?? {
+                    dot: "bg-[var(--ink-secondary)]",
+                  };
                   return (
                     <span className="inline-flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-1.5 text-xs font-medium text-[var(--ink-primary)]">
-                      <span className={`inline-block h-2 w-2 rounded-full ${colors.dot} ${colors.pulse ? "animate-pulse" : ""}`} />
+                      <span
+                        className={`inline-block h-2 w-2 rounded-full ${colors.dot} ${colors.pulse ? "animate-pulse" : ""}`}
+                      />
                       {label}
                     </span>
                   );
@@ -568,12 +724,16 @@ function AdminOverview() {
             <span className="inline-flex items-center gap-1.5">
               <span
                 className={`inline-block h-1.5 w-1.5 rounded-full ${
-                  adminState.scheduler.running ? "bg-emerald-400" : "bg-rose-500"
+                  adminState.scheduler.running
+                    ? "bg-emerald-400"
+                    : "bg-rose-500"
                 }`}
               />
               Scheduler {adminState.scheduler.running ? "running" : "stopped"}
             </span>
-            <span>Last tick {formatTickAge(adminState.scheduler.last_tick_at)}</span>
+            <span>
+              Last tick {formatTickAge(adminState.scheduler.last_tick_at)}
+            </span>
             {adminState.scheduler.vram_per_chunk_mb ? (
               <span title="Measured marginal allocated VRAM per chunk; the soft limit sizes batches from this">
                 ≈{Math.round(adminState.scheduler.vram_per_chunk_mb)} MiB/chunk
@@ -618,20 +778,29 @@ function AdminOverview() {
             System resources
           </h2>
           <p className="mb-3 text-[10px] text-[var(--ink-secondary)]">
-            Green bars show total system/device usage; amber bars show ReadFlow. Both use the same capacity scale. Measurements are server-side, not this browser: system totals cover the host OS (the Linux VM on Docker Desktop), and GPU totals cover the first visible CUDA GPU.
+            Green bars show total system/device usage; amber bars show ReadFlow.
+            Both use the same capacity scale. Measurements are server-side, not
+            this browser: system totals cover the host OS (the Linux VM on
+            Docker Desktop), and GPU totals cover the first visible CUDA GPU.
           </p>
           {adminState.memory ? (
             <>
               <div className="grid gap-3 md:grid-cols-2">
                 <StatCard label="Device">
                   <div className="mt-1 text-2xl font-bold capitalize text-[var(--ink-primary)]">
-                    {adminState.memory.device === "loading" || adminState.memory.device === "evicting" ? "—" : adminState.memory.device}
+                    {adminState.memory.device === "loading" ||
+                    adminState.memory.device === "evicting"
+                      ? "—"
+                      : adminState.memory.device}
                   </div>
                   <div className="mt-0.5 text-[10px] text-[var(--ink-secondary)]">
-                    {adminState.memory.device === "loading" ? "Model is loading…" :
-                     adminState.memory.device === "evicting" ? "Model is evicting…" :
-                     adminState.memory.device === "unloaded" ? "No model loaded" :
-                     `Setting: ${adminState.config.device}`}
+                    {adminState.memory.device === "loading"
+                      ? "Model is loading…"
+                      : adminState.memory.device === "evicting"
+                        ? "Model is evicting…"
+                        : adminState.memory.device === "unloaded"
+                          ? "No model loaded"
+                          : `Setting: ${adminState.config.device}`}
                   </div>
                 </StatCard>
 
@@ -654,16 +823,41 @@ function AdminOverview() {
                   <div className="mt-2 space-y-1 text-[10px] text-[var(--ink-secondary)]">
                     {adminState.memory.vram_total_mb != null ? (
                       <>
-                        <div>Free on device: {formatMemory(adminState.memory.vram_free_mb)}</div>
-                        <div>Active tensors: {formatMemory(adminState.memory.vram_allocated_mb)}</div>
-                        <div>CUDA-usable capacity, excluding driver-reserved memory. Usage includes other processes. PyTorch reserved covers active tensors and reusable cache, not all ReadFlow GPU overhead.</div>
+                        <div>
+                          Free on device:{" "}
+                          {formatMemory(adminState.memory.vram_free_mb)}
+                        </div>
+                        <div>
+                          Active tensors:{" "}
+                          {formatMemory(adminState.memory.vram_allocated_mb)}
+                        </div>
+                        <div>
+                          CUDA-usable capacity, excluding driver-reserved
+                          memory. Usage includes other processes. PyTorch
+                          reserved covers active tensors and reusable cache, not
+                          all ReadFlow GPU overhead.
+                        </div>
                       </>
                     ) : (
-                      <div>GPU statistics unavailable — no visible CUDA GPU, fake provider, or a GPU query failed.</div>
+                      <div>
+                        GPU statistics unavailable — no visible CUDA GPU, fake
+                        provider, or a GPU query failed.
+                      </div>
                     )}
-                    <div>ReadFlow allocator limits: soft {adminState.config.vram_soft_limit_mb ? formatMemory(adminState.config.vram_soft_limit_mb) : "off"} · hard {adminState.config.vram_hard_limit_mb ? formatMemory(adminState.config.vram_hard_limit_mb) : "off"}</div>
+                    <div>
+                      ReadFlow allocator limits: soft{" "}
+                      {adminState.config.vram_soft_limit_mb
+                        ? formatMemory(adminState.config.vram_soft_limit_mb)
+                        : "off"}{" "}
+                      · hard{" "}
+                      {adminState.config.vram_hard_limit_mb
+                        ? formatMemory(adminState.config.vram_hard_limit_mb)
+                        : "off"}
+                    </div>
                     {(adminState.telemetry?.oom_count ?? 0) > 0 && (
-                      <div className="text-[var(--rose)]">{adminState.telemetry!.oom_count} OOM</div>
+                      <div className="text-[var(--rose)]">
+                        {adminState.telemetry?.oom_count} OOM
+                      </div>
                     )}
                   </div>
                 </StatCard>
@@ -685,11 +879,21 @@ function AdminOverview() {
                     highlight
                   />
                   <div className="mt-2 space-y-1 text-[10px] text-[var(--ink-secondary)]">
-                    <div>Available to the system: {formatMemory(adminState.memory.ram_available_mb)}</div>
-                    <div>System usage includes other processes and excludes reclaimable cache. RSS is the API server process only.</div>
+                    <div>
+                      Available to the system:{" "}
+                      {formatMemory(adminState.memory.ram_available_mb)}
+                    </div>
+                    <div>
+                      System usage includes other processes and excludes
+                      reclaimable cache. RSS is the API server process only.
+                    </div>
                     {adminState.memory.ram_cgroup_limit_mb != null && (
                       <div className="mt-2 border-t border-[var(--line)] pt-2">
-                        Container / cgroup: {formatMemory(adminState.memory.ram_cgroup_used_mb)} used of {formatMemory(adminState.memory.ram_cgroup_limit_mb)} limit (includes cache)
+                        Container / cgroup:{" "}
+                        {formatMemory(adminState.memory.ram_cgroup_used_mb)}{" "}
+                        used of{" "}
+                        {formatMemory(adminState.memory.ram_cgroup_limit_mb)}{" "}
+                        limit (includes cache)
                       </div>
                     )}
                   </div>
@@ -699,14 +903,20 @@ function AdminOverview() {
                   {recentBatch ? (
                     <div className="mt-1 space-y-1">
                       <div className="text-xs text-[var(--ink-primary)]">
-                        {recentBatch.batch_size} chunk{recentBatch.batch_size !== 1 ? "s" : ""} · {recentBatch.duration_seconds.toFixed(1)}s
+                        {recentBatch.batch_size} chunk
+                        {recentBatch.batch_size !== 1 ? "s" : ""} ·{" "}
+                        {recentBatch.duration_seconds.toFixed(1)}s
                       </div>
                       <div className="text-[10px] text-[var(--ink-secondary)]">
-                        ReadFlow batch peak: {formatMemory(recentBatch.reserved_vram_mb)} reserved · {formatMemory(recentBatch.allocated_vram_mb)} allocated
+                        ReadFlow batch peak:{" "}
+                        {formatMemory(recentBatch.reserved_vram_mb)} reserved ·{" "}
+                        {formatMemory(recentBatch.allocated_vram_mb)} allocated
                       </div>
                     </div>
                   ) : (
-                    <div className="mt-1 text-xs text-[var(--ink-secondary)]">No batches yet</div>
+                    <div className="mt-1 text-xs text-[var(--ink-secondary)]">
+                      No batches yet
+                    </div>
                   )}
                 </StatCard>
               </div>
@@ -745,7 +955,8 @@ function AdminTabs({
     event.preventDefault();
     const index = ADMIN_TABS.findIndex((tab) => tab.id === active);
     const delta = event.key === "ArrowRight" ? 1 : -1;
-    const next = ADMIN_TABS[(index + delta + ADMIN_TABS.length) % ADMIN_TABS.length];
+    const next =
+      ADMIN_TABS[(index + delta + ADMIN_TABS.length) % ADMIN_TABS.length];
     onChange(next.id);
   };
 
@@ -792,11 +1003,19 @@ export function AdminPage() {
     <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
       <AdminTabs active={activeTab} onChange={setActiveTab} />
       {activeTab === "overview" ? (
-        <div aria-labelledby="admin-tab-overview" id="admin-panel-overview" role="tabpanel">
+        <div
+          aria-labelledby="admin-tab-overview"
+          id="admin-panel-overview"
+          role="tabpanel"
+        >
           <AdminOverview />
         </div>
       ) : (
-        <div aria-labelledby="admin-tab-queue" id="admin-panel-queue" role="tabpanel">
+        <div
+          aria-labelledby="admin-tab-queue"
+          id="admin-panel-queue"
+          role="tabpanel"
+        >
           <QueueInspector />
         </div>
       )}

@@ -7,7 +7,11 @@ import {
   resetReaderSettings,
   setReaderSettings,
 } from "../state/reader-settings";
-import { usePrefersReducedMotion, useReaderMotion, useReaderSettings } from "./useReaderSettings";
+import {
+  usePrefersReducedMotion,
+  useReaderMotion,
+  useReaderSettings,
+} from "./useReaderSettings";
 
 /* ── matchMedia stub ──────────────────────────────────────── */
 

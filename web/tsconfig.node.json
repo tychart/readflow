@@ -11,5 +11,10 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "eslint.config.js", "e2e/**/*.ts"]
+  "include": [
+    "vite.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "e2e/**/*.ts"
+  ]
 }

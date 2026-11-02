@@ -55,7 +55,9 @@ export function RenderToEndButton({
         <polyline points="5 5 12 12 5 19" />
         <polyline points="13 5 20 12 13 19" />
       </svg>
-      <span className="hidden sm:inline">{isPending ? "Starting…" : label}</span>
+      <span className="hidden sm:inline">
+        {isPending ? "Starting…" : label}
+      </span>
     </button>
   );
 }

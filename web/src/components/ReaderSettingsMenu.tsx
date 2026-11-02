@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-
+import { PlaybackSpeedControl } from "../features/reader/PlaybackSpeedControl";
+import { useModalFocusTrap } from "../hooks/useModalFocusTrap";
 import { PLAYBACK_SHORTCUT_GUIDE } from "../hooks/usePlaybackShortcuts";
 import { useSheetDismissGesture } from "../hooks/useSheetDismissGesture";
 import { sheetBackdropOpacity } from "../lib/sheet-gesture";
-import type { ConveyorWindowSize, MotionMode, ReaderSettings } from "../state/reader-settings";
-import { PlaybackSpeedControl } from "../features/reader/PlaybackSpeedControl";
+import type {
+  ConveyorWindowSize,
+  MotionMode,
+  ReaderSettings,
+} from "../state/reader-settings";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -38,12 +42,21 @@ interface ToggleRowProps {
   onChange: (checked: boolean) => void;
 }
 
-function ToggleRow({ id, label, description, checked, onChange }: ToggleRowProps) {
+function ToggleRow({
+  id,
+  label,
+  description,
+  checked,
+  onChange,
+}: ToggleRowProps) {
   const descriptionId = `${id}-description`;
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
-        <label className="block text-xs font-medium text-[var(--ink-primary)]" htmlFor={id}>
+        <label
+          className="block text-xs font-medium text-[var(--ink-primary)]"
+          htmlFor={id}
+        >
           {label}
         </label>
         {description ? (
@@ -137,22 +150,31 @@ export function ReaderSettingsMenu({
   const panelRef = useRef<HTMLDivElement>(null);
   const panelId = useId();
 
+  // `preventScroll` keeps the page from jumping when focus returns to the gear
+  // in the sticky playbar (notably on a phone, where the sheet covered the page).
   const close = useCallback((restoreFocus: boolean) => {
     setOpen(false);
-    if (restoreFocus) triggerRef.current?.focus();
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   }, []);
 
-  const dismissSheet = useCallback(() => close(false), [close]);
+  // Swiping the sheet away is a dismissal like any other: the trigger gets focus
+  // back so the keyboard does not end up on `<body>`.
+  const dismissSheet = useCallback(() => close(true), [close]);
+
+  // The sheet is modal, so Tab must not walk into the reader behind it. The
+  // desktop popover stays non-modal and is excluded on purpose.
+  useModalFocusTrap(open && isOverlay, panelRef);
 
   /**
    * Swipe-down-to-close for the phone sheet (see `useSheetDismissGesture`). It
    * only arms at the panel's scroll top, so scrolling the settings still works.
    */
-  const { offsetPx: sheetOffsetPx, isDragging: isDraggingSheet } = useSheetDismissGesture({
-    enabled: open && isOverlay,
-    onDismiss: dismissSheet,
-    panelRef,
-  });
+  const { offsetPx: sheetOffsetPx, isDragging: isDraggingSheet } =
+    useSheetDismissGesture({
+      enabled: open && isOverlay,
+      onDismiss: dismissSheet,
+      panelRef,
+    });
 
   // Lock the page behind the sheet. Without this, a swipe anywhere on the sheet
   // or its backdrop scrolled the reader text underneath instead of moving the
@@ -167,8 +189,8 @@ export function ReaderSettingsMenu({
     };
   }, [isOverlay, open]);
 
-  // Escape closes from anywhere; the trigger keeps focus so the user is not
-  // dumped back at the top of the document.
+  // Escape closes from anywhere; every dismissal returns focus to the trigger
+  // so the keyboard is never left on `<body>`.
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -202,7 +224,10 @@ export function ReaderSettingsMenu({
         <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
           Playback speed
         </p>
-        <PlaybackSpeedControl onChange={onPlaybackRateChange} value={playbackRate} />
+        <PlaybackSpeedControl
+          onChange={onPlaybackRateChange}
+          value={playbackRate}
+        />
       </section>
 
       {showConveyorControls ? (
@@ -229,7 +254,9 @@ export function ReaderSettingsMenu({
             <RadioGroup<ConveyorWindowSize>
               legend="Chunks in view"
               name={`${panelId}-window`}
-              onChange={(conveyorWindowSize) => onChange({ conveyorWindowSize })}
+              onChange={(conveyorWindowSize) =>
+                onChange({ conveyorWindowSize })
+              }
               options={[
                 { value: "auto", label: "Auto" },
                 { value: 3, label: "3" },
@@ -248,7 +275,9 @@ export function ReaderSettingsMenu({
           description="A jump control on every chunk block in the text."
           id={`${panelId}-jump`}
           label="Show chunk jump buttons"
-          onChange={(showChunkJumpButtons) => onChange({ showChunkJumpButtons })}
+          onChange={(showChunkJumpButtons) =>
+            onChange({ showChunkJumpButtons })
+          }
         />
       </section>
 
@@ -258,9 +287,16 @@ export function ReaderSettingsMenu({
         </p>
         <dl className="mt-1.5 space-y-1" data-testid="shortcut-guide">
           {PLAYBACK_SHORTCUT_GUIDE.map((entry) => (
-            <div className="flex items-baseline justify-between gap-3" key={entry.keys}>
-              <dt className="font-mono text-[11px] text-[var(--ink-primary)]">{entry.keys}</dt>
-              <dd className="text-right text-[11px] text-[var(--ink-secondary)]">{entry.action}</dd>
+            <div
+              className="flex items-baseline justify-between gap-3"
+              key={entry.keys}
+            >
+              <dt className="font-mono text-[11px] text-[var(--ink-primary)]">
+                {entry.keys}
+              </dt>
+              <dd className="text-right text-[11px] text-[var(--ink-secondary)]">
+                {entry.action}
+              </dd>
             </div>
           ))}
         </dl>
@@ -284,6 +320,7 @@ export function ReaderSettingsMenu({
           ? "fixed inset-x-0 bottom-0 z-[70] max-h-[70vh] touch-pan-y overflow-y-auto overscroll-contain rounded-t-2xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-2xl"
           : "absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-2xl"
       }
+      aria-modal={isOverlay ? true : undefined}
       id={panelId}
       ref={panelRef}
       role="dialog"
@@ -295,7 +332,10 @@ export function ReaderSettingsMenu({
               // the last control is never under the system gesture area.
               maxHeight: "70dvh",
               paddingBottom: "max(1rem, env(safe-area-inset-bottom))",
-              transform: sheetOffsetPx > 0 ? `translateY(${sheetOffsetPx}px)` : undefined,
+              transform:
+                sheetOffsetPx > 0
+                  ? `translateY(${sheetOffsetPx}px)`
+                  : undefined,
               // No easing while a finger is on it; ease back when released.
               transition: isDraggingSheet ? "none" : "transform 180ms ease-out",
             }
@@ -343,19 +383,25 @@ export function ReaderSettingsMenu({
   // (z-40, a sibling at the root) painted over the sheet and cut off its bottom
   // controls — the reset button and shortcuts were unreachable. A portal puts the
   // modal above the whole app, which is what a modal sheet is supposed to be.
-  const overlay = open && isOverlay ? (
-    <>
-      <div
-        // `touch-none overscroll-none`: a swipe that misses the sheet must not
-        // scroll (or chain to) the page behind it.
-        className="fixed inset-0 z-[60] touch-none overscroll-none bg-black/50"
-        data-testid="reader-settings-backdrop"
-        onClick={() => close(false)}
-        style={{ opacity: sheetBackdropOpacity(sheetOffsetPx) }}
-      />
-      {dialog}
-    </>
-  ) : null;
+  const overlay =
+    open && isOverlay ? (
+      <>
+        {/* Dismissal by backdrop is a mouse-only convenience: Escape closes from
+            anywhere (see the keydown effect), the sheet has its own close button
+            and a swipe-down gesture. Making the backdrop a focusable button
+            would add a second "close" stop that duplicates them. */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: see the backdrop comment above. */}
+        <div
+          // `touch-none overscroll-none`: a swipe that misses the sheet must not
+          // scroll (or chain to) the page behind it.
+          className="fixed inset-0 z-[60] touch-none overscroll-none bg-black/50"
+          data-testid="reader-settings-backdrop"
+          onClick={() => close(true)}
+          style={{ opacity: sheetBackdropOpacity(sheetOffsetPx) }}
+        />
+        {dialog}
+      </>
+    ) : null;
 
   return (
     <div className="relative" ref={containerRef}>

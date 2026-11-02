@@ -1,4 +1,10 @@
-import type { AdminConfig, Chunk, JobDetail, JobSummary, SchedulerState } from "./api";
+import type {
+  AdminConfig,
+  Chunk,
+  JobDetail,
+  JobSummary,
+  SchedulerState,
+} from "./api";
 
 export type { AdminConfig, JobDetail, JobSummary, SchedulerState } from "./api";
 
@@ -10,7 +16,12 @@ export type { AdminConfig, JobDetail, JobSummary, SchedulerState } from "./api";
  * so "no connection and none wanted" is a real state — not `connecting`, which
  * would claim an attempt that never happened.
  */
-export type WebSocketStatus = "idle" | "connecting" | "open" | "reconnecting" | "error";
+export type WebSocketStatus =
+  | "idle"
+  | "connecting"
+  | "open"
+  | "reconnecting"
+  | "error";
 
 /**
  * Job fields carried by live events and by mutations that cannot change the
@@ -101,7 +112,7 @@ export interface AdminMemoryStatsPayload {
 export type WsEnvelope =
   | { type: "job_created"; payload: JobPayload }
   | { type: "job_updated"; payload: JobPayload }
-  | { type: "job_completed"; payload: JobPayload }
+  | { type: "job_completed"; payload: ChunkReadyPayload }
   | { type: "chunk_ready"; payload: ChunkReadyPayload }
   | { type: "scheduler_state"; payload: SchedulerState }
   | { type: "model_state"; payload: ModelStatePayload }

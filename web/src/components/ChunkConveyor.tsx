@@ -13,6 +13,8 @@ import {
   advanceSmoothedPlayhead,
   averageDurationSeconds,
   beginDrag,
+  type ConveyorBounds,
+  type ConveyorGesture,
   conveyorPxPerSecond,
   endDrag,
   gestureCenterSeconds,
@@ -23,21 +25,22 @@ import {
   slotAtSeconds,
   slotIndexAtSeconds,
   updateDrag,
-  type ConveyorBounds,
-  type ConveyorGesture,
 } from "../features/reader/conveyor-physics";
 import { useElementWidth } from "../hooks/useElementWidth";
 import { useTheme } from "../hooks/useTheme";
 import {
+  type ConveyorPalette,
+  type ConveyorScene,
   createConveyorScene,
   paintConveyor,
   readConveyorPalette,
   sizeConveyorCanvas,
-  type ConveyorPalette,
-  type ConveyorScene,
 } from "../lib/conveyor-canvas";
 import { formatClock } from "../lib/format";
-import { buildCumulativeStartTimes, totalSlotDuration } from "../lib/waveform-timeline";
+import {
+  buildCumulativeStartTimes,
+  totalSlotDuration,
+} from "../lib/waveform-timeline";
 import type { ConveyorWindowSize } from "../state/reader-settings";
 import type { TimelineSlotData } from "../types/timeline";
 
@@ -73,7 +76,8 @@ export interface ChunkConveyorProps {
 /* ── Style ────────────────────────────────────────────────── */
 
 /** Fades both edges so the track reads as a continuous strip, not a box. */
-const EDGE_FADE = "linear-gradient(to right, transparent, #000 8%, #000 92%, transparent)";
+const EDGE_FADE =
+  "linear-gradient(to right, transparent, #000 8%, #000 92%, transparent)";
 
 /**
  * Smallest movement worth painting. Frames that cannot move the strip
@@ -121,14 +125,22 @@ export function ChunkConveyor({
   const stripCenterClientXRef = useRef(0);
   const [gesture, setGesture] = useState<ConveyorGesture | null>(null);
 
-  const cumulativeStartTimes = useMemo(() => buildCumulativeStartTimes(slots), [slots]);
+  const cumulativeStartTimes = useMemo(
+    () => buildCumulativeStartTimes(slots),
+    [slots],
+  );
   const totalSeconds = useMemo(() => totalSlotDuration(slots), [slots]);
   const averageDuration = useMemo(() => averageDurationSeconds(slots), [slots]);
 
   const windowSize = resolveConveyorWindowSize(windowSizeSetting, stripWidth);
-  const pxPerSecond = conveyorPxPerSecond(stripWidth, windowSize, averageDuration);
+  const pxPerSecond = conveyorPxPerSecond(
+    stripWidth,
+    windowSize,
+    averageDuration,
+  );
   const scene = useMemo(
-    () => createConveyorScene(slots, cumulativeStartTimes, waveforms, pxPerSecond),
+    () =>
+      createConveyorScene(slots, cumulativeStartTimes, waveforms, pxPerSecond),
     [slots, cumulativeStartTimes, waveforms, pxPerSecond],
   );
 
@@ -149,10 +161,16 @@ export function ChunkConveyor({
    */
   const idleCenterSeconds = useMemo(() => {
     if (motion === "animated") return playheadSeconds;
-    return cumulativeStartTimes[slotIndexAtSeconds(cumulativeStartTimes, playheadSeconds)] ?? 0;
+    return (
+      cumulativeStartTimes[
+        slotIndexAtSeconds(cumulativeStartTimes, playheadSeconds)
+      ] ?? 0
+    );
   }, [cumulativeStartTimes, motion, playheadSeconds]);
 
-  const centerSeconds = gesture ? gestureCenterSeconds(gesture) : idleCenterSeconds;
+  const centerSeconds = gesture
+    ? gestureCenterSeconds(gesture)
+    : idleCenterSeconds;
 
   const sliding = gesture === null && motion === "animated" && isPlaying;
   const reportedSecondsRef = useRef(playheadSeconds);
@@ -195,7 +213,14 @@ export function ChunkConveyor({
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     sizeConveyorCanvas(canvas, paint.width, paint.height, dpr);
-    ctx.setTransform(canvas.width / paint.width, 0, 0, canvas.height / paint.height, 0, 0);
+    ctx.setTransform(
+      canvas.width / paint.width,
+      0,
+      0,
+      canvas.height / paint.height,
+      0,
+      0,
+    );
     paintConveyor(ctx, paint.scene, { ...paint, centerSeconds: seconds });
   }, []);
 
@@ -220,11 +245,14 @@ export function ChunkConveyor({
   useEffect(() => {
     if (!canvasRef.current) return;
     let query: MediaQueryList | undefined;
-    const redraw = () => drawSeconds(renderedSecondsRef.current ?? reportedSecondsRef.current);
+    const redraw = () =>
+      drawSeconds(renderedSecondsRef.current ?? reportedSecondsRef.current);
     const watchDensity = () => {
       query?.removeEventListener?.("change", watchDensity);
       redraw();
-      query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query = window.matchMedia?.(
+        `(resolution: ${window.devicePixelRatio || 1}dppx)`,
+      );
       query?.addEventListener?.("change", watchDensity);
     };
     watchDensity();
@@ -256,7 +284,8 @@ export function ChunkConveyor({
       const dtSeconds = Math.min(0.064, Math.max(0, (nowMs - lastMs) / 1000));
       lastMs = nowMs;
       const smoothed = advanceSmoothedPlayhead({
-        smoothedSeconds: smoothedSecondsRef.current ?? reportedSecondsRef.current,
+        smoothedSeconds:
+          smoothedSecondsRef.current ?? reportedSecondsRef.current,
         reportedSeconds: reportedSecondsRef.current,
         rate: rateRef.current,
         dtSeconds,
@@ -264,7 +293,11 @@ export function ChunkConveyor({
       });
       smoothedSecondsRef.current = smoothed;
       const shown = renderedSecondsRef.current;
-      if (shown !== null && Math.abs(smoothed - shown) * pxPerSecondRef.current < MIN_WRITE_PX) return;
+      if (
+        shown !== null &&
+        Math.abs(smoothed - shown) * pxPerSecondRef.current < MIN_WRITE_PX
+      )
+        return;
       drawSeconds(smoothed);
     };
     frame = requestAnimationFrame(tick);
@@ -281,7 +314,10 @@ export function ChunkConveyor({
   const commitSeek = useCallback((seconds: number) => {
     gestureRef.current = null;
     setGesture(null);
-    const clamped = Math.min(Math.max(0, seconds), boundsRef.current.maxVisualSeconds);
+    const clamped = Math.min(
+      Math.max(0, seconds),
+      boundsRef.current.maxVisualSeconds,
+    );
     const index = slotIndexAtSeconds(cumulativeStartTimesRef.current, clamped);
     onSeekRef.current(index, clamped);
   }, []);
@@ -299,7 +335,11 @@ export function ChunkConveyor({
       // Clamp dt so a backgrounded tab does not teleport the strip on return.
       const dtSeconds = Math.min(0.064, Math.max(0, (nowMs - lastMs) / 1000));
       lastMs = nowMs;
-      const { gesture: next, restSeconds } = advanceConveyor(current, dtSeconds, boundsRef.current);
+      const { gesture: next, restSeconds } = advanceConveyor(
+        current,
+        dtSeconds,
+        boundsRef.current,
+      );
       gestureRef.current = next;
       setGesture(next);
       if (restSeconds !== null) commitSeek(restSeconds);
@@ -321,7 +361,11 @@ export function ChunkConveyor({
     }
     // Freeze the current position as the gesture base so grabbing a moving
     // strip does not make it jump.
-    const started = beginDrag(renderedSecondsRef.current ?? centerSeconds, event.clientX, performance.now());
+    const started = beginDrag(
+      renderedSecondsRef.current ?? centerSeconds,
+      event.clientX,
+      performance.now(),
+    );
     gestureRef.current = started;
     setGesture(started);
     event.preventDefault();
@@ -330,7 +374,7 @@ export function ChunkConveyor({
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (pointerIdRef.current !== event.pointerId) return;
     const current = gestureRef.current;
-    if (!current || current.phase !== "dragging") return;
+    if (current?.phase !== "dragging") return;
     const next = updateDrag(
       current,
       event.clientX,
@@ -346,7 +390,7 @@ export function ChunkConveyor({
     if (pointerIdRef.current !== event.pointerId) return;
     pointerIdRef.current = null;
     const current = gestureRef.current;
-    if (!current || current.phase !== "dragging") return;
+    if (current?.phase !== "dragging") return;
 
     const pxPerSecond = pxPerSecondRef.current;
     // A tap means "put this point under the playhead"; a drag already moved the
@@ -389,7 +433,10 @@ export function ChunkConveyor({
 
   /* ── Layout ────────────────────────────────────────────── */
 
-  const centerSlotIndex = slotIndexAtSeconds(cumulativeStartTimes, centerSeconds);
+  const centerSlotIndex = slotIndexAtSeconds(
+    cumulativeStartTimes,
+    centerSeconds,
+  );
   const centerChunkNumber = (slots[centerSlotIndex]?.chunkIndex ?? 0) + 1;
   const centerClock = formatClock(centerSeconds);
 
@@ -406,6 +453,10 @@ export function ChunkConveyor({
   }
 
   return (
+    // A named group, not a <fieldset>: the strip groups one gesture surface so
+    // assistive tech can announce it, and has none of a fieldset's form
+    // semantics.
+    // biome-ignore lint/a11y/useSemanticElements: see the group comment above.
     <div
       aria-label="Chunk conveyor"
       className="relative w-full select-none overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)]"
@@ -425,7 +476,10 @@ export function ChunkConveyor({
       }}
     >
       {/* The viewport never moves. Native cached artwork slides inside it;
-          rounded contours are not re-rasterized at each fractional position. */}
+          rounded contours are not re-rasterized at each fractional position.
+          It is decorative artwork: the group's aria-label and the timeline
+          slider carry the meaning, so keep it out of the accessibility tree. */}
+      {/* biome-ignore lint/a11y/noAriaHiddenOnFocusable: decorative canvas with no interactive content. */}
       <canvas
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 h-full w-full"

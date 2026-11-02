@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
@@ -11,18 +18,28 @@ import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePlaybackShortcuts } from "../../hooks/usePlaybackShortcuts";
-import { useReaderSettings, useReaderMotion } from "../../hooks/useReaderSettings";
-import { useScrollProgressVar } from "../../hooks/useScrollProgress";
+import {
+  useReaderMotion,
+  useReaderSettings,
+} from "../../hooks/useReaderSettings";
 import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
+import { useScrollProgressVar } from "../../hooks/useScrollProgress";
 import { ApiError, api } from "../../lib/api";
 import { liveClient } from "../../lib/live-client";
 import { useMediaSourcePlayer } from "../../lib/media-source";
 import { modelLabel } from "../../lib/models";
-import { resetReaderSettings, setReaderSettings } from "../../state/reader-settings";
+import {
+  resetReaderSettings,
+  setReaderSettings,
+} from "../../state/reader-settings";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest } from "../../types/api";
 import type { TimelineSlotData } from "../../types/timeline";
 import { getChunkText, isTerminalStatus } from "./chunk-utils";
+import { ReaderSidebar } from "./ReaderSidebar";
+import { ReaderContent, ReaderTextBody } from "./ReaderText";
+import { RenderingStallBanner } from "./RenderingStallBanner";
+import { RenderToEndButton } from "./RenderToEndButton";
 import {
   buildManifestFromPatch,
   buildStreamManifest,
@@ -35,18 +52,11 @@ import {
   deriveTimelineSlots,
   mergeJobPatch,
   mergeKnownChunks,
-  skipTargetSeconds,
   type StreamEventMeta,
   type StreamEventPayload,
+  skipTargetSeconds,
 } from "./reader-model";
 import { buildReaderTextSegments } from "./reader-text";
-import {
-  ReaderContent,
-  ReaderTextBody,
-} from "./ReaderText";
-import { ReaderSidebar } from "./ReaderSidebar";
-import { RenderingStallBanner } from "./RenderingStallBanner";
-import { RenderToEndButton } from "./RenderToEndButton";
 import { isRenderingStalled } from "./transport";
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -104,14 +114,20 @@ export function ReaderPage() {
   const [streamRestartKey, setStreamRestartKey] = useState(0);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
-  const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<string | null>(null);
+  const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<
+    string | null
+  >(null);
 
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isRenderingToEnd, setIsRenderingToEnd] = useState(false);
-  const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null);
+  const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(
+    null,
+  );
   const [editText, setEditText] = useState("");
-  const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<number | null>(null);
+  const [reprocessingChunkIndex, setReprocessingChunkIndex] = useState<
+    number | null
+  >(null);
   const [reprocessError, setReprocessError] = useState<string | null>(null);
   const [seekOverride, setSeekOverride] = useState<number | null>(null);
 
@@ -157,7 +173,10 @@ export function ReaderPage() {
   const motion = useReaderMotion();
 
   // ── Derived data ────────────────────────────────────────
-  const knownChunks = useMemo(() => mergeKnownChunks(job, manifest), [job, manifest]);
+  const knownChunks = useMemo(
+    () => mergeKnownChunks(job, manifest),
+    [job, manifest],
+  );
   const activeVersions = useMemo(
     () => deriveActiveVersionMap(knownChunks, job?.active_chunk_version),
     [job?.active_chunk_version, knownChunks],
@@ -179,7 +198,13 @@ export function ReaderPage() {
   );
 
   const playbackModel = useMemo(
-    () => derivePlaybackModel(knownChunks, activeChunks, activeVersions, playbackAnchorIndex),
+    () =>
+      derivePlaybackModel(
+        knownChunks,
+        activeChunks,
+        activeVersions,
+        playbackAnchorIndex,
+      ),
     [knownChunks, activeChunks, activeVersions, playbackAnchorIndex],
   );
 
@@ -252,7 +277,8 @@ export function ReaderPage() {
     playbackAnchorIndex,
     playIntent,
     isTerminal: isJobTerminal,
-    pendingSeekSeconds: seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
+    pendingSeekSeconds:
+      seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
     onSeekApplied: handleSeekApplied,
     streamRestartKey,
   });
@@ -307,9 +333,11 @@ export function ReaderPage() {
    * kind of work even for a small document whose chunks are long.
    */
   const chunkStateSignature = `${activeProgress.activeChunkIndex ?? "none"}:${activeProgress.playedIndexes.size}`;
+  // Identity follows chunkStateSignature: the set is the run's prefix, so
+  // (active index, size) determines it exactly.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above.
   const playedIndexes = useMemo(
     () => activeProgress.playedIndexes,
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity follows chunkStateSignature: the set is the run's prefix, so (active, size) determines it.
     [chunkStateSignature],
   );
 
@@ -318,9 +346,16 @@ export function ReaderPage() {
   const waveforms = useChunkWaveforms(activeChunks);
 
   // ── Timeline slots (for WaveformTimeline) ───────────────
+  // States only, keyed on the signature rather than the per-tick progress.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see chunkStateSignature.
   const timelineSlots = useMemo<TimelineSlotData[]>(
-    () => deriveTimelineSlots(activeChunks, playbackModel, activeProgress, playbackAnchorIndex),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- states only; see chunkStateSignature
+    () =>
+      deriveTimelineSlots(
+        activeChunks,
+        playbackModel,
+        activeProgress,
+        playbackAnchorIndex,
+      ),
     [activeChunks, playbackModel, playbackAnchorIndex, chunkStateSignature],
   );
 
@@ -331,7 +366,9 @@ export function ReaderPage() {
   }, [activeProgress.activeChunkIndex, activeChunks]);
 
   const shouldUsePollingFallback =
-    !!job && !isTerminalStatus(job.status) && (websocketStatus !== "open" || isSocketStale);
+    !!job &&
+    !isTerminalStatus(job.status) &&
+    (websocketStatus !== "open" || isSocketStale);
 
   // ── Effects ─────────────────────────────────────────────
   useEffect(() => {
@@ -363,7 +400,9 @@ export function ReaderPage() {
             return;
           }
           setError(
-            loadError instanceof Error ? loadError.message : "Unable to refresh reader state",
+            loadError instanceof Error
+              ? loadError.message
+              : "Unable to refresh reader state",
           );
         })
         .finally(async () => {
@@ -383,10 +422,15 @@ export function ReaderPage() {
     (force = false, isPlayingOverride?: boolean) => {
       if (!job || !audioRef.current || isJobTerminal) return;
       const now = Date.now();
-      if (!force && now - lastPlaybackSyncAtRef.current < PLAYBACK_SYNC_INTERVAL_MS) return;
+      if (
+        !force &&
+        now - lastPlaybackSyncAtRef.current < PLAYBACK_SYNC_INTERVAL_MS
+      )
+        return;
       lastPlaybackSyncAtRef.current = now;
       const isPlaying =
-        isPlayingOverride ?? (playIntent && (!audioRef.current.paused || isWaitingForData));
+        isPlayingOverride ??
+        (playIntent && (!audioRef.current.paused || isWaitingForData));
       // The backend derives `buffered_seconds`/`completed_seconds` from the
       // job timeline, but the media stream restarts at 0 every time the reader
       // re-anchors (seek, reload). Reporting the raw stream clock made the
@@ -411,7 +455,15 @@ export function ReaderPage() {
           });
       }
     },
-    [anchorOffset, audioRef, isJobTerminal, isWaitingForData, job, playIntent, seekOverride],
+    [
+      anchorOffset,
+      audioRef,
+      isJobTerminal,
+      isWaitingForData,
+      job,
+      playIntent,
+      seekOverride,
+    ],
   );
 
   /**
@@ -420,7 +472,11 @@ export function ReaderPage() {
    * `job_updated` and the voice/reprocess endpoints still carry full detail.
    */
   const applyJobPatch = useCallback(
-    (patch: StreamEventPayload["job"], chunk?: Chunk, meta: StreamEventMeta = {}) => {
+    (
+      patch: StreamEventPayload["job"],
+      chunk?: Chunk,
+      meta: StreamEventMeta = {},
+    ) => {
       if (!patch) return;
       setJob((prev) => (prev ? mergeJobPatch(prev, patch, chunk) : prev));
       setManifest((prev) => buildManifestFromPatch(prev, patch, chunk, meta));
@@ -441,7 +497,11 @@ export function ReaderPage() {
   useEffect(() => {
     const previous = previousSocketStatusRef.current;
     previousSocketStatusRef.current = websocketStatus;
-    if (websocketStatus !== "open" || previous === "open" || previous === "connecting") {
+    if (
+      websocketStatus !== "open" ||
+      previous === "open" ||
+      previous === "connecting"
+    ) {
       return;
     }
     setLoadRetryAttempt(0);
@@ -515,7 +575,8 @@ export function ReaderPage() {
       if (
         !isJobTerminal &&
         renderedDurationSeconds > 0 &&
-        audio.currentTime >= Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
+        audio.currentTime >=
+          Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
       ) {
         syncPlaybackState(true, true);
         return;
@@ -570,7 +631,8 @@ export function ReaderPage() {
       !playIntent ||
       isActuallyPlaying ||
       renderedDurationSeconds <= 0 ||
-      currentTimeSeconds < Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
+      currentTimeSeconds <
+        Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
     ) {
       return;
     }
@@ -601,7 +663,11 @@ export function ReaderPage() {
       await requestUserGesturePlay();
     } catch (playError) {
       setPlayIntent(false);
-      setError(playError instanceof Error ? playError.message : "Unable to activate playback");
+      setError(
+        playError instanceof Error
+          ? playError.message
+          : "Unable to activate playback",
+      );
     }
   };
 
@@ -615,7 +681,11 @@ export function ReaderPage() {
       applyJobPatch(nextJob);
       syncPlaybackState(true, false);
     } catch (pauseError) {
-      setError(pauseError instanceof Error ? pauseError.message : "Unable to pause playback");
+      setError(
+        pauseError instanceof Error
+          ? pauseError.message
+          : "Unable to pause playback",
+      );
     }
   };
 
@@ -713,7 +783,10 @@ export function ReaderPage() {
     const timelineTarget = targetStreamSeconds + anchorOffset;
     // Position math runs over the whole timeline (including any gap chunks), so
     // the resolved anchor matches what the timeline itself would seek to.
-    void handleSeekToChunk(chunkIndexAtSeconds(activeChunks, timelineTarget), timelineTarget);
+    void handleSeekToChunk(
+      chunkIndexAtSeconds(activeChunks, timelineTarget),
+      timelineTarget,
+    );
   };
 
   // Page-wide playback keys: the reader should not require clicking the
@@ -728,7 +801,10 @@ export function ReaderPage() {
    */
   const handleJumpToChunk = useCallback(
     (chunkIndex: number) => {
-      void handleSeekToChunkWithScroll(chunkIndex, chunkStartSeconds(activeChunks, chunkIndex));
+      void handleSeekToChunkWithScroll(
+        chunkIndex,
+        chunkStartSeconds(activeChunks, chunkIndex),
+      );
     },
     [activeChunks, handleSeekToChunkWithScroll],
   );
@@ -749,16 +825,21 @@ export function ReaderPage() {
       lastChunkAtRef.current = Date.now();
     } catch (retryError) {
       setError(
-        retryError instanceof Error ? retryError.message : "Unable to retry rendering",
+        retryError instanceof Error
+          ? retryError.message
+          : "Unable to retry rendering",
       );
     } finally {
       setIsRetryingStall(false);
     }
   }, [applyJobPatch, job, refreshReaderState]);
 
-  const handleSettingsChange = useCallback((patch: Partial<typeof settings>) => {
-    setReaderSettings(patch);
-  }, []);
+  const handleSettingsChange = useCallback(
+    (patch: Partial<typeof settings>) => {
+      setReaderSettings(patch);
+    },
+    [],
+  );
 
   /**
    * Speed is applied to the player immediately and remembered for the next
@@ -822,10 +903,17 @@ export function ReaderPage() {
     }
   }, [applyJobPatch, job]);
 
-  const handleVoiceChange = async (voiceId: string, rerenderWritten = false) => {
+  const handleVoiceChange = async (
+    voiceId: string,
+    rerenderWritten = false,
+  ) => {
     if (!job) return;
     try {
-      const nextJob = await api.updateJobVoice(job.id, voiceId, rerenderWritten);
+      const nextJob = await api.updateJobVoice(
+        job.id,
+        voiceId,
+        rerenderWritten,
+      );
       if (rerenderWritten) {
         // Every chunk was invalidated so the old take is gone. Reset the local
         // playback state to match: the bumped audio epoch tears the MSE stream
@@ -839,7 +927,11 @@ export function ReaderPage() {
       applyJobPatch(nextJob);
       setError(null);
     } catch (voiceError) {
-      setError(voiceError instanceof Error ? voiceError.message : "Unable to change voice");
+      setError(
+        voiceError instanceof Error
+          ? voiceError.message
+          : "Unable to change voice",
+      );
     }
   };
 
@@ -858,7 +950,9 @@ export function ReaderPage() {
         setError(null);
         setTimeout(() => refreshReaderState("reprocess"), 1000);
       } catch (err) {
-        setReprocessError(err instanceof Error ? err.message : "Reprocessing failed");
+        setReprocessError(
+          err instanceof Error ? err.message : "Reprocessing failed",
+        );
       } finally {
         setReprocessingChunkIndex(null);
       }
@@ -875,7 +969,9 @@ export function ReaderPage() {
         setError(null);
         setReprocessError(null);
       } catch (err) {
-        setReprocessError(err instanceof Error ? err.message : "Version switch failed");
+        setReprocessError(
+          err instanceof Error ? err.message : "Version switch failed",
+        );
       }
     },
     [applyJobPatch, job],
@@ -891,7 +987,8 @@ export function ReaderPage() {
   );
 
   const handleSaveEdit = useCallback(() => {
-    if (editingChunkIndex !== null) void handleReprocess(editingChunkIndex, editText);
+    if (editingChunkIndex !== null)
+      void handleReprocess(editingChunkIndex, editText);
   }, [editingChunkIndex, editText, handleReprocess]);
 
   const handleCancelEdit = useCallback(() => {
@@ -1011,181 +1108,171 @@ export function ReaderPage() {
 
     content = (
       <>
-      {/* Sticky playbar wrapper — flush against the app header. Owns the
+        {/* Sticky playbar wrapper — flush against the app header. Owns the
           `--scroll-progress` value every collapsing part below interpolates on. */}
-      <div className="sticky top-[56px] z-30 w-full" ref={attachScrollProgress}>
-        {/* Background layer — a static surface whose opacity follows scroll.
+        <div
+          className="sticky top-[56px] z-30 w-full"
+          ref={attachScrollProgress}
+        >
+          {/* Background layer — a static surface whose opacity follows scroll.
             Deliberately no CSS transition and no backdrop blur: the value is
             already continuous, a transition would just lag behind and restart
             every frame, and animating `backdrop-filter` forces the phone GPU to
             re-blur a full-width layer on every scroll frame (the flicker). */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background: "var(--surface)",
-            opacity: "calc(var(--scroll-progress, 0) * 0.95)",
-            borderBottom: "1px solid var(--line)",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-          }}
-        />
-        {/* Content — padding shrinks progressively */}
-        <div
-          className="relative z-10 mx-auto w-full"
-          style={{
-            padding:
-              "calc(20px - var(--scroll-progress, 0) * 12px) calc(16px - var(--scroll-progress, 0) * 4px)",
-          }}
-        >
-          <Playbar
-            canDownload={canDownloadRenderedAudio}
-            displayDurationSeconds={displayDurationSeconds}
-            displayRenderedDurationSeconds={displayRenderedDurationSeconds}
-            displayTimeSeconds={displayTimeSeconds}
-            isAutoplayBlocked={isAutoplayBlocked}
-            isDownloadComplete={isDownloadComplete}
-            isDownloading={isDownloading}
-            isJobTerminal={isJobTerminal}
-            isLoadingAudio={isLoadingAudio}
-            isPlaying={isActuallyPlaying}
-            isWaitingForData={isWaitingForData}
-            playIntent={playIntent}
-            onDownload={handleDownload}
-            onPause={handlePause}
-            onPlay={handlePlay}
-            onSeekToChunk={handleSeekToChunkWithScroll}
-            onSkip={handleSkip}
-            renderedDurationSeconds={renderedDurationSeconds}
-            renderAheadSlot={
-              <RenderToEndButton
-                enabled={job?.render_to_end === true}
-                isPending={isRenderingToEnd}
-                isTerminal={isJobTerminal}
-                onRenderToEnd={handleRenderToEnd}
-              />
-            }
-            showTransport={!isPhoneViewport}
-            playbackRate={playbackRate}
-            settingsSlot={
-              <ReaderSettingsMenu
-                isOverlay={!isLargeScreen}
-                onChange={handleSettingsChange}
-                onPlaybackRateChange={handlePlaybackRateChange}
-                onReset={resetReaderSettings}
-                playbackRate={playbackRate}
-                settings={settings}
-                showConveyorControls
-              />
-            }
-            slots={timelineSlots}
-            totalChunks={totalChunksInJob}
-            waveforms={waveforms}
-            writtenChunks={writtenChunkCount}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background: "var(--surface)",
+              opacity: "calc(var(--scroll-progress, 0) * 0.95)",
+              borderBottom: "1px solid var(--line)",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+            }}
           />
+          {/* Content — padding shrinks progressively */}
+          <div
+            className="relative z-10 mx-auto w-full"
+            style={{
+              padding:
+                "calc(20px - var(--scroll-progress, 0) * 12px) calc(16px - var(--scroll-progress, 0) * 4px)",
+            }}
+          >
+            <Playbar
+              canDownload={canDownloadRenderedAudio}
+              displayDurationSeconds={displayDurationSeconds}
+              displayRenderedDurationSeconds={displayRenderedDurationSeconds}
+              displayTimeSeconds={displayTimeSeconds}
+              isAutoplayBlocked={isAutoplayBlocked}
+              isDownloadComplete={isDownloadComplete}
+              isDownloading={isDownloading}
+              isJobTerminal={isJobTerminal}
+              isLoadingAudio={isLoadingAudio}
+              isPlaying={isActuallyPlaying}
+              isWaitingForData={isWaitingForData}
+              playIntent={playIntent}
+              onDownload={handleDownload}
+              onPause={handlePause}
+              onPlay={handlePlay}
+              onSeekToChunk={handleSeekToChunkWithScroll}
+              onSkip={handleSkip}
+              renderedDurationSeconds={renderedDurationSeconds}
+              renderAheadSlot={
+                <RenderToEndButton
+                  enabled={job?.render_to_end === true}
+                  isPending={isRenderingToEnd}
+                  isTerminal={isJobTerminal}
+                  onRenderToEnd={handleRenderToEnd}
+                />
+              }
+              showTransport={!isPhoneViewport}
+              playbackRate={playbackRate}
+              settingsSlot={
+                <ReaderSettingsMenu
+                  isOverlay={!isLargeScreen}
+                  onChange={handleSettingsChange}
+                  onPlaybackRateChange={handlePlaybackRateChange}
+                  onReset={resetReaderSettings}
+                  playbackRate={playbackRate}
+                  settings={settings}
+                  showConveyorControls
+                />
+              }
+              slots={timelineSlots}
+              totalChunks={totalChunksInJob}
+              waveforms={waveforms}
+              writtenChunks={writtenChunkCount}
+            />
 
-          {/* Chunk conveyor — the zoomed, thumb-sized scrub strip. Shares the
+            {/* Chunk conveyor — the zoomed, thumb-sized scrub strip. Shares the
               sticky wrapper with the main playbar so it stays reachable while
               reading deep into a long document. Phones move it into the bottom
               dock instead, where a thumb can actually reach it. */}
-          {settings.showConveyor && !isPhoneViewport ? (
-            <div className="mt-2">
-              <ChunkConveyor
-                isPlaying={isActuallyPlaying}
-                maxSeekSeconds={displayRenderedDurationSeconds}
-                motion={motion}
-                onSeek={handleSeekToChunkWithScroll}
-                playbackRate={playbackRate}
-                playheadSeconds={displayTimeSeconds}
-                slots={timelineSlots}
-                waveforms={waveforms}
-                windowSizeSetting={settings.conveyorWindowSize}
-              />
-            </div>
-          ) : null}
+            {settings.showConveyor && !isPhoneViewport ? (
+              <div className="mt-2">
+                <ChunkConveyor
+                  isPlaying={isActuallyPlaying}
+                  maxSeekSeconds={displayRenderedDurationSeconds}
+                  motion={motion}
+                  onSeek={handleSeekToChunkWithScroll}
+                  playbackRate={playbackRate}
+                  playheadSeconds={displayTimeSeconds}
+                  slots={timelineSlots}
+                  waveforms={waveforms}
+                  windowSizeSetting={settings.conveyorWindowSize}
+                />
+              </div>
+            ) : null}
+          </div>
         </div>
-      </div>
 
-      {/* Warnings — in content area, below the header */}
-      <div className="mx-auto w-full max-w-6xl px-4 pt-5 md:px-6">
-        <div className="h-[44px]">
-          <div
-            aria-live="polite"
-            className={`rounded-lg border px-4 py-3 text-xs transition-all duration-200 ${
-              (!isJobTerminal && (websocketStatus !== "open" || isSocketStale)) ||
-              error ||
-              lastPlayerError ||
-              downloadError
-                ? "visible border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)] opacity-100"
-                : "invisible opacity-0"
-            }`}
-          >
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {!isJobTerminal && (websocketStatus !== "open" || isSocketStale) ? (
-                <span>Live updates degraded, using fallback sync</span>
-              ) : null}
-              {error ? <span>{error}</span> : null}
-              {lastPlayerError ? <span>{lastPlayerError}</span> : null}
-              {downloadError ? <span>{downloadError}</span> : null}
+        {/* Warnings — in content area, below the header */}
+        <div className="mx-auto w-full max-w-6xl px-4 pt-5 md:px-6">
+          <div className="h-[44px]">
+            <div
+              aria-live="polite"
+              className={`rounded-lg border px-4 py-3 text-xs transition-all duration-200 ${
+                (!isJobTerminal &&
+                  (websocketStatus !== "open" || isSocketStale)) ||
+                error ||
+                lastPlayerError ||
+                downloadError
+                  ? "visible border-[var(--amber)]/20 bg-[var(--amber)]/10 text-[var(--amber)] opacity-100"
+                  : "invisible opacity-0"
+              }`}
+            >
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {!isJobTerminal &&
+                (websocketStatus !== "open" || isSocketStale) ? (
+                  <span>Live updates degraded, using fallback sync</span>
+                ) : null}
+                {error ? <span>{error}</span> : null}
+                {lastPlayerError ? <span>{lastPlayerError}</span> : null}
+                {downloadError ? <span>{downloadError}</span> : null}
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Waiting on a model swap — the job's chunks are queued behind another
+        {/* Waiting on a model swap — the job's chunks are queued behind another
           model that has to finish or rotate first. */}
-      {waitingOnModel ? (
-        <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
-          <div
-            className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-4 py-3 text-xs text-[var(--ink-secondary)]"
-            role="status"
-          >
-            Waiting for the GPU: currently rendering {modelLabel(residentModelId)}
-            {residentVoiceLabel ? ` · ${residentVoiceLabel}` : ""}. This job starts
-            when that model rotates (about{" "}
-            {runtimeStatus?.model_residency_batches ?? 10} batches) or its queue
-            finishes.
+        {waitingOnModel ? (
+          <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
+            <div
+              className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-4 py-3 text-xs text-[var(--ink-secondary)]"
+              role="status"
+            >
+              Waiting for the GPU: currently rendering{" "}
+              {modelLabel(residentModelId)}
+              {residentVoiceLabel ? ` · ${residentVoiceLabel}` : ""}. This job
+              starts when that model rotates (about{" "}
+              {runtimeStatus?.model_residency_batches ?? 10} batches) or its
+              queue finishes.
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {/* Rendering stall — the producer stopped; offer a retry instead of
+        {/* Rendering stall — the producer stopped; offer a retry instead of
           spinning "Buffering…" forever. */}
-      {renderingStalled && !stallDismissed && !waitingOnModel ? (
-        <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
-          <RenderingStallBanner
-            isRetrying={isRetryingStall}
-            onDismiss={() => setStallDismissed(true)}
-            onRetry={() => void handleRetryRender()}
-          />
-        </div>
-      ) : null}
-
-      {/* Main content area — reader text + sidebar. The extra bottom padding
-          keeps the phone dock from covering the last block. */}
-      <div
-        className={`mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6 ${
-          isPhoneViewport && settings.showConveyor ? "pb-40" : ""
-        }`}
-      >
-        {isLargeScreen && !sidebarOpen ? (
-          /* ── Sidebar closed: reader centered ── */
-          <div className="mx-auto flex w-full max-w-4xl flex-col">
-            <ReaderContent
-              contentRef={contentRef}
-              title={job.title ?? "Untitled job"}
-              status={job.status}
-              lines={readerLines}
-              isLargeScreen={isLargeScreen}
-              isPlaying={isActuallyPlaying}
-              motion={motion}
-              sidebarOpen={sidebarOpen}
-              onToggleSidebar={toggleSidebar}
+        {renderingStalled && !stallDismissed && !waitingOnModel ? (
+          <div className="mx-auto w-full max-w-6xl px-4 pt-3 md:px-6">
+            <RenderingStallBanner
+              isRetrying={isRetryingStall}
+              onDismiss={() => setStallDismissed(true)}
+              onRetry={() => void handleRetryRender()}
             />
           </div>
-        ) : (
-          /* ── Sidebar open (or mobile): side-by-side ── */
-          <div className="flex gap-6">
-            <div className="min-w-0 flex-1">
+        ) : null}
+
+        {/* Main content area — reader text + sidebar. The extra bottom padding
+          keeps the phone dock from covering the last block. */}
+        <div
+          className={`mx-auto w-full max-w-6xl px-4 py-4 md:px-6 md:py-6 ${
+            isPhoneViewport && settings.showConveyor ? "pb-40" : ""
+          }`}
+        >
+          {isLargeScreen && !sidebarOpen ? (
+            /* ── Sidebar closed: reader centered ── */
+            <div className="mx-auto flex w-full max-w-4xl flex-col">
               <ReaderContent
                 contentRef={contentRef}
                 title={job.title ?? "Untitled job"}
@@ -1198,75 +1285,93 @@ export function ReaderPage() {
                 onToggleSidebar={toggleSidebar}
               />
             </div>
+          ) : (
+            /* ── Sidebar open (or mobile): side-by-side ── */
+            <div className="flex gap-6">
+              <div className="min-w-0 flex-1">
+                <ReaderContent
+                  contentRef={contentRef}
+                  title={job.title ?? "Untitled job"}
+                  status={job.status}
+                  lines={readerLines}
+                  isLargeScreen={isLargeScreen}
+                  isPlaying={isActuallyPlaying}
+                  motion={motion}
+                  sidebarOpen={sidebarOpen}
+                  onToggleSidebar={toggleSidebar}
+                />
+              </div>
 
-            <ReaderSidebar
-              detailChunk={detailSlot}
-              activeChunks={activeChunks}
-              knownChunks={knownChunks}
-              activeVersions={activeVersions}
-              activeChunkIndex={activeProgress.activeChunkIndex}
-              job={job}
-              editingChunkIndex={editingChunkIndex}
-              editText={editText}
-              setEditText={setEditText}
-              reprocessingChunkIndex={reprocessingChunkIndex}
-              reprocessError={reprocessError}
-              onVoiceChange={handleVoiceChange}
-              onVersionChange={handleVersionChange}
-              onReprocess={handleReprocess}
-              onStartEdit={handleStartEdit}
-              onSaveEdit={handleSaveEdit}
-              onCancelEdit={handleCancelEdit}
-              appendedChunksCount={appendedChunksCount}
-              playbackAnchorIndex={playbackAnchorIndex}
-              expectedNextChunkIndex={expectedNextChunkIndex}
-              playIntent={playIntent}
-              playerState={playerState}
-              isActuallyPlaying={isActuallyPlaying}
-              audioDiagnostics={diagnostics}
-              playbackRate={playbackRate}
-              isWaitingForData={isWaitingForData}
-              bufferedUntilSeconds={bufferedUntilSeconds}
-              currentTimeSeconds={currentTimeSeconds}
-              lastPlayerError={lastPlayerError}
-              lastPlaybackSyncError={lastPlaybackSyncError}
-              isJobTerminal={isJobTerminal}
-              lastRefreshAt={lastRefreshAt}
-              lastRefreshReason={lastRefreshReason}
-              isOpen={sidebarOpen}
-              onToggle={toggleSidebar}
-              isOverlay={!isLargeScreen}
-              overlayTogglePositionClassName={
-                // The phone dock owns the bottom strip; lift the floating sidebar
-                // toggle above it so the two controls never overlap.
-                isPhoneViewport && settings.showConveyor ? "bottom-[10rem]" : undefined
-              }
-            />
-          </div>
-        )}
-      </div>
+              <ReaderSidebar
+                detailChunk={detailSlot}
+                activeChunks={activeChunks}
+                knownChunks={knownChunks}
+                activeVersions={activeVersions}
+                activeChunkIndex={activeProgress.activeChunkIndex}
+                job={job}
+                editingChunkIndex={editingChunkIndex}
+                editText={editText}
+                setEditText={setEditText}
+                reprocessingChunkIndex={reprocessingChunkIndex}
+                reprocessError={reprocessError}
+                onVoiceChange={handleVoiceChange}
+                onVersionChange={handleVersionChange}
+                onReprocess={handleReprocess}
+                onStartEdit={handleStartEdit}
+                onSaveEdit={handleSaveEdit}
+                onCancelEdit={handleCancelEdit}
+                appendedChunksCount={appendedChunksCount}
+                playbackAnchorIndex={playbackAnchorIndex}
+                expectedNextChunkIndex={expectedNextChunkIndex}
+                playIntent={playIntent}
+                playerState={playerState}
+                isActuallyPlaying={isActuallyPlaying}
+                audioDiagnostics={diagnostics}
+                playbackRate={playbackRate}
+                isWaitingForData={isWaitingForData}
+                bufferedUntilSeconds={bufferedUntilSeconds}
+                currentTimeSeconds={currentTimeSeconds}
+                lastPlayerError={lastPlayerError}
+                lastPlaybackSyncError={lastPlaybackSyncError}
+                isJobTerminal={isJobTerminal}
+                lastRefreshAt={lastRefreshAt}
+                lastRefreshReason={lastRefreshReason}
+                isOpen={sidebarOpen}
+                onToggle={toggleSidebar}
+                isOverlay={!isLargeScreen}
+                overlayTogglePositionClassName={
+                  // The phone dock owns the bottom strip; lift the floating sidebar
+                  // toggle above it so the two controls never overlap.
+                  isPhoneViewport && settings.showConveyor
+                    ? "bottom-[10rem]"
+                    : undefined
+                }
+              />
+            </div>
+          )}
+        </div>
 
-      {/* Phone bottom dock — transport plus the conveyor, in the thumb zone. */}
-      {isPhoneViewport && settings.showConveyor ? (
-        <ReaderDock
-          isAutoplayBlocked={isAutoplayBlocked}
-          isLoadingAudio={isLoadingAudio}
-          isPlaying={isActuallyPlaying}
-          isWaitingForData={isWaitingForData}
-          maxSeekSeconds={displayRenderedDurationSeconds}
-          motion={motion}
-          onPause={handlePause}
-          onPlay={handlePlay}
-          onSeek={handleSeekToChunkWithScroll}
-          onSkip={handleSkip}
-          playbackRate={playbackRate}
-          playIntent={playIntent}
-          playheadSeconds={displayTimeSeconds}
-          slots={timelineSlots}
-          waveforms={waveforms}
-          windowSizeSetting={settings.conveyorWindowSize}
-        />
-      ) : null}
+        {/* Phone bottom dock — transport plus the conveyor, in the thumb zone. */}
+        {isPhoneViewport && settings.showConveyor ? (
+          <ReaderDock
+            isAutoplayBlocked={isAutoplayBlocked}
+            isLoadingAudio={isLoadingAudio}
+            isPlaying={isActuallyPlaying}
+            isWaitingForData={isWaitingForData}
+            maxSeekSeconds={displayRenderedDurationSeconds}
+            motion={motion}
+            onPause={handlePause}
+            onPlay={handlePlay}
+            onSeek={handleSeekToChunkWithScroll}
+            onSkip={handleSkip}
+            playbackRate={playbackRate}
+            playIntent={playIntent}
+            playheadSeconds={displayTimeSeconds}
+            slots={timelineSlots}
+            waveforms={waveforms}
+            windowSizeSetting={settings.conveyorWindowSize}
+          />
+        ) : null}
       </>
     );
   }

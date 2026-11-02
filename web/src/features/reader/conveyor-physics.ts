@@ -109,7 +109,10 @@ export interface SettlingGesture {
   hasReportedRest: boolean;
 }
 
-export type ConveyorGesture = DraggingGesture | CoastingGesture | SettlingGesture;
+export type ConveyorGesture =
+  | DraggingGesture
+  | CoastingGesture
+  | SettlingGesture;
 
 /** Visual range for the strip and the range a commit may land in. */
 export interface ConveyorBounds {
@@ -131,7 +134,10 @@ export function clampSeconds(seconds: number, maxSeconds: number): number {
 }
 
 /** Convert a pointer speed in px/ms to timeline seconds per second. */
-export function pxPerMsToStripSpeed(velocityPxPerMs: number, pxPerSecond: number): number {
+export function pxPerMsToStripSpeed(
+  velocityPxPerMs: number,
+  pxPerSecond: number,
+): number {
   if (pxPerSecond <= 0) return 0;
   return (velocityPxPerMs / pxPerSecond) * 1000;
 }
@@ -168,7 +174,11 @@ export function isTap(pointerStartX: number, pointerEndX: number): boolean {
 
 /* ── Gesture lifecycle ────────────────────────────────────── */
 
-export function beginDrag(baseSeconds: number, pointerX: number, atMs: number): DraggingGesture {
+export function beginDrag(
+  baseSeconds: number,
+  pointerX: number,
+  atMs: number,
+): DraggingGesture {
   return {
     phase: "dragging",
     baseSeconds,
@@ -189,12 +199,14 @@ export function updateDrag(
   pxPerSecond: number,
   bounds: ConveyorBounds,
 ): DraggingGesture {
-  const travelledSeconds = pxPerSecond > 0 ? (pointerX - gesture.pointerStartX) / pxPerSecond : 0;
+  const travelledSeconds =
+    pxPerSecond > 0 ? (pointerX - gesture.pointerStartX) / pxPerSecond : 0;
   const rawOffset = -travelledSeconds;
   return {
     ...gesture,
     offsetSeconds:
-      clampSeconds(gesture.baseSeconds + rawOffset, bounds.maxVisualSeconds) - gesture.baseSeconds,
+      clampSeconds(gesture.baseSeconds + rawOffset, bounds.maxVisualSeconds) -
+      gesture.baseSeconds,
     samples: [...gesture.samples.slice(-8), { x: pointerX, atMs }],
   };
 }
@@ -227,15 +239,21 @@ export function endDrag(
   options: EndDragOptions = {},
 ): ConveyorGesture {
   const alignmentOffsetSeconds = options.alignmentOffsetSeconds ?? null;
-  const allowsUnrenderedTarget = alignmentOffsetSeconds !== null && options.allowsUnrenderedTarget === true;
+  const allowsUnrenderedTarget =
+    alignmentOffsetSeconds !== null && options.allowsUnrenderedTarget === true;
   const offsetSeconds =
     alignmentOffsetSeconds === null
       ? gesture.offsetSeconds
-      : clampSeconds(gesture.baseSeconds + alignmentOffsetSeconds, bounds.maxVisualSeconds) -
-        gesture.baseSeconds;
-  const targetLimit = allowsUnrenderedTarget ? bounds.maxVisualSeconds : bounds.maxSeekSeconds;
+      : clampSeconds(
+          gesture.baseSeconds + alignmentOffsetSeconds,
+          bounds.maxVisualSeconds,
+        ) - gesture.baseSeconds;
+  const targetLimit = allowsUnrenderedTarget
+    ? bounds.maxVisualSeconds
+    : bounds.maxSeekSeconds;
   const targetOffsetSeconds =
-    clampSeconds(gesture.baseSeconds + offsetSeconds, targetLimit) - gesture.baseSeconds;
+    clampSeconds(gesture.baseSeconds + offsetSeconds, targetLimit) -
+    gesture.baseSeconds;
 
   if (motion === "reduced") {
     // No inertia and no jiggle: land on the target and commit on the next tick.
@@ -250,7 +268,10 @@ export function endDrag(
     };
   }
 
-  const velocityPxPerMs = velocityFromSamples(gesture.samples, atMs - gesture.samples[0].atMs);
+  const velocityPxPerMs = velocityFromSamples(
+    gesture.samples,
+    atMs - gesture.samples[0].atMs,
+  );
   if (alignmentOffsetSeconds === null && isFlick(velocityPxPerMs)) {
     return {
       phase: "coasting",
@@ -283,15 +304,20 @@ export function stepSettleSpring(
   damping = SETTLE_DAMPING_PER_SECOND,
 ): SettleState {
   const displacement = targetOffsetSeconds - state.offsetSeconds;
-  const acceleration = stiffness * displacement - damping * state.speedSecondsPerSecond;
-  const speedSecondsPerSecond = state.speedSecondsPerSecond + acceleration * dtSeconds;
+  const acceleration =
+    stiffness * displacement - damping * state.speedSecondsPerSecond;
+  const speedSecondsPerSecond =
+    state.speedSecondsPerSecond + acceleration * dtSeconds;
   return {
     offsetSeconds: state.offsetSeconds + speedSecondsPerSecond * dtSeconds,
     speedSecondsPerSecond,
   };
 }
 
-export function isSettleAtRest(state: SettleState, targetOffsetSeconds: number): boolean {
+export function isSettleAtRest(
+  state: SettleState,
+  targetOffsetSeconds: number,
+): boolean {
   return (
     Math.abs(targetOffsetSeconds - state.offsetSeconds) < SETTLE_REST_SECONDS &&
     Math.abs(state.speedSecondsPerSecond) < COAST_REST_SECONDS_PER_SECOND
@@ -310,11 +336,13 @@ export function advanceConveyor(
   dtSeconds: number,
   bounds: ConveyorBounds,
 ): { gesture: ConveyorGesture; restSeconds: number | null } {
-  if (gesture.phase === "dragging" || dtSeconds <= 0) return { gesture, restSeconds: null };
+  if (gesture.phase === "dragging" || dtSeconds <= 0)
+    return { gesture, restSeconds: null };
 
   if (gesture.phase === "coasting") {
     const decay = Math.exp(-COAST_DECAY_PER_SECOND * dtSeconds);
-    const travelledSeconds = (gesture.speedSecondsPerSecond * (1 - decay)) / COAST_DECAY_PER_SECOND;
+    const travelledSeconds =
+      (gesture.speedSecondsPerSecond * (1 - decay)) / COAST_DECAY_PER_SECOND;
     let offsetSeconds = gesture.offsetSeconds + travelledSeconds;
     let speedSecondsPerSecond = gesture.speedSecondsPerSecond * decay;
 
@@ -332,7 +360,8 @@ export function advanceConveyor(
     }
 
     const targetOffsetSeconds =
-      clampSeconds(gesture.baseSeconds + offsetSeconds, bounds.maxSeekSeconds) - gesture.baseSeconds;
+      clampSeconds(gesture.baseSeconds + offsetSeconds, bounds.maxSeekSeconds) -
+      gesture.baseSeconds;
 
     if (Math.abs(speedSecondsPerSecond) >= COAST_REST_SECONDS_PER_SECOND) {
       return {
@@ -357,7 +386,11 @@ export function advanceConveyor(
     };
   }
 
-  const next = stepSettleSpring(gesture, gesture.targetOffsetSeconds, dtSeconds);
+  const next = stepSettleSpring(
+    gesture,
+    gesture.targetOffsetSeconds,
+    dtSeconds,
+  );
   const advanced: SettlingGesture = {
     ...gesture,
     offsetSeconds: next.offsetSeconds,
@@ -379,7 +412,9 @@ export function advanceConveyor(
     },
     restSeconds: clampSeconds(
       gesture.baseSeconds + gesture.targetOffsetSeconds,
-      gesture.allowsUnrenderedTarget ? bounds.maxVisualSeconds : bounds.maxSeekSeconds,
+      gesture.allowsUnrenderedTarget
+        ? bounds.maxVisualSeconds
+        : bounds.maxSeekSeconds,
     ),
   };
 }
@@ -418,14 +453,18 @@ export interface SmoothedPlayheadInput {
  * large to be drift is a seek and snaps.
  */
 export function advanceSmoothedPlayhead(input: SmoothedPlayheadInput): number {
-  const { smoothedSeconds, reportedSeconds, rate, dtSeconds, maxSeconds } = input;
+  const { smoothedSeconds, reportedSeconds, rate, dtSeconds, maxSeconds } =
+    input;
   if (Math.abs(reportedSeconds - smoothedSeconds) >= PLAYHEAD_SNAP_SECONDS) {
     return clampSeconds(reportedSeconds, maxSeconds);
   }
   if (dtSeconds <= 0) return clampSeconds(smoothedSeconds, maxSeconds);
   const predicted = smoothedSeconds + rate * dtSeconds;
   const correction = 1 - Math.exp(-dtSeconds / PLAYHEAD_SMOOTHING_SECONDS);
-  return clampSeconds(predicted + (reportedSeconds - predicted) * correction, maxSeconds);
+  return clampSeconds(
+    predicted + (reportedSeconds - predicted) * correction,
+    maxSeconds,
+  );
 }
 
 /** Where the strip currently sits, in timeline seconds. */
@@ -446,7 +485,9 @@ export function isMovingGesture(gesture: ConveyorGesture | null): boolean {
  * one. Taken over every known slot rather than the visible ones so the scale
  * does not change as the strip slides.
  */
-export function averageDurationSeconds(slots: readonly TimelineSlotData[]): number {
+export function averageDurationSeconds(
+  slots: readonly TimelineSlotData[],
+): number {
   if (slots.length === 0) return 4;
   let total = 0;
   for (const slot of slots) total += slot.durationSeconds;
@@ -496,7 +537,11 @@ export function visibleSlotIndexes(
   let high = slots.length;
   while (low < high) {
     const mid = (low + high) >>> 1;
-    if ((cumulativeStartTimes[mid] ?? 0) + slots[mid].durationSeconds <= fromSeconds) low = mid + 1;
+    if (
+      (cumulativeStartTimes[mid] ?? 0) + slots[mid].durationSeconds <=
+      fromSeconds
+    )
+      low = mid + 1;
     else high = mid;
   }
   const first = low;
@@ -531,7 +576,10 @@ export function slotIndexAtSeconds(
  */
 export function isRenderedState(state: TimelineSlotData["state"]): boolean {
   return (
-    state === "played" || state === "playing" || state === "ready" || state === "ready_after_gap"
+    state === "played" ||
+    state === "playing" ||
+    state === "ready" ||
+    state === "ready_after_gap"
   );
 }
 

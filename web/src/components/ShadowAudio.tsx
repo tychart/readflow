@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type RefObject } from "react";
+import { type RefObject, useLayoutEffect, useRef } from "react";
 
 export interface ShadowAudioProps {
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -61,6 +61,11 @@ export function ShadowAudio({ audioRef }: ShadowAudioProps) {
   // engine events are independent of rendering (the previous light-DOM element
   // was hidden the same way).
   return (
-    <div ref={hostRef} aria-hidden="true" className="hidden" data-testid="reader-audio-host" />
+    <div
+      ref={hostRef}
+      aria-hidden="true"
+      className="hidden"
+      data-testid="reader-audio-host"
+    />
   );
 }

@@ -27,10 +27,18 @@ describe("shouldDismissSheet", () => {
 
   test("a slow drag dismisses once it passes the minimum distance", () => {
     expect(
-      shouldDismissSheet({ ...idle, deltaY: SHEET_DISMISS_MIN_PX - 1, sheetHeightPx: 200 }),
+      shouldDismissSheet({
+        ...idle,
+        deltaY: SHEET_DISMISS_MIN_PX - 1,
+        sheetHeightPx: 200,
+      }),
     ).toBe(false);
     expect(
-      shouldDismissSheet({ ...idle, deltaY: SHEET_DISMISS_MIN_PX, sheetHeightPx: 200 }),
+      shouldDismissSheet({
+        ...idle,
+        deltaY: SHEET_DISMISS_MIN_PX,
+        sheetHeightPx: 200,
+      }),
     ).toBe(true);
   });
 
@@ -40,25 +48,45 @@ describe("shouldDismissSheet", () => {
     expect(proportional).toBeGreaterThan(SHEET_DISMISS_MIN_PX);
 
     expect(
-      shouldDismissSheet({ ...idle, deltaY: proportional - 1, sheetHeightPx: tallSheet }),
+      shouldDismissSheet({
+        ...idle,
+        deltaY: proportional - 1,
+        sheetHeightPx: tallSheet,
+      }),
     ).toBe(false);
     expect(
-      shouldDismissSheet({ ...idle, deltaY: proportional, sheetHeightPx: tallSheet }),
+      shouldDismissSheet({
+        ...idle,
+        deltaY: proportional,
+        sheetHeightPx: tallSheet,
+      }),
     ).toBe(true);
   });
 
   test("a short fast flick dismisses once it has actually travelled", () => {
     // 48px is well under the distance threshold, but it was thrown downward.
     expect(
-      shouldDismissSheet({ deltaY: 48, sheetHeightPx: 600, velocityPxPerMs: 1.4 }),
+      shouldDismissSheet({
+        deltaY: 48,
+        sheetHeightPx: 600,
+        velocityPxPerMs: 1.4,
+      }),
     ).toBe(true);
     // A fast twitch with almost no travel must not close the panel...
     expect(
-      shouldDismissSheet({ deltaY: 20, sheetHeightPx: 600, velocityPxPerMs: 1.4 }),
+      shouldDismissSheet({
+        deltaY: 20,
+        sheetHeightPx: 600,
+        velocityPxPerMs: 1.4,
+      }),
     ).toBe(false);
     // ...nor does a slow drag of the same distance.
     expect(
-      shouldDismissSheet({ deltaY: 48, sheetHeightPx: 600, velocityPxPerMs: 0.2 }),
+      shouldDismissSheet({
+        deltaY: 48,
+        sheetHeightPx: 600,
+        velocityPxPerMs: 0.2,
+      }),
     ).toBe(false);
   });
 
@@ -67,7 +95,11 @@ describe("shouldDismissSheet", () => {
       shouldDismissSheet({ deltaY: 0, sheetHeightPx: 400, velocityPxPerMs: 3 }),
     ).toBe(false);
     expect(
-      shouldDismissSheet({ deltaY: -20, sheetHeightPx: 400, velocityPxPerMs: 3 }),
+      shouldDismissSheet({
+        deltaY: -20,
+        sheetHeightPx: 400,
+        velocityPxPerMs: 3,
+      }),
     ).toBe(false);
   });
 });

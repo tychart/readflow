@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
-
+import {
+  buildChunk,
+  buildChunks,
+  buildJobDetail,
+} from "../../test-utils/chunks";
 import type { JobManifest } from "../../types/api";
-import { buildChunk, buildChunks, buildJobDetail } from "../../test-utils/chunks";
 import {
   buildManifestFromPatch,
   buildStreamManifest,
@@ -27,7 +30,9 @@ function buildManifest(chunks = buildChunks(2)): JobManifest {
   };
 }
 
-function versionsFor(chunks: ReturnType<typeof buildChunks>): Map<number, number> {
+function versionsFor(
+  chunks: ReturnType<typeof buildChunks>,
+): Map<number, number> {
   return new Map(chunks.map((chunk) => [chunk.index, chunk.version]));
 }
 
@@ -35,8 +40,14 @@ function versionsFor(chunks: ReturnType<typeof buildChunks>): Map<number, number
 
 describe("mergeJobPatch", () => {
   test("keeps fields a summary patch omits, including the source text", () => {
-    const current = buildJobDetail({ source_text: "the whole book", chunks: buildChunks(2) });
-    const merged = mergeJobPatch(current, { id: "job-1", status: "playing" } as never);
+    const current = buildJobDetail({
+      source_text: "the whole book",
+      chunks: buildChunks(2),
+    });
+    const merged = mergeJobPatch(current, {
+      id: "job-1",
+      status: "playing",
+    } as never);
     expect(merged.source_text).toBe("the whole book");
     expect(merged.chunks).toHaveLength(2);
     expect(merged.status).toBe("playing");
@@ -49,7 +60,9 @@ describe("mergeJobPatch", () => {
       { id: "job-1", status: "playing" } as never,
       buildChunk(1, { duration_seconds: 9 }),
     );
-    expect(merged.chunks.map((chunk) => chunk.duration_seconds)).toEqual([4, 9, 4]);
+    expect(merged.chunks.map((chunk) => chunk.duration_seconds)).toEqual([
+      4, 9, 4,
+    ]);
   });
 
   test("full detail in the patch replaces the chunk list", () => {
@@ -68,29 +81,44 @@ describe("buildManifestFromPatch", () => {
   });
 
   test("carries the previous mime type and init segment over an unrelated patch", () => {
-    const next = buildManifestFromPatch(buildManifest(), { id: "job-1" } as never);
+    const next = buildManifestFromPatch(buildManifest(), {
+      id: "job-1",
+    } as never);
     expect(next?.mime_type).toBe('audio/mp4; codecs="mp4a.40.2"');
     expect(next?.init_segment_url).toBe("/api/jobs/job-1/chunks/init");
   });
 
   test("an explicitly null init segment clears the previous one", () => {
-    const next = buildManifestFromPatch(buildManifest(), { id: "job-1" } as never, undefined, {
-      init_segment_url: null,
-    });
+    const next = buildManifestFromPatch(
+      buildManifest(),
+      { id: "job-1" } as never,
+      undefined,
+      {
+        init_segment_url: null,
+      },
+    );
     expect(next?.init_segment_url).toBeNull();
   });
 
   test("upserts a chunk delta into the manifest chunk list", () => {
-    const next = buildManifestFromPatch(buildManifest(buildChunks(3)), { id: "job-1" } as never, {
-      ...buildChunk(1),
-      segment_url: "/api/jobs/job-1/chunks/1?v=2",
-    });
+    const next = buildManifestFromPatch(
+      buildManifest(buildChunks(3)),
+      { id: "job-1" } as never,
+      {
+        ...buildChunk(1),
+        segment_url: "/api/jobs/job-1/chunks/1?v=2",
+      },
+    );
     expect(next?.chunks).toHaveLength(3);
     expect(next?.chunks[1]?.segment_url).toBe("/api/jobs/job-1/chunks/1?v=2");
   });
 
   test("keeps the audio epoch across a per-chunk patch", () => {
-    const next = buildManifestFromPatch(buildManifest(), { id: "job-1" } as never, buildChunk(0));
+    const next = buildManifestFromPatch(
+      buildManifest(),
+      { id: "job-1" } as never,
+      buildChunk(0),
+    );
     expect(next?.audio_epoch).toBe(0);
   });
 
@@ -106,11 +134,15 @@ describe("buildManifestFromPatch", () => {
 describe("mergeKnownChunks", () => {
   test("the manifest wins over job detail", () => {
     const job = buildJobDetail({ chunks: buildChunks(1) });
-    expect(mergeKnownChunks(job, buildManifest(buildChunks(4)))).toHaveLength(4);
+    expect(mergeKnownChunks(job, buildManifest(buildChunks(4)))).toHaveLength(
+      4,
+    );
   });
 
   test("falls back to job detail without a manifest", () => {
-    expect(mergeKnownChunks(buildJobDetail({ chunks: buildChunks(3) }), null)).toHaveLength(3);
+    expect(
+      mergeKnownChunks(buildJobDetail({ chunks: buildChunks(3) }), null),
+    ).toHaveLength(3);
   });
 
   test("returns nothing without either source", () => {
@@ -122,14 +154,20 @@ describe("mergeKnownChunks", () => {
 
 describe("deriveActiveVersionMap", () => {
   test("active_chunk_version is authoritative", () => {
-    const chunks = [buildChunk(0, { version: 1 }), buildChunk(1, { version: 3 })];
+    const chunks = [
+      buildChunk(0, { version: 1 }),
+      buildChunk(1, { version: 3 }),
+    ];
     const versions = deriveActiveVersionMap(chunks, { 1: 0 });
     expect(versions.get(0)).toBe(1);
     expect(versions.get(1)).toBe(0);
   });
 
   test("indexes missing from the summary fall back to their highest version", () => {
-    const chunks = [buildChunk(0, { version: 1 }), buildChunk(0, { version: 5 })];
+    const chunks = [
+      buildChunk(0, { version: 1 }),
+      buildChunk(0, { version: 5 }),
+    ];
     expect(deriveActiveVersionMap(chunks, {})?.get(0)).toBe(5);
     expect(deriveActiveVersionMap(chunks, undefined).get(0)).toBe(5);
   });
@@ -142,8 +180,17 @@ describe("deriveActiveChunks", () => {
       buildChunk(0, { version: 1 }),
       buildChunk(1, { version: 0 }),
     ];
-    const active = deriveActiveChunks(chunks, new Map([[0, 1], [1, 0]]));
-    expect(active.map((chunk) => [chunk.index, chunk.version])).toEqual([[0, 1], [1, 0]]);
+    const active = deriveActiveChunks(
+      chunks,
+      new Map([
+        [0, 1],
+        [1, 0],
+      ]),
+    );
+    expect(active.map((chunk) => [chunk.index, chunk.version])).toEqual([
+      [0, 1],
+      [1, 0],
+    ]);
   });
 
   test("drops indexes with no active version", () => {
@@ -160,12 +207,18 @@ describe("derivePlaybackModel", () => {
     buildChunk(2),
     buildChunk(3, { status: "queued", segment_url: null, duration_seconds: 0 }),
     buildChunk(4),
-    buildChunk(5, { status: "rendering", segment_url: null, duration_seconds: 0 }),
+    buildChunk(5, {
+      status: "rendering",
+      segment_url: null,
+      duration_seconds: 0,
+    }),
   ];
 
   test("the contiguous run stops at the first chunk that is not written", () => {
     const model = derivePlaybackModel(known, known, versionsFor(known), 0);
-    expect(model.contiguousReadyChunks.map((chunk) => chunk.index)).toEqual([0, 1, 2]);
+    expect(model.contiguousReadyChunks.map((chunk) => chunk.index)).toEqual([
+      0, 1, 2,
+    ]);
     expect(model.expectedNextChunkIndex).toBe(3);
   });
 
@@ -176,39 +229,65 @@ describe("derivePlaybackModel", () => {
   });
 
   test("failed chunks are neither missing-expected nor written-after-gap", () => {
-    const withFailure = [...known.slice(0, 3), buildChunk(3, { status: "failed" }), ...known.slice(4)];
-    const model = derivePlaybackModel(withFailure, withFailure, versionsFor(withFailure), 0);
+    const withFailure = [
+      ...known.slice(0, 3),
+      buildChunk(3, { status: "failed" }),
+      ...known.slice(4),
+    ];
+    const model = derivePlaybackModel(
+      withFailure,
+      withFailure,
+      versionsFor(withFailure),
+      0,
+    );
     expect(model.missingExpectedIndexes.has(3)).toBe(false);
     expect(model.expectedNextChunkIndex).toBe(3);
   });
 
   test("the download range requires contiguous written chunks with segments", () => {
     const model = derivePlaybackModel(known, known, versionsFor(known), 0);
-    expect(model.downloadableChunks.map((chunk) => chunk.index)).toEqual([0, 1, 2]);
+    expect(model.downloadableChunks.map((chunk) => chunk.index)).toEqual([
+      0, 1, 2,
+    ]);
 
-    const noSegment = [buildChunk(0), buildChunk(1, { segment_url: null }), buildChunk(2)];
+    const noSegment = [
+      buildChunk(0),
+      buildChunk(1, { segment_url: null }),
+      buildChunk(2),
+    ];
     expect(
-      derivePlaybackModel(noSegment, noSegment, versionsFor(noSegment), 0).downloadableChunks.map(
-        (chunk) => chunk.index,
-      ),
+      derivePlaybackModel(
+        noSegment,
+        noSegment,
+        versionsFor(noSegment),
+        0,
+      ).downloadableChunks.map((chunk) => chunk.index),
     ).toEqual([0]);
   });
 
   test("the anchor bounds the run and yields the timeline offset", () => {
     const model = derivePlaybackModel(known, known, versionsFor(known), 2);
-    expect(model.anchoredChunks.map((chunk) => chunk.index)).toEqual([2, 3, 4, 5]);
-    expect(model.contiguousReadyChunks.map((chunk) => chunk.index)).toEqual([2]);
+    expect(model.anchoredChunks.map((chunk) => chunk.index)).toEqual([
+      2, 3, 4, 5,
+    ]);
+    expect(model.contiguousReadyChunks.map((chunk) => chunk.index)).toEqual([
+      2,
+    ]);
     expect(model.anchorOffsetSeconds).toBe(8);
   });
 
   test("totals the known timeline duration", () => {
-    expect(derivePlaybackModel(known, known, versionsFor(known), 0).knownDurationSeconds).toBe(
-      4 + 4 + 4 + 0 + 4 + 0,
-    );
+    expect(
+      derivePlaybackModel(known, known, versionsFor(known), 0)
+        .knownDurationSeconds,
+    ).toBe(4 + 4 + 4 + 0 + 4 + 0);
   });
 
   test("only the active version counts as part of the playable run", () => {
-    const stale = [buildChunk(0, { version: 0 }), buildChunk(1, { version: 0 })];
+    const stale = [
+      buildChunk(0, { version: 0 }),
+      buildChunk(1, { version: 0 }),
+    ];
     const model = derivePlaybackModel(stale, stale, new Map([[0, 1]]), 0);
     expect([...model.activeContiguousReadyIndexes]).toEqual([]);
   });
@@ -255,7 +334,10 @@ describe("deriveActiveChunkProgress", () => {
   });
 
   test("a zero-duration chunk is treated as already played", () => {
-    const progress = deriveActiveChunkProgress([buildChunk(0, { duration_seconds: 0 })], 0);
+    const progress = deriveActiveChunkProgress(
+      [buildChunk(0, { duration_seconds: 0 })],
+      0,
+    );
     expect(progress.playedIndexes.has(0)).toBe(true);
     expect(progress.activeChunkIndex).toBeNull();
   });
@@ -314,12 +396,24 @@ describe("deriveTimelineSlots", () => {
     buildChunk(2),
     buildChunk(3, { status: "queued", segment_url: null, duration_seconds: 0 }),
     buildChunk(4),
-    buildChunk(5, { status: "rendering", segment_url: null, duration_seconds: 0 }),
+    buildChunk(5, {
+      status: "rendering",
+      segment_url: null,
+      duration_seconds: 0,
+    }),
   ];
 
   function slotsFor(currentTimeSeconds: number, anchorIndex = 0) {
-    const model = derivePlaybackModel(known, known, versionsFor(known), anchorIndex);
-    const progress = deriveActiveChunkProgress(model.contiguousReadyChunks, currentTimeSeconds);
+    const model = derivePlaybackModel(
+      known,
+      known,
+      versionsFor(known),
+      anchorIndex,
+    );
+    const progress = deriveActiveChunkProgress(
+      model.contiguousReadyChunks,
+      currentTimeSeconds,
+    );
     return deriveTimelineSlots(known, model, progress, anchorIndex);
   }
 
@@ -340,13 +434,18 @@ describe("deriveTimelineSlots", () => {
       buildChunk(1, { status: "failed" }),
       buildChunk(2, { status: "max_retries_exceeded" }),
     ];
-    const model = derivePlaybackModel(failing, failing, versionsFor(failing), 0);
+    const model = derivePlaybackModel(
+      failing,
+      failing,
+      versionsFor(failing),
+      0,
+    );
     const progress = deriveActiveChunkProgress(model.contiguousReadyChunks, 0);
-    expect(deriveTimelineSlots(failing, model, progress, 0).map((slot) => slot.state)).toEqual([
-      "playing",
-      "failed",
-      "failed",
-    ]);
+    expect(
+      deriveTimelineSlots(failing, model, progress, 0).map(
+        (slot) => slot.state,
+      ),
+    ).toEqual(["playing", "failed", "failed"]);
   });
 
   test("written chunks before the anchor stay ready rather than playing", () => {
@@ -357,6 +456,8 @@ describe("deriveTimelineSlots", () => {
     const zero = [buildChunk(0, { duration_seconds: 0 })];
     const model = derivePlaybackModel(zero, zero, versionsFor(zero), 0);
     const progress = deriveActiveChunkProgress(model.contiguousReadyChunks, 0);
-    expect(deriveTimelineSlots(zero, model, progress, 0)[0]?.durationSeconds).toBe(4);
+    expect(
+      deriveTimelineSlots(zero, model, progress, 0)[0]?.durationSeconds,
+    ).toBe(4);
   });
 });

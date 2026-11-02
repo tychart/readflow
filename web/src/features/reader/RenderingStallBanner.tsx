@@ -21,7 +21,9 @@ export function RenderingStallBanner({
       role="status"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span>Rendering seems stalled — no new audio has arrived recently.</span>
+        <span>
+          Rendering seems stalled — no new audio has arrived recently.
+        </span>
         <div className="ml-auto flex items-center gap-2">
           <button
             className="rounded-md border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-3 py-1 font-semibold transition hover:bg-[var(--amber)]/20 disabled:cursor-not-allowed disabled:opacity-50"

@@ -32,13 +32,19 @@ export interface StreamEventPayload extends StreamEventMeta {
  * chunk, while `job_updated` still carries full detail. `current` keeps the
  * fields a patch omits (most importantly `source_text`).
  */
-export function mergeJobPatch(current: JobDetail, patch: StreamJob, chunk?: Chunk): JobDetail {
+export function mergeJobPatch(
+  current: JobDetail,
+  patch: StreamJob,
+  chunk?: Chunk,
+): JobDetail {
   const merged: JobDetail = {
     ...current,
     ...patch,
     chunks: patch.chunks ?? current.chunks,
   };
-  return chunk ? { ...merged, chunks: upsertChunk(merged.chunks, chunk) } : merged;
+  return chunk
+    ? { ...merged, chunks: upsertChunk(merged.chunks, chunk) }
+    : merged;
 }
 
 /** Rebuild the media manifest from a patch, keeping the fields it omits. */
@@ -52,13 +58,13 @@ export function buildManifestFromPatch(
   if (!nextMimeType) return null;
   const nextInitSegmentUrl =
     "init_segment_url" in meta
-      ? meta.init_segment_url ?? null
-      : previousManifest?.init_segment_url ?? null;
+      ? (meta.init_segment_url ?? null)
+      : (previousManifest?.init_segment_url ?? null);
   const nextChunks = patch.chunks
     ? sortChunks(patch.chunks)
     : chunk
       ? upsertChunk(previousManifest?.chunks ?? [], chunk)
-      : previousManifest?.chunks ?? [];
+      : (previousManifest?.chunks ?? []);
   return {
     mime_type: nextMimeType,
     init_segment_url: nextInitSegmentUrl,
@@ -70,7 +76,10 @@ export function buildManifestFromPatch(
 }
 
 /** Chunk list the reader knows about: the manifest wins over job detail. */
-export function mergeKnownChunks(job: JobDetail | null, manifest: JobManifest | null): Chunk[] {
+export function mergeKnownChunks(
+  job: JobDetail | null,
+  manifest: JobManifest | null,
+): Chunk[] {
   if (manifest) return sortChunks(manifest.chunks);
   if (job) return sortChunks(job.chunks);
   return [];
@@ -155,7 +164,9 @@ export function derivePlaybackModel(
   activeVersions: Map<number, number>,
   playbackAnchorIndex: number,
 ): ReaderPlaybackModel {
-  const anchoredChunks = knownChunks.filter((chunk) => chunk.index >= playbackAnchorIndex);
+  const anchoredChunks = knownChunks.filter(
+    (chunk) => chunk.index >= playbackAnchorIndex,
+  );
 
   const contiguousReadyChunks: Chunk[] = [];
   for (const chunk of anchoredChunks) {
@@ -187,7 +198,11 @@ export function derivePlaybackModel(
 
   const downloadableChunks: Chunk[] = [];
   for (const chunk of knownChunks) {
-    if (chunk.index !== downloadableChunks.length || chunk.status !== "written" || !chunk.segment_url) {
+    if (
+      chunk.index !== downloadableChunks.length ||
+      chunk.status !== "written" ||
+      !chunk.segment_url
+    ) {
       break;
     }
     downloadableChunks.push(chunk);
@@ -197,7 +212,8 @@ export function derivePlaybackModel(
   let anchorOffsetSeconds = 0;
   for (const chunk of knownChunks) {
     knownDurationSeconds += chunk.duration_seconds;
-    if (chunk.index < playbackAnchorIndex) anchorOffsetSeconds += chunk.duration_seconds;
+    if (chunk.index < playbackAnchorIndex)
+      anchorOffsetSeconds += chunk.duration_seconds;
   }
 
   return {
@@ -243,7 +259,10 @@ export function buildStreamManifest(
  * chunk before it. Jump-to-chunk seeks use this, and the player converts it to
  * stream coordinates via the anchor offset.
  */
-export function chunkStartSeconds(activeChunks: Chunk[], chunkIndex: number): number {
+export function chunkStartSeconds(
+  activeChunks: Chunk[],
+  chunkIndex: number,
+): number {
   let start = 0;
   for (const chunk of activeChunks) {
     if (chunk.index >= chunkIndex) break;
@@ -304,7 +323,9 @@ export function deriveActiveChunkProgress(
     }
     fillByIndex.set(
       chunk.index,
-      chunk.duration_seconds > 0 ? (remaining / chunk.duration_seconds) * 100 : 0,
+      chunk.duration_seconds > 0
+        ? (remaining / chunk.duration_seconds) * 100
+        : 0,
     );
     activeChunkIndex = chunk.index;
     break;
@@ -323,7 +344,10 @@ export function skipTargetSeconds(
   deltaSeconds: number,
   renderedDurationSeconds: number,
 ): number {
-  return Math.min(Math.max(0, currentSeconds + deltaSeconds), renderedDurationSeconds);
+  return Math.min(
+    Math.max(0, currentSeconds + deltaSeconds),
+    renderedDurationSeconds,
+  );
 }
 
 /* ── Timeline slots ───────────────────────────────────────── */
@@ -339,7 +363,9 @@ export function deriveTimelineSlots(
   activeChunks: Chunk[],
   model: Pick<
     ReaderPlaybackModel,
-    "activeContiguousReadyIndexes" | "writtenAfterGapIndexes" | "missingExpectedIndexes"
+    | "activeContiguousReadyIndexes"
+    | "writtenAfterGapIndexes"
+    | "missingExpectedIndexes"
   >,
   activeProgress: ActiveChunkProgress,
   playbackAnchorIndex: number,
@@ -352,7 +378,10 @@ export function deriveTimelineSlots(
       state = "playing";
     } else if (activeProgress.playedIndexes.has(chunk.index)) {
       state = "played";
-    } else if (chunk.index < playbackAnchorIndex && chunk.status === "written") {
+    } else if (
+      chunk.index < playbackAnchorIndex &&
+      chunk.status === "written"
+    ) {
       state = "ready";
     } else if (model.activeContiguousReadyIndexes.has(chunk.index)) {
       state = "ready";

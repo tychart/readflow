@@ -150,16 +150,21 @@ export function ReaderSidebar({
   overlayTogglePositionClassName,
 }: ReaderSidebarProps) {
   // Store-sourced state
-  const { voices, websocketStatus, lastSocketMessageAt, lastSocketError, isSocketStale } =
-    useAppStore(
-      useShallow((state) => ({
-        voices: state.voices,
-        websocketStatus: state.websocketStatus,
-        lastSocketMessageAt: state.lastSocketMessageAt,
-        lastSocketError: state.lastSocketError,
-        isSocketStale: state.isSocketStale,
-      })),
-    );
+  const {
+    voices,
+    websocketStatus,
+    lastSocketMessageAt,
+    lastSocketError,
+    isSocketStale,
+  } = useAppStore(
+    useShallow((state) => ({
+      voices: state.voices,
+      websocketStatus: state.websocketStatus,
+      lastSocketMessageAt: state.lastSocketMessageAt,
+      lastSocketError: state.lastSocketError,
+      isSocketStale: state.isSocketStale,
+    })),
+  );
 
   // The voice change is confirmed in a dialog, and the checkbox that decides
   // whether already-rendered audio is replaced lives inside that dialog so the
@@ -168,16 +173,22 @@ export function ReaderSidebar({
   const [pendingAction, setPendingAction] = useState<VoiceAction | null>(null);
   const [rerenderWritten, setRerenderWritten] = useState(false);
 
-  const writtenChunkCount = activeChunks.filter((chunk) => chunk.status === "written").length;
+  const writtenChunkCount = activeChunks.filter(
+    (chunk) => chunk.status === "written",
+  ).length;
   const pendingRebuildCount = activeChunks.filter((chunk) =>
     REVOICEABLE_STATUSES.has(chunk.status),
   ).length;
   const isRerenderAll = pendingAction?.kind === "rerender";
   const targetVoiceId =
-    pendingAction?.kind === "change" ? pendingAction.voiceId : (job?.voice_id ?? "");
+    pendingAction?.kind === "change"
+      ? pendingAction.voiceId
+      : (job?.voice_id ?? "");
   const targetVoiceLabel =
-    voices.find((voice) => voice.id === targetVoiceId)?.display_name ?? targetVoiceId;
-  const willRerenderWritten = (isRerenderAll || rerenderWritten) && writtenChunkCount > 0;
+    voices.find((voice) => voice.id === targetVoiceId)?.display_name ??
+    targetVoiceId;
+  const willRerenderWritten =
+    (isRerenderAll || rerenderWritten) && writtenChunkCount > 0;
 
   const openVoiceChange = (voiceId: string) => {
     setRerenderWritten(false);
@@ -207,7 +218,8 @@ export function ReaderSidebar({
     const isEditing = editingChunkIndex === chunk.index;
     const allVersions = knownChunks.filter((c) => c.index === chunk.index);
     const maxVersion = getLatestVersion(knownChunks, chunk.index);
-    const maxRetriesReached = chunk.status === "max_retries_exceeded" || maxVersion >= 3;
+    const maxRetriesReached =
+      chunk.status === "max_retries_exceeded" || maxVersion >= 3;
 
     return (
       <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
@@ -219,7 +231,9 @@ export function ReaderSidebar({
             <select
               className="rounded-md border border-[var(--line)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--ink-primary)]"
               value={activeVersions.get(chunk.index) ?? chunk.version}
-              onChange={(e) => onVersionChange(chunk.index, Number(e.target.value))}
+              onChange={(e) =>
+                onVersionChange(chunk.index, Number(e.target.value))
+              }
             >
               {allVersions.map((v) => (
                 <option key={v.version} value={v.version}>
@@ -242,12 +256,14 @@ export function ReaderSidebar({
               />
               <div className="flex gap-2">
                 <button
+                  type="button"
                   className="rounded-md bg-[var(--amber)] px-3 py-1.5 text-xs font-semibold text-white"
                   onClick={onSaveEdit}
                 >
                   Save &amp; Reprocess
                 </button>
                 <button
+                  type="button"
                   className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs font-semibold text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
                   onClick={onCancelEdit}
                 >
@@ -261,6 +277,7 @@ export function ReaderSidebar({
                 {chunkText || "(empty text)"}
               </p>
               <button
+                type="button"
                 className="mt-1 text-xs text-[var(--ink-secondary)] hover:text-[var(--amber)]"
                 onClick={() => onStartEdit(chunk)}
               >
@@ -276,7 +293,8 @@ export function ReaderSidebar({
             className={`rounded-md px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
               chunk.status === "written"
                 ? "border border-[var(--emerald)]/20 bg-[var(--emerald)]/10 text-[var(--emerald)]"
-                : chunk.status === "failed" || chunk.status === "max_retries_exceeded"
+                : chunk.status === "failed" ||
+                    chunk.status === "max_retries_exceeded"
                   ? "border border-[var(--rose)]/20 bg-[var(--rose)]/10 text-[var(--rose)]"
                   : "border border-[var(--line)] bg-white/5 text-[var(--ink-secondary)]"
             }`}
@@ -288,18 +306,24 @@ export function ReaderSidebar({
               {chunk.duration_seconds.toFixed(1)}s
             </span>
           ) : null}
-          <span className="text-xs text-[var(--ink-secondary)]">V{chunk.version}</span>
+          <span className="text-xs text-[var(--ink-secondary)]">
+            V{chunk.version}
+          </span>
         </div>
 
         {/* Reprocess button */}
-        {!maxRetriesReached && (chunk.status === "written" || chunk.status === "failed") ? (
+        {!maxRetriesReached &&
+        (chunk.status === "written" || chunk.status === "failed") ? (
           <button
+            type="button"
             className={`w-full rounded-md px-3 py-2 text-xs font-semibold transition ${
               reprocessingChunkIndex === chunk.index
                 ? "bg-[var(--surface-raised)] text-[var(--ink-secondary)]"
                 : "bg-[var(--amber-soft)] text-[var(--amber)] hover:brightness-110"
             }`}
-            onClick={() => (isEditing ? onSaveEdit() : void onReprocess(chunk.index))}
+            onClick={() =>
+              isEditing ? onSaveEdit() : void onReprocess(chunk.index)
+            }
             disabled={reprocessingChunkIndex === chunk.index}
           >
             {reprocessingChunkIndex === chunk.index
@@ -352,8 +376,9 @@ export function ReaderSidebar({
           ))}
         </select>
         <p className="mt-2 text-[11px] leading-snug text-[var(--ink-secondary)]">
-          Pending chunks are rebuilt with the new voice. Already-rendered audio keeps the voice it
-          was made with unless you replace it when confirming.
+          Pending chunks are rebuilt with the new voice. Already-rendered audio
+          keeps the voice it was made with unless you replace it when
+          confirming.
         </p>
         <button
           className="mt-3 w-full rounded-md border border-[var(--line)] px-3 py-2 text-xs font-semibold text-[var(--ink-secondary)] transition hover:text-[var(--ink-primary)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -516,7 +541,9 @@ export function ReaderSidebar({
         </summary>
         <div className="mt-3 space-y-1">
           {activeChunks.map((chunk) => {
-            const allVersions = knownChunks.filter((c) => c.index === chunk.index);
+            const allVersions = knownChunks.filter(
+              (c) => c.index === chunk.index,
+            );
             return (
               <div
                 className={`flex items-center justify-between rounded-md px-3 py-2 text-xs ${
@@ -551,6 +578,7 @@ export function ReaderSidebar({
                 <div className="flex items-center gap-1">
                   {allVersions.map((v) => (
                     <button
+                      type="button"
                       key={v.version}
                       className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
                         v.version === chunk.version
@@ -581,7 +609,9 @@ export function ReaderSidebar({
         <button
           aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
           className={`fixed ${overlayTogglePositionClassName ?? "bottom-6"} right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--amber)] text-white shadow-lg shadow-[var(--amber-soft)] transition-all hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--amber)] ${
-            isOpen ? "scale-90 opacity-0 pointer-events-none" : "scale-100 opacity-100"
+            isOpen
+              ? "scale-90 opacity-0 pointer-events-none"
+              : "scale-100 opacity-100"
           }`}
           onClick={onToggle}
           type="button"
@@ -665,7 +695,7 @@ export function ReaderSidebar({
         className="overflow-y-auto"
         style={{
           position: "sticky",
-          top: "176px", /* 56px header + ~120px playbar (expanded) */
+          top: "176px" /* 56px header + ~120px playbar (expanded) */,
           maxHeight: "calc(100vh - 176px)",
         }}
       >

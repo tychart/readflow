@@ -104,7 +104,8 @@ export function useSheetDismissGesture({
       // The *sample-to-sample* speed is what a flick is: by the time touchend
       // arrives the finger has not moved since the last touchmove.
       drag.velocityPxPerMs =
-        (touch.clientY - drag.lastY) / Math.max(1, event.timeStamp - drag.lastAt);
+        (touch.clientY - drag.lastY) /
+        Math.max(1, event.timeStamp - drag.lastAt);
       drag.lastY = touch.clientY;
       drag.lastAt = event.timeStamp;
       setOffsetPx(sheetDragOffset(deltaY));

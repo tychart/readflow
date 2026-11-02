@@ -8,10 +8,14 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     expect(slider).toHaveValue("1");
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("1");
   });
 
@@ -19,11 +23,15 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     fireEvent.change(slider, { target: { value: "1.5" } });
 
     expect(onChange).toHaveBeenCalledWith(1.5);
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("1.5");
   });
 
@@ -31,7 +39,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "2.5" } });
     fireEvent.blur(input);
 
@@ -42,7 +52,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "4.0" } });
     fireEvent.blur(input);
 
@@ -53,7 +65,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.5} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "abc" } });
     fireEvent.blur(input);
 
@@ -65,7 +79,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "-2" } });
     fireEvent.blur(input);
 
@@ -77,7 +93,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "0" } });
     fireEvent.blur(input);
 
@@ -89,7 +107,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "0.75" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -101,21 +121,29 @@ describe("PlaybackSpeedControl", () => {
     render(<PlaybackSpeedControl value={4.0} onChange={onChange} />);
 
     // Slider should show 3.0 (max) even though actual value is 4.0
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     expect(slider).toHaveValue("3");
 
     // Input should show the real value
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("4");
   });
 
   test("updates when external value changes", () => {
     const onChange = vi.fn();
-    const { rerender } = render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
+    const { rerender } = render(
+      <PlaybackSpeedControl value={1.0} onChange={onChange} />,
+    );
 
     rerender(<PlaybackSpeedControl value={2.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("2");
   });
 
@@ -123,10 +151,14 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={0.1} onChange={onChange} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     expect(slider).toHaveValue("0.5");
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("0.1");
   });
 
@@ -134,7 +166,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "10.0" } });
     fireEvent.blur(input);
 
@@ -147,7 +181,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "  2.0" } });
     fireEvent.blur(input);
 
@@ -158,7 +194,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.5} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "not-a-number" } });
     fireEvent.blur(input);
 
@@ -186,9 +224,17 @@ describe("PlaybackSpeedControl", () => {
   });
 
   test("only the active speed is pressed, and a non-preset value presses nothing", () => {
-    const { unmount } = render(<PlaybackSpeedControl value={1.75} onChange={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "1.75×" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "1.5×" })).toHaveAttribute("aria-pressed", "false");
+    const { unmount } = render(
+      <PlaybackSpeedControl value={1.75} onChange={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: "1.75×" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "1.5×" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     unmount();
 
     render(<PlaybackSpeedControl value={1.1} onChange={vi.fn()} />);
@@ -200,20 +246,28 @@ describe("PlaybackSpeedControl", () => {
   test("slider shows correct position at min boundary (0.5)", () => {
     render(<PlaybackSpeedControl value={0.5} onChange={vi.fn()} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     expect(slider).toHaveValue("0.5");
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("0.5");
   });
 
   test("slider shows correct position at max boundary (3.0)", () => {
     render(<PlaybackSpeedControl value={3.0} onChange={vi.fn()} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     expect(slider).toHaveValue("3");
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("3");
   });
 
@@ -221,7 +275,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "-1" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -233,7 +289,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={2.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "" } });
     fireEvent.blur(input);
 
@@ -245,7 +303,9 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={1.0} onChange={onChange} />);
 
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     fireEvent.change(input, { target: { value: "Infinity" } });
     fireEvent.blur(input);
 
@@ -257,18 +317,24 @@ describe("PlaybackSpeedControl", () => {
     const onChange = vi.fn();
     render(<PlaybackSpeedControl value={0.5} onChange={onChange} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     fireEvent.change(slider, { target: { value: "1.05" } });
 
     expect(onChange).toHaveBeenCalledWith(1.05);
-    const input = screen.getByRole("textbox", { name: /playback speed value/i });
+    const input = screen.getByRole("textbox", {
+      name: /playback speed value/i,
+    });
     expect(input).toHaveValue("1.05");
   });
 
   test("slider gradient fill reflects current value", () => {
     render(<PlaybackSpeedControl value={1.0} onChange={vi.fn()} />);
 
-    const slider = screen.getByRole("slider", { name: /playback speed slider/i });
+    const slider = screen.getByRole("slider", {
+      name: /playback speed slider/i,
+    });
     // At value 1.0 (midpoint between 0.5 and 3.0), fill should be 20%
     const expectedFill = ((1.0 - 0.5) / (3.0 - 0.5)) * 100;
     expect(slider.getAttribute("style")).toContain(`${expectedFill}%`);

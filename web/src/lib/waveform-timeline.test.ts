@@ -135,33 +135,57 @@ describe("slot state helpers", () => {
     const slot = { state: "played" as const, durationSeconds: 4 };
     expect(isSlotDimmed(slot, 0, 3)).toBe(false);
     expect(isSlotDimmed(slot, 0, 5)).toBe(true);
-    expect(isSlotDimmed({ state: "ready", durationSeconds: 4 }, 0, 5)).toBe(false);
+    expect(isSlotDimmed({ state: "ready", durationSeconds: 4 }, 0, 5)).toBe(
+      false,
+    );
   });
 });
 
 describe("waveform sources", () => {
   test("pools analyzed peaks to the requested bar count", () => {
     const analyzed = new Float32Array([0.1, 0.5, 0.2, 0.8]);
-    const pooled = Array.from(waveformForSlot(analyzed, { chunkIndex: 0, state: "ready" }, 2));
+    const pooled = Array.from(
+      waveformForSlot(analyzed, { chunkIndex: 0, state: "ready" }, 2),
+    );
     expect(pooled).toHaveLength(2);
     expect(pooled[0]).toBeCloseTo(0.5, 5);
     expect(pooled[1]).toBeCloseTo(0.8, 5);
   });
 
   test("uses a broken-signal pattern for missing and failed chunks", () => {
-    const missing = waveformForSlot(undefined, { chunkIndex: 1, state: "missing_expected" }, 64);
-    expect(Array.from(missing)).toEqual(Array.from(generateBrokenWaveform(1, 64)));
-    const failed = waveformForSlot(undefined, { chunkIndex: 1, state: "failed" }, 8);
-    expect(Array.from(failed)).toEqual(Array.from(generateBrokenWaveform(1, 8)));
+    const missing = waveformForSlot(
+      undefined,
+      { chunkIndex: 1, state: "missing_expected" },
+      64,
+    );
+    expect(Array.from(missing)).toEqual(
+      Array.from(generateBrokenWaveform(1, 64)),
+    );
+    const failed = waveformForSlot(
+      undefined,
+      { chunkIndex: 1, state: "failed" },
+      8,
+    );
+    expect(Array.from(failed)).toEqual(
+      Array.from(generateBrokenWaveform(1, 8)),
+    );
   });
 
   test("uses a dim deterministic placeholder for un-analyzed ready chunks", () => {
-    const placeholder = waveformForSlot(undefined, { chunkIndex: 2, state: "ready" }, 16);
-    expect(Array.from(placeholder)).toEqual(Array.from(generatePlaceholderWaveform(2, 16)));
-    // Deterministic: the same chunk always renders the same shape.
-    expect(Array.from(waveformForSlot(undefined, { chunkIndex: 2, state: "ready" }, 16))).toEqual(
-      Array.from(placeholder),
+    const placeholder = waveformForSlot(
+      undefined,
+      { chunkIndex: 2, state: "ready" },
+      16,
     );
+    expect(Array.from(placeholder)).toEqual(
+      Array.from(generatePlaceholderWaveform(2, 16)),
+    );
+    // Deterministic: the same chunk always renders the same shape.
+    expect(
+      Array.from(
+        waveformForSlot(undefined, { chunkIndex: 2, state: "ready" }, 16),
+      ),
+    ).toEqual(Array.from(placeholder));
   });
 });
 

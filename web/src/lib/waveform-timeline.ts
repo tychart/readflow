@@ -15,7 +15,9 @@ import { maxPool } from "./waveform";
 type DurationBearing = Pick<TimelineSlotData, "durationSeconds">;
 
 /** Cumulative start time of every slot, in job-timeline coordinates. */
-export function buildCumulativeStartTimes(slots: readonly DurationBearing[]): number[] {
+export function buildCumulativeStartTimes(
+  slots: readonly DurationBearing[],
+): number[] {
   const starts: number[] = [];
   let running = 0;
   for (const slot of slots) {
@@ -47,7 +49,10 @@ export function slotIndexAtSeconds(
 }
 
 /** Offset from the left edge of `bounds` as a 0..1 ratio, clamped to the edges. */
-export function pointerRatio(clientX: number, bounds: { left: number; width: number }): number {
+export function pointerRatio(
+  clientX: number,
+  bounds: { left: number; width: number },
+): number {
   if (bounds.width <= 0) return 0;
   return Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width));
 }
@@ -75,7 +80,11 @@ export function barStepPx(barWidthPx: number, barGapPx: number): number {
 }
 
 /** Number of bars that fit in a slot of `widthPx`, never fewer than one. */
-export function barCountForWidth(widthPx: number, barStep: number, slotPaddingPx: number): number {
+export function barCountForWidth(
+  widthPx: number,
+  barStep: number,
+  slotPaddingPx: number,
+): number {
   return Math.max(1, Math.floor((widthPx - slotPaddingPx) / barStep));
 }
 
@@ -128,7 +137,8 @@ export function playheadForSlot(
 ): number {
   if (playheadSeconds <= slotStartSeconds) return slotStartSeconds;
   const slotEndSeconds = slotStartSeconds + slotDurationSeconds;
-  if (playheadSeconds >= slotEndSeconds) return slotEndSeconds + SLOT_EDGE_EPSILON_SECONDS;
+  if (playheadSeconds >= slotEndSeconds)
+    return slotEndSeconds + SLOT_EDGE_EPSILON_SECONDS;
   return playheadSeconds;
 }
 
@@ -146,13 +156,19 @@ export function isSlotDimmed(
   slotStartSeconds: number,
   playheadSeconds: number,
 ): boolean {
-  return slot.state === "played" && playheadSeconds > slotStartSeconds + slot.durationSeconds;
+  return (
+    slot.state === "played" &&
+    playheadSeconds > slotStartSeconds + slot.durationSeconds
+  );
 }
 
 /* ── Waveform sources ─────────────────────────────────────── */
 
 /** Deterministic dim placeholder for chunks whose peaks are not analyzed yet. */
-export function generatePlaceholderWaveform(chunkIndex: number, length: number): Float32Array {
+export function generatePlaceholderWaveform(
+  chunkIndex: number,
+  length: number,
+): Float32Array {
   const data = new Float32Array(length);
   for (let i = 0; i < length; i++) {
     // Deterministic pseudo-random from chunkIndex + bar position
@@ -166,7 +182,10 @@ export function generatePlaceholderWaveform(chunkIndex: number, length: number):
 }
 
 /** Broken-signal pattern for chunks that are missing or failed. */
-export function generateBrokenWaveform(chunkIndex: number, length: number): Float32Array {
+export function generateBrokenWaveform(
+  chunkIndex: number,
+  length: number,
+): Float32Array {
   const data = new Float32Array(length);
   for (let i = 0; i < length; i++) {
     // Mostly flat with sharp random spikes — looks like a broken signal
@@ -188,6 +207,7 @@ export function waveformForSlot(
   barCount: number,
 ): Float32Array {
   if (analyzed) return maxPool(analyzed, barCount);
-  if (isNonFillState(slot.state)) return generateBrokenWaveform(slot.chunkIndex, barCount);
+  if (isNonFillState(slot.state))
+    return generateBrokenWaveform(slot.chunkIndex, barCount);
   return generatePlaceholderWaveform(slot.chunkIndex, barCount);
 }

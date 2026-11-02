@@ -15,10 +15,15 @@ export const FINE_SKIP_SECONDS = 5;
 /** Coarse jump on the vertical arrows. */
 export const COARSE_SKIP_SECONDS = 30;
 
-export type PlaybackShortcut = { kind: "toggle" } | { kind: "skip"; deltaSeconds: number };
+export type PlaybackShortcut =
+  | { kind: "toggle" }
+  | { kind: "skip"; deltaSeconds: number };
 
 /** Rows for the shortcuts guide in the reader settings panel. */
-export const PLAYBACK_SHORTCUT_GUIDE: ReadonlyArray<{ keys: string; action: string }> = [
+export const PLAYBACK_SHORTCUT_GUIDE: ReadonlyArray<{
+  keys: string;
+  action: string;
+}> = [
   { keys: "Space or K", action: "Play or pause" },
   { keys: "← / →", action: `Back or forward ${SKIP_STEP_SECONDS}s` },
   { keys: "Shift + ← / →", action: `Back or forward ${FINE_SKIP_SECONDS}s` },
@@ -39,15 +44,25 @@ export interface PlaybackShortcutKeyEvent {
  * entry, form widgets, and anything inside an open dialog/popover layer (the
  * settings panel owns the keyboard while it is up).
  */
-export function shouldIgnorePlaybackShortcut(target: EventTarget | null): boolean {
+export function shouldIgnorePlaybackShortcut(
+  target: EventTarget | null,
+): boolean {
   const element = target as HTMLElement | null;
   if (!element || typeof element.tagName !== "string") return false;
   if (element.isContentEditable) return true;
   const tag = element.tagName.toUpperCase();
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "OPTION") {
+  if (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    tag === "OPTION"
+  ) {
     return true;
   }
-  return typeof element.closest === "function" && element.closest('[role="dialog"]') !== null;
+  return (
+    typeof element.closest === "function" &&
+    element.closest('[role="dialog"]') !== null
+  );
 }
 
 /**
@@ -56,7 +71,9 @@ export function shouldIgnorePlaybackShortcut(target: EventTarget | null): boolea
  *
  * Modified keys are left alone so browser/OS shortcuts still work.
  */
-export function resolvePlaybackShortcut(event: PlaybackShortcutKeyEvent): PlaybackShortcut | null {
+export function resolvePlaybackShortcut(
+  event: PlaybackShortcutKeyEvent,
+): PlaybackShortcut | null {
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
 
   switch (event.key) {
@@ -66,9 +83,15 @@ export function resolvePlaybackShortcut(event: PlaybackShortcutKeyEvent): Playba
     case "K":
       return { kind: "toggle" };
     case "ArrowLeft":
-      return { kind: "skip", deltaSeconds: -(event.shiftKey ? FINE_SKIP_SECONDS : SKIP_STEP_SECONDS) };
+      return {
+        kind: "skip",
+        deltaSeconds: -(event.shiftKey ? FINE_SKIP_SECONDS : SKIP_STEP_SECONDS),
+      };
     case "ArrowRight":
-      return { kind: "skip", deltaSeconds: event.shiftKey ? FINE_SKIP_SECONDS : SKIP_STEP_SECONDS };
+      return {
+        kind: "skip",
+        deltaSeconds: event.shiftKey ? FINE_SKIP_SECONDS : SKIP_STEP_SECONDS,
+      };
     case "ArrowUp":
       return { kind: "skip", deltaSeconds: COARSE_SKIP_SECONDS };
     case "ArrowDown":

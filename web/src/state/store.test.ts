@@ -1,7 +1,10 @@
-import { describe, expect, it, beforeEach } from "vitest";
-
+import { beforeEach, describe, expect, it } from "vitest";
+import type {
+  AdminConfig,
+  AdminMemoryStats,
+  AdminState,
+} from "../types/events";
 import { useAppStore } from "./store";
-import type { AdminConfig, AdminState, AdminMemoryStats } from "../types/events";
 
 function setAdminState(memory: AdminMemoryStats | null) {
   useAppStore.setState({
@@ -181,10 +184,16 @@ describe("applyEvent — memory_stats", () => {
 
     useAppStore.getState().applyEvent({
       type: "scheduler_state",
-      payload: { queue_depth: 3, batch_candidates: [8, 7], active_batch: activeBatch },
+      payload: {
+        queue_depth: 3,
+        batch_candidates: [8, 7],
+        active_batch: activeBatch,
+      },
     });
 
-    expect(useAppStore.getState().adminState?.scheduler.active_batch).toEqual(activeBatch);
+    expect(useAppStore.getState().adminState?.scheduler.active_batch).toEqual(
+      activeBatch,
+    );
   });
 
   it("tracks residency from a scheduler_state event without admin state", () => {

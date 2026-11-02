@@ -23,7 +23,10 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
-      - run: bun run lint
+      # `biome ci` = format + lint + import organization, read-only.
+      - run: bun run ci
+      # Typechecks the production build, the vite/vitest/playwright configs + e2e
+      # specs, and the unit tests (`tsconfig.app.json`).
       - run: bun run typecheck
       - run: bun run test:coverage
       - uses: actions/upload-artifact@v4

@@ -1,9 +1,8 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
-import { App } from "./App";
 import { liveClient } from "../lib/live-client";
 import { useAppStore } from "../state/store";
+import { App } from "./App";
 
 class MockWebSocket extends EventTarget {
   static CONNECTING = 0;
@@ -37,7 +36,9 @@ class MockWebSocket extends EventTarget {
   }
 
   emit(payload: object) {
-    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) }));
+    this.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify(payload) }),
+    );
   }
 
   fail() {
@@ -68,7 +69,9 @@ function navbarLockup(): HTMLElement {
  * property `useScrollProgressVar` writes (the geometry itself is a CSS calc).
  */
 function navbarProgress(): string {
-  return screen.getByTestId("navbar").style.getPropertyValue("--navbar-progress");
+  return screen
+    .getByTestId("navbar")
+    .style.getPropertyValue("--navbar-progress");
 }
 
 function seedStore() {
@@ -80,8 +83,8 @@ function seedStore() {
         device: "auto",
         idle_unload_seconds: 300,
         max_prebuffer_seconds: 300,
-    render_ahead_seconds: 0,
-    active_listener_timeout_seconds: 60,
+        render_ahead_seconds: 0,
+        active_listener_timeout_seconds: 60,
         target_buffer_seconds: 60,
         plan_ahead_chunks: 16,
         batch_candidates_small_model: [8, 7, 6, 5],
@@ -106,6 +109,7 @@ function seedStore() {
         recent_batches: [],
         recent_events: [],
       },
+      memory: null,
     },
     websocketStatus: "idle",
     lastSocketMessageAt: null,
@@ -136,7 +140,7 @@ beforeEach(() => {
       dispatchEvent: vi.fn(),
     })),
   });
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs")) {
       return {
@@ -168,7 +172,7 @@ beforeEach(() => {
         telemetry: useAppStore.getState().adminState?.telemetry,
       }),
     };
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 });
 
 afterEach(() => {
@@ -207,15 +211,18 @@ test("socket reconnects and surfaces reconnecting state", async () => {
   await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), {
     timeout: 2_500,
   });
-  await waitFor(() => expect(screen.getByText(/just now/i)).toBeInTheDocument(), {
-    timeout: 2_500,
-  });
+  await waitFor(
+    () => expect(screen.getByText(/just now/i)).toBeInTheDocument(),
+    {
+      timeout: 2_500,
+    },
+  );
 });
 
 test("shows idle rather than connecting when nothing needs the live socket", async () => {
   // No live jobs → the jobs page never starts the client, so no connection is
   // attempted and the badge must not claim one is in flight.
-  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/api/jobs")) {
       return { ok: true, json: async () => [] };
@@ -306,7 +313,9 @@ test("navbar shrinks smoothly with scroll and collapses to icon + wordmark", asy
   await waitFor(() => expect(navbarProgress()).toBe("1.000"));
   // Exactly one accessible home link remains (the compact brand row); the lockup
   // is decorative, so it never competes for the name or for clicks.
-  expect(screen.getByRole("link", { name: "ReadFlow home" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("link", { name: "ReadFlow home" }),
+  ).toBeInTheDocument();
   expect(screen.getByText("ReadFlow")).toBeInTheDocument();
 });
 

@@ -1,8 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, vi } from "vitest";
-
-import { QueueInspector } from "./QueueInspector";
 import { useAppStore } from "../../state/store";
 import type {
   AdminQueue,
@@ -12,6 +10,7 @@ import type {
   SchedulerState,
   Voice,
 } from "../../types/api";
+import { QueueInspector } from "./QueueInspector";
 
 /* ── Fixtures ─────────────────────────────────────────────── */
 
@@ -55,21 +54,19 @@ function buildChunk(overrides: Partial<QueueChunk> = {}): QueueChunk {
 }
 
 function buildGroup(overrides: Partial<QueueJobGroup> = {}): QueueJobGroup {
-  const chunks =
-    overrides.chunks ??
-    [
-      buildChunk({
-        index: 0,
-        status: "written",
-        is_pending: false,
-        rank: 0,
-        text: "An already written chunk.",
-        duration_seconds: 12.4,
-        versions: [{ version: 0, status: "written", deprecated: false }],
-      }),
-      buildChunk(),
-      buildChunk({ index: 4, rank: 2, text: "Second pending chunk." }),
-    ];
+  const chunks = overrides.chunks ?? [
+    buildChunk({
+      index: 0,
+      status: "written",
+      is_pending: false,
+      rank: 0,
+      text: "An already written chunk.",
+      duration_seconds: 12.4,
+      versions: [{ version: 0, status: "written", deprecated: false }],
+    }),
+    buildChunk(),
+    buildChunk({ index: 4, rank: 2, text: "Second pending chunk." }),
+  ];
   return {
     job_id: "job-1",
     job_title: "Chapter One",
@@ -130,7 +127,10 @@ const BASE_SCHEDULER: SchedulerState = {
 function setStore({
   scheduler = BASE_SCHEDULER,
   voices = [],
-}: { scheduler?: SchedulerState; voices?: Voice[] } = {}) {
+}: {
+  scheduler?: SchedulerState;
+  voices?: Voice[];
+} = {}) {
   useAppStore.setState({
     adminState: {
       config: BASE_CONFIG,
@@ -156,29 +156,31 @@ function mockFetch(
   overrides: Record<string, () => Response> = {},
 ): FetchCall[] {
   const calls: FetchCall[] = [];
-  global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, body: init?.body });
-    for (const [suffix, make] of Object.entries(overrides)) {
-      if (url.endsWith(suffix)) {
-        return make();
+  globalThis.fetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, body: init?.body });
+      for (const [suffix, make] of Object.entries(overrides)) {
+        if (url.endsWith(suffix)) {
+          return make();
+        }
       }
-    }
-    if (url.endsWith("/api/admin/queue")) {
-      return jsonResponse(queue);
-    }
-    return jsonResponse({});
-  }) as unknown as typeof fetch;
+      if (url.endsWith("/api/admin/queue")) {
+        return jsonResponse(queue);
+      }
+      return jsonResponse({});
+    },
+  ) as unknown as typeof fetch;
   return calls;
 }
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   // Unmount first so the store reset below cannot update a live component
   // outside act and leak a warning into the next test.
   cleanup();
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
   useAppStore.setState({ adminState: null, voices: [] });
 });
@@ -199,7 +201,7 @@ function queueCalls(calls: FetchCall[]): FetchCall[] {
 
 test("shows a loading state before the first fetch resolves", async () => {
   let resolveFetch: ((value: Response) => void) | undefined;
-  global.fetch = vi.fn(
+  globalThis.fetch = vi.fn(
     () =>
       new Promise<Response>((resolve) => {
         resolveFetch = resolve;
@@ -244,7 +246,9 @@ test("renders the full chunk lifecycle for a job", async () => {
   expect(screen.getByText(/Second pending chunk/i)).toBeInTheDocument();
   expect(screen.getAllByText("Urgent")).toHaveLength(2);
   // Unplanned remainder footer.
-  expect(screen.getByText(/more characters not yet planned/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/more characters not yet planned/i),
+  ).toBeInTheDocument();
 });
 
 test("collapses and expands a job group", async () => {
@@ -259,7 +263,9 @@ test("collapses and expands a job group", async () => {
 
   await user.click(header);
   expect(header).toHaveAttribute("aria-expanded", "false");
-  expect(screen.queryByText(/The first chunk of text/i)).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/The first chunk of text/i),
+  ).not.toBeInTheDocument();
 
   await user.click(header);
   expect(screen.getByText(/The first chunk of text/i)).toBeInTheDocument();
@@ -282,7 +288,9 @@ test("shows the rendering batch while a batch is in flight", async () => {
   await renderInspector();
 
   expect(screen.getByText(/Rendering now/i)).toBeInTheDocument();
-  expect(screen.getByText(/2 chunks · voice suzy · English/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/2 chunks · voice suzy · English/),
+  ).toBeInTheDocument();
   expect(screen.getByText(/elapsed/i)).toBeInTheDocument();
 });
 
@@ -303,7 +311,9 @@ test("shows the predicted next batch when nothing is rendering", async () => {
   await renderInspector();
 
   expect(screen.getByText(/Up next/i)).toBeInTheDocument();
-  expect(screen.getByText(/3 chunks · voice suzy · English/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/3 chunks · voice suzy · English/),
+  ).toBeInTheDocument();
   expect(screen.queryByText(/Rendering now/i)).not.toBeInTheDocument();
 });
 
@@ -314,12 +324,18 @@ test("clicking a pending chunk reveals its text, priority, and metadata", async 
 
   await renderInspector();
 
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
 
-  expect(screen.getByText(/Active listener with 12.5s buffered/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Active listener with 12.5s buffered/i),
+  ).toBeInTheDocument();
   expect(screen.getByText(/buffer 12.5s \/ target 45s/)).toBeInTheDocument();
   expect(screen.getByText(/Qwen3-TTS-12Hz-0.6B-Base/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Pause job/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /Pause job/i }),
+  ).toBeInTheDocument();
 });
 
 test("clicking a written chunk shows its audio duration instead of priority", async () => {
@@ -329,11 +345,15 @@ test("clicking a written chunk shows its audio duration instead of priority", as
 
   await renderInspector();
 
-  await user.click(screen.getByRole("button", { name: /An already written chunk/i }));
+  await user.click(
+    screen.getByRole("button", { name: /An already written chunk/i }),
+  );
 
   expect(screen.getByText(/Rendered audio · 12.4s/)).toBeInTheDocument();
   expect(screen.getByText(/Audio duration/i)).toBeInTheDocument();
-  expect(screen.queryByText(/Active listener with 12.5s buffered/i)).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/Active listener with 12.5s buffered/i),
+  ).not.toBeInTheDocument();
 });
 
 test("hides the detail sidebar until a chunk is selected", async () => {
@@ -342,8 +362,12 @@ test("hides the detail sidebar until a chunk is selected", async () => {
 
   await renderInspector();
 
-  expect(screen.queryByRole("complementary", { name: "Chunk details" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Close chunk details" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("complementary", { name: "Chunk details" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Close chunk details" }),
+  ).not.toBeInTheDocument();
 });
 
 test("the close button dismisses the detail sidebar", async () => {
@@ -352,13 +376,21 @@ test("the close button dismisses the detail sidebar", async () => {
   setStore();
 
   await renderInspector();
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
-  expect(screen.getByRole("complementary", { name: "Chunk details" })).toBeInTheDocument();
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
+  expect(
+    screen.getByRole("complementary", { name: "Chunk details" }),
+  ).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Close chunk details" }));
 
-  expect(screen.queryByRole("complementary", { name: "Chunk details" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Close chunk details" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("complementary", { name: "Chunk details" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Close chunk details" }),
+  ).not.toBeInTheDocument();
 });
 
 test("refetches the queue when the scheduler tick changes", async () => {
@@ -410,14 +442,20 @@ test("pause action calls the API and refetches", async () => {
   setStore();
 
   await renderInspector();
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
   await user.click(screen.getByRole("button", { name: /Pause job/i }));
 
   await waitFor(() =>
-    expect(calls.some((call) => call.url.endsWith("/api/jobs/job-1/pause"))).toBe(true),
+    expect(
+      calls.some((call) => call.url.endsWith("/api/jobs/job-1/pause")),
+    ).toBe(true),
   );
   expect(await screen.findByText(/Job paused/i)).toBeInTheDocument();
-  await waitFor(() => expect(queueCalls(calls).length).toBeGreaterThanOrEqual(2));
+  await waitFor(() =>
+    expect(queueCalls(calls).length).toBeGreaterThanOrEqual(2),
+  );
 });
 
 test("offers resume for a paused job", async () => {
@@ -438,11 +476,15 @@ test("offers resume for a paused job", async () => {
   setStore();
 
   await renderInspector();
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
   await user.click(screen.getByRole("button", { name: /Resume job/i }));
 
   await waitFor(() =>
-    expect(calls.some((call) => call.url.endsWith("/api/jobs/job-1/resume"))).toBe(true),
+    expect(
+      calls.some((call) => call.url.endsWith("/api/jobs/job-1/resume")),
+    ).toBe(true),
   );
   expect(await screen.findByText(/Job resumed/i)).toBeInTheDocument();
 });
@@ -458,7 +500,9 @@ test("reprocess edits text and voice, then calls the API", async () => {
   });
 
   await renderInspector();
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
 
   await user.click(screen.getByRole("button", { name: /Reprocess chunk/i }));
   const textarea = screen.getByLabelText(/Chunk text/i);
@@ -470,9 +514,11 @@ test("reprocess edits text and voice, then calls the API", async () => {
   await user.click(screen.getByRole("button", { name: /Queue reprocess/i }));
 
   await waitFor(() => {
-    expect(calls.some((call) => call.url.endsWith("/api/jobs/job-1/chunks/3/reprocess"))).toBe(
-      true,
-    );
+    expect(
+      calls.some((call) =>
+        call.url.endsWith("/api/jobs/job-1/chunks/3/reprocess"),
+      ),
+    ).toBe(true);
   });
   const reprocessCall = calls.find((call) =>
     call.url.endsWith("/api/jobs/job-1/chunks/3/reprocess"),
@@ -507,12 +553,16 @@ test("set-active-version calls the API", async () => {
   setStore();
 
   await renderInspector();
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
   await user.click(screen.getByRole("button", { name: /v0 · written/i }));
 
   await waitFor(() =>
     expect(
-      calls.some((call) => call.url.endsWith("/api/jobs/job-1/chunks/3/set-active-version")),
+      calls.some((call) =>
+        call.url.endsWith("/api/jobs/job-1/chunks/3/set-active-version"),
+      ),
     ).toBe(true),
   );
   expect(await screen.findByText(/Version 0 activated/i)).toBeInTheDocument();
@@ -521,19 +571,24 @@ test("set-active-version calls the API", async () => {
 test("surfaces action errors without crashing", async () => {
   const user = userEvent.setup();
   mockFetch(buildQueue(), {
-    "/api/jobs/job-1/pause": () => jsonResponse({ detail: "Model exploded" }, false, 500),
+    "/api/jobs/job-1/pause": () =>
+      jsonResponse({ detail: "Model exploded" }, false, 500),
   });
   setStore();
 
   await renderInspector();
-  await user.click(screen.getByRole("button", { name: /The first chunk of text/i }));
+  await user.click(
+    screen.getByRole("button", { name: /The first chunk of text/i }),
+  );
   await user.click(screen.getByRole("button", { name: /Pause job/i }));
 
   expect(await screen.findByText(/Model exploded/i)).toBeInTheDocument();
 });
 
 test("surfaces queue load errors", async () => {
-  global.fetch = vi.fn(async () => jsonResponse({ detail: "Backend offline" }, false, 503)) as unknown as typeof fetch;
+  globalThis.fetch = vi.fn(async () =>
+    jsonResponse({ detail: "Backend offline" }, false, 503),
+  ) as unknown as typeof fetch;
   setStore();
 
   await renderInspector();

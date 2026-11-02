@@ -1,8 +1,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
-import { ThemeToggle } from "./ThemeToggle";
 import { initTheme, resetThemeForTests } from "../hooks/useTheme";
+import { ThemeToggle } from "./ThemeToggle";
 
 const STORAGE_KEY = "readflow-theme";
 
@@ -55,7 +54,9 @@ describe("ThemeToggle", () => {
 
     expect(htmlClassList()).toContain("dark");
     expect(htmlClassList()).not.toContain("light");
-    expect(screen.getByRole("button", { name: "Switch to light mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Switch to light mode" }),
+    ).toBeInTheDocument();
   });
 
   it("toggles dark → light → dark → light on repeated clicks", async () => {
@@ -67,7 +68,9 @@ describe("ThemeToggle", () => {
     expect(htmlClassList()).toContain("light");
     expect(htmlClassList()).not.toContain("dark");
     expect(localStorage.getItem(STORAGE_KEY)).toBe("light");
-    expect(screen.getByRole("button", { name: "Switch to dark mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Switch to dark mode" }),
+    ).toBeInTheDocument();
 
     // Second click: light → dark
     // Regression: before the fix, the store was never notified after a
@@ -76,7 +79,9 @@ describe("ThemeToggle", () => {
     expect(htmlClassList()).toContain("dark");
     expect(htmlClassList()).not.toContain("light");
     expect(localStorage.getItem(STORAGE_KEY)).toBe("dark");
-    expect(screen.getByRole("button", { name: "Switch to light mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Switch to light mode" }),
+    ).toBeInTheDocument();
 
     // Third click: dark → light again
     await user.click(screen.getByRole("button"));
@@ -91,7 +96,9 @@ describe("ThemeToggle", () => {
     render(<ThemeToggle />);
 
     expect(htmlClassList()).toContain("light");
-    expect(screen.getByRole("button", { name: "Switch to dark mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Switch to dark mode" }),
+    ).toBeInTheDocument();
   });
 
   it("follows the OS preference while no stored preference exists", () => {
@@ -101,11 +108,15 @@ describe("ThemeToggle", () => {
     // OS flips to light; fire the change handlers registered on the media queries.
     stubMatchMedia(true);
     act(() => {
-      mediaChangeHandlers.forEach((handler) => handler());
+      mediaChangeHandlers.forEach((handler) => {
+        handler();
+      });
     });
 
     expect(htmlClassList()).toContain("light");
-    expect(screen.getByRole("button", { name: "Switch to dark mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Switch to dark mode" }),
+    ).toBeInTheDocument();
   });
 
   it("ignores OS changes once the user has stored a preference", () => {
@@ -116,7 +127,9 @@ describe("ThemeToggle", () => {
 
     stubMatchMedia(true);
     act(() => {
-      mediaChangeHandlers.forEach((handler) => handler());
+      mediaChangeHandlers.forEach((handler) => {
+        handler();
+      });
     });
 
     expect(htmlClassList()).toContain("dark");
@@ -130,10 +143,14 @@ describe("ThemeToggle", () => {
     // Another tab persists "light", which fires a `storage` event here.
     localStorage.setItem(STORAGE_KEY, "light");
     act(() => {
-      window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY, newValue: "light" }));
+      window.dispatchEvent(
+        new StorageEvent("storage", { key: STORAGE_KEY, newValue: "light" }),
+      );
     });
 
     expect(htmlClassList()).toContain("light");
-    expect(screen.getByRole("button", { name: "Switch to dark mode" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Switch to dark mode" }),
+    ).toBeInTheDocument();
   });
 });

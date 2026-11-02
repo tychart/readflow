@@ -78,7 +78,11 @@ describe("Playbar transport", () => {
 
     unmount();
     const onPause = vi.fn();
-    render(<Playbar {...buildProps({ isPlaying: true, playIntent: true, onPause })} />);
+    render(
+      <Playbar
+        {...buildProps({ isPlaying: true, playIntent: true, onPause })}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(onPause).toHaveBeenCalledTimes(1);
   });
@@ -99,7 +103,9 @@ describe("Playbar transport", () => {
 describe("Playbar timeline and metadata", () => {
   test("clicking a chunk seeks to its start in timeline coordinates", () => {
     const onSeekToChunk = vi.fn();
-    const { container } = render(<Playbar {...buildProps({ onSeekToChunk })} />);
+    const { container } = render(
+      <Playbar {...buildProps({ onSeekToChunk })} />,
+    );
 
     const slots = container.querySelectorAll("[data-slot-state]");
     expect(slots).toHaveLength(3);
@@ -113,8 +119,12 @@ describe("Playbar timeline and metadata", () => {
     render(<Playbar {...buildProps()} />);
     expect(screen.getByText("0:05")).toBeInTheDocument();
     expect(screen.getByText("0:12")).toBeInTheDocument();
-    expect(screen.getByText("chunks").parentElement).toHaveTextContent("3/3 chunks");
-    expect(screen.getByRole("button", { name: /download/i })).toBeInTheDocument();
+    expect(screen.getByText("chunks").parentElement).toHaveTextContent(
+      "3/3 chunks",
+    );
+    expect(
+      screen.getByRole("button", { name: /download/i }),
+    ).toBeInTheDocument();
   });
 
   test("keeps the settings slot out of the row that fades away on scroll", () => {
@@ -123,7 +133,9 @@ describe("Playbar timeline and metadata", () => {
     // bar compacts.
     render(
       <Playbar
-        {...buildProps({ settingsSlot: <span data-testid="settings-control">gear</span> })}
+        {...buildProps({
+          settingsSlot: <span data-testid="settings-control">gear</span>,
+        })}
       />,
     );
 
@@ -133,11 +145,17 @@ describe("Playbar timeline and metadata", () => {
   });
 
   test("shows the current speed badge only when it is not 1×", () => {
-    const { unmount } = render(<Playbar {...buildProps({ playbackRate: 1 })} />);
-    expect(screen.queryByTestId("playback-rate-indicator")).not.toBeInTheDocument();
+    const { unmount } = render(
+      <Playbar {...buildProps({ playbackRate: 1 })} />,
+    );
+    expect(
+      screen.queryByTestId("playback-rate-indicator"),
+    ).not.toBeInTheDocument();
     unmount();
 
     render(<Playbar {...buildProps({ playbackRate: 1.25 })} />);
-    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent("1.25×");
+    expect(screen.getByTestId("playback-rate-indicator")).toHaveTextContent(
+      "1.25×",
+    );
   });
 });

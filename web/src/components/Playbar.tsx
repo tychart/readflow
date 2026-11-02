@@ -170,7 +170,10 @@ export function Playbar({
     ],
   );
 
-  const playButtonLabel = resolvePlayButtonLabel({ isAutoplayBlocked, playIntent });
+  const playButtonLabel = resolvePlayButtonLabel({
+    isAutoplayBlocked,
+    playIntent,
+  });
   const showSpinner = resolveShowSpinner({
     isAutoplayBlocked,
     isLoadingAudio,
@@ -192,7 +195,7 @@ export function Playbar({
     (chunkIndex: number) => {
       // Seek to the start of the chunk — onSeekToChunk handles activation internally
       const chunkStartSeconds = slots
-        .slice(0, chunkIndex < slots.length ? chunkIndex : slots.length)
+        .slice(0, Math.min(chunkIndex, slots.length))
         .reduce((acc, s) => acc + s.durationSeconds, 0);
       handleTimelineSeek(chunkIndex, chunkStartSeconds);
     },
@@ -271,7 +274,9 @@ export function Playbar({
 
         {/* Reader settings and playback speed — outside the fading metadata row
             below so they stay reachable once the playbar has compacted. */}
-        {renderAheadSlot ? <div className="shrink-0">{renderAheadSlot}</div> : null}
+        {renderAheadSlot ? (
+          <div className="shrink-0">{renderAheadSlot}</div>
+        ) : null}
         {settingsSlot ? <div className="shrink-0">{settingsSlot}</div> : null}
       </div>
 
@@ -296,87 +301,107 @@ export function Playbar({
             {formatClock(displayTimeSeconds)}
           </span>
           <span className="opacity-40">/</span>
-          <span className="inline-block min-w-[44px]">{formatClock(displayDurationSeconds)}</span>
+          <span className="inline-block min-w-[44px]">
+            {formatClock(displayDurationSeconds)}
+          </span>
 
           {/* Player state — fixed min-width prevents layout shift */}
           <span
             aria-live="polite"
-              className={`ml-2 inline-block min-w-[100px] rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${
-                playerStateLabel === "Playing" || playerStateLabel === "Starting…" || playerStateLabel === "Preparing stream…"
-                  ? "bg-[var(--amber-soft)] text-[var(--amber)]"
-                  : playerStateLabel === "Playback complete"
-                    ? "bg-emerald-900/30 text-emerald-400"
-                    : playerStateLabel === "Buffering…" || playerStateLabel === "Loading audio…"
-                      ? "bg-amber-900/30 text-amber-400"
-                      : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
-              }`}
-            >
-              {playerStateLabel}
-            </span>
+            className={`ml-2 inline-block min-w-[100px] rounded-full px-2 py-0.5 text-center text-[10px] font-medium ${
+              playerStateLabel === "Playing" ||
+              playerStateLabel === "Starting…" ||
+              playerStateLabel === "Preparing stream…"
+                ? "bg-[var(--amber-soft)] text-[var(--amber)]"
+                : playerStateLabel === "Playback complete"
+                  ? "bg-emerald-900/30 text-emerald-400"
+                  : playerStateLabel === "Buffering…" ||
+                      playerStateLabel === "Loading audio…"
+                    ? "bg-amber-900/30 text-amber-400"
+                    : "bg-[var(--hover-bg)] text-[var(--ink-secondary)]"
+            }`}
+          >
+            {playerStateLabel}
+          </span>
 
-            {/* Playback speed — only worth surfacing when it is off the default.
+          {/* Playback speed — only worth surfacing when it is off the default.
                 It lives in the metadata row on purpose: that row fades away on
                 scroll, so the badge costs the compact bar no space. */}
-            {playbackRate !== 1 ? (
-              <span
-                className="ml-2 inline-block rounded-full bg-[var(--hover-bg)] px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--ink-secondary)]"
-                data-testid="playback-rate-indicator"
-                title={`Playback speed ${formatSpeed(playbackRate)}×`}
-              >
-                {formatSpeed(playbackRate)}×
-              </span>
-            ) : null}
-          </div>
-
-          {/* Right: chunk counter + download */}
-
-          {/* Chunk counter + download */}
-          <div className="flex items-center gap-4">
-            {/* Chunk counter — secondary detail, dropped on phone widths */}
-            <span className="hidden tabular-nums sm:inline">
-              <span className="text-[var(--ink-primary)]">{writtenChunks}</span>
-              <span className="opacity-40">/{totalChunks}</span>
-              <span> chunks</span>
-            </span>
-
-            {/* Download button */}
-            <button
-              aria-label={isDownloadComplete ? "Download full audio" : canDownload ? "Download rendered audio" : "Download not available"}
-              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
-                canDownload
-                  ? "border-[var(--line)] text-[var(--ink-secondary)] hover:border-[var(--amber)] hover:text-[var(--amber)]"
-                  : "cursor-not-allowed border-[var(--line)] text-[var(--slate)] opacity-50"
-              }`}
-              disabled={!canDownload || isDownloading}
-              onClick={onDownload}
-              title={
-                isDownloadComplete
-                  ? "Download complete audio file"
-                  : canDownload
-                    ? "Download rendered audio so far"
-                    : "No audio data available yet"
-              }
-              type="button"
+          {playbackRate !== 1 ? (
+            <span
+              className="ml-2 inline-block rounded-full bg-[var(--hover-bg)] px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--ink-secondary)]"
+              data-testid="playback-rate-indicator"
+              title={`Playback speed ${formatSpeed(playbackRate)}×`}
             >
-              {isDownloading ? (
-                <>
-                  <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
-                  Preparing…
-                </>
-              ) : (
-                <>
-                  {/* Download icon */}
-                  <svg aria-hidden="true" className="h-3 w-3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <polyline points="7 10 12 15 17 10" />
-                    <line x1="12" x2="12" y1="15" y2="3" />
-                  </svg>
-                  {isDownloadComplete ? "Full audio" : "Download"}
-                </>
-              )}
-            </button>
-          </div>
+              {formatSpeed(playbackRate)}×
+            </span>
+          ) : null}
         </div>
+
+        {/* Right: chunk counter + download */}
+
+        {/* Chunk counter + download */}
+        <div className="flex items-center gap-4">
+          {/* Chunk counter — secondary detail, dropped on phone widths */}
+          <span className="hidden tabular-nums sm:inline">
+            <span className="text-[var(--ink-primary)]">{writtenChunks}</span>
+            <span className="opacity-40">/{totalChunks}</span>
+            <span> chunks</span>
+          </span>
+
+          {/* Download button */}
+          <button
+            aria-label={
+              isDownloadComplete
+                ? "Download full audio"
+                : canDownload
+                  ? "Download rendered audio"
+                  : "Download not available"
+            }
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
+              canDownload
+                ? "border-[var(--line)] text-[var(--ink-secondary)] hover:border-[var(--amber)] hover:text-[var(--amber)]"
+                : "cursor-not-allowed border-[var(--line)] text-[var(--slate)] opacity-50"
+            }`}
+            disabled={!canDownload || isDownloading}
+            onClick={onDownload}
+            title={
+              isDownloadComplete
+                ? "Download complete audio file"
+                : canDownload
+                  ? "Download rendered audio so far"
+                  : "No audio data available yet"
+            }
+            type="button"
+          >
+            {isDownloading ? (
+              <>
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
+                Preparing…
+              </>
+            ) : (
+              <>
+                {/* Download icon */}
+                <svg
+                  aria-hidden="true"
+                  className="h-3 w-3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" x2="12" y1="15" y2="3" />
+                </svg>
+                {isDownloadComplete ? "Full audio" : "Download"}
+              </>
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

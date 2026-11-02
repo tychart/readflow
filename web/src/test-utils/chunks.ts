@@ -6,7 +6,10 @@ import type { Chunk, ChunkStatus, JobDetail } from "../types/api";
  * `Chunk.version` defaults to 0 on purpose: the reader only renders chunks whose
  * version matches the active version, and a fixture without one is dropped.
  */
-export function buildChunk(index: number, overrides: Partial<Chunk> = {}): Chunk {
+export function buildChunk(
+  index: number,
+  overrides: Partial<Chunk> = {},
+): Chunk {
   const durationSeconds = overrides.duration_seconds ?? 4;
   return {
     index,
@@ -26,8 +29,13 @@ export function buildChunk(index: number, overrides: Partial<Chunk> = {}): Chunk
   };
 }
 
-export function buildChunks(count: number, overrides: Partial<Chunk> = {}): Chunk[] {
-  return Array.from({ length: count }, (_, index) => buildChunk(index, overrides));
+export function buildChunks(
+  count: number,
+  overrides: Partial<Chunk> = {},
+): Chunk[] {
+  return Array.from({ length: count }, (_, index) =>
+    buildChunk(index, overrides),
+  );
 }
 
 export function buildJobDetail(overrides: Partial<JobDetail> = {}): JobDetail {
@@ -41,8 +49,12 @@ export function buildJobDetail(overrides: Partial<JobDetail> = {}): JobDetail {
     is_active_listening: false,
     render_to_end: false,
     total_chunks_emitted: chunks.length,
-    total_chunks_completed: chunks.filter((chunk) => chunk.status === "written").length,
-    buffered_seconds: chunks.reduce((total, chunk) => total + chunk.duration_seconds, 0),
+    total_chunks_completed: chunks.filter((chunk) => chunk.status === "written")
+      .length,
+    buffered_seconds: chunks.reduce(
+      (total, chunk) => total + chunk.duration_seconds,
+      0,
+    ),
     completed_seconds: 0,
     source_kind: "text",
     source_text: "Source text for reader fixtures.",

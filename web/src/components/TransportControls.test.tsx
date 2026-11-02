@@ -5,16 +5,18 @@ import { TransportControls } from "./TransportControls";
 
 afterEach(cleanup);
 
-function buildProps(overrides: Partial<Parameters<typeof TransportControls>[0]> = {}) {
+function buildProps(
+  overrides: Partial<Parameters<typeof TransportControls>[0]> = {},
+) {
   return {
     playLabel: "Play",
     showSpinner: false,
     showPauseIcon: false,
-    playButtonSizePx: 48,
-    playIconSizePx: 16,
-    skipButtonSizePx: 36,
-    skipIconSizePx: 14,
-    gapPx: 8,
+    playButtonSize: "48px",
+    playIconSize: "16px",
+    skipButtonSize: "36px",
+    skipIconSize: "14px",
+    gap: "8px",
     onPlay: vi.fn(),
     onPause: vi.fn(),
     onSkip: vi.fn(),
@@ -27,8 +29,12 @@ describe("TransportControls", () => {
     render(<TransportControls {...buildProps()} />);
 
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back 10 seconds" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Forward 10 seconds" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Back 10 seconds" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Forward 10 seconds" }),
+    ).toBeInTheDocument();
   });
 
   test("skips by a signed 10 seconds", () => {
@@ -57,7 +63,13 @@ describe("TransportControls", () => {
     const onPlay = vi.fn();
     render(
       <TransportControls
-        {...buildProps({ onPause, onPlay, playLabel: "Pause", showPauseIcon: true, showSpinner: true })}
+        {...buildProps({
+          onPause,
+          onPlay,
+          playLabel: "Pause",
+          showPauseIcon: true,
+          showSpinner: true,
+        })}
       />,
     );
 
@@ -72,14 +84,15 @@ describe("TransportControls", () => {
       "title",
       "Play (Space or K)",
     );
-    expect(screen.getByRole("button", { name: "Back 10 seconds" })).toHaveAttribute(
-      "title",
-      "Back 10 seconds (←)",
-    );
+    expect(
+      screen.getByRole("button", { name: "Back 10 seconds" }),
+    ).toHaveAttribute("title", "Back 10 seconds (←)");
   });
 
   test("shows a spinner instead of an icon while it spins", () => {
-    const { container } = render(<TransportControls {...buildProps({ showSpinner: true })} />);
+    const { container } = render(
+      <TransportControls {...buildProps({ showSpinner: true })} />,
+    );
     expect(container.querySelector(".animate-spin")).not.toBeNull();
   });
 });

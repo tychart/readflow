@@ -2,10 +2,10 @@ import { describe, expect, test } from "vitest";
 
 import {
   isRenderingStalled,
+  type PlayerStateInput,
   resolvePlayButtonLabel,
   resolvePlayerStateLabel,
   resolveShowSpinner,
-  type PlayerStateInput,
 } from "./transport";
 
 const IDLE = {
@@ -21,12 +21,18 @@ describe("resolvePlayButtonLabel", () => {
   test("play, pause and resume", () => {
     expect(resolvePlayButtonLabel(IDLE)).toBe("Play");
     expect(resolvePlayButtonLabel({ ...IDLE, playIntent: true })).toBe("Pause");
-    expect(resolvePlayButtonLabel({ ...IDLE, isAutoplayBlocked: true })).toBe("Resume");
+    expect(resolvePlayButtonLabel({ ...IDLE, isAutoplayBlocked: true })).toBe(
+      "Resume",
+    );
   });
 
   test("a blocked autoplay prompt wins over a pending play", () => {
     expect(
-      resolvePlayButtonLabel({ ...IDLE, isAutoplayBlocked: true, playIntent: true }),
+      resolvePlayButtonLabel({
+        ...IDLE,
+        isAutoplayBlocked: true,
+        playIntent: true,
+      }),
     ).toBe("Resume");
   });
 });
@@ -43,15 +49,25 @@ describe("resolveShowSpinner", () => {
   test("does not spin when idle, playing, or blocked", () => {
     expect(resolveShowSpinner(IDLE)).toBe(false);
     expect(resolveShowSpinner({ ...IDLE, isPlaying: true })).toBe(false);
-    expect(resolveShowSpinner({ ...IDLE, isAutoplayBlocked: true, playIntent: true })).toBe(false);
+    expect(
+      resolveShowSpinner({
+        ...IDLE,
+        isAutoplayBlocked: true,
+        playIntent: true,
+      }),
+    ).toBe(false);
   });
 
   test("spins while the requested audio is still being loaded, even when paused", () => {
     // A seek into audio this client does not hold yet: the listener needs the
     // same feedback whether or not playback was already running.
     expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: true })).toBe(true);
-    expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: true, playIntent: true })).toBe(true);
-    expect(resolveShowSpinner({ ...IDLE, isLoadingAudio: true, isPlaying: true })).toBe(true);
+    expect(
+      resolveShowSpinner({ ...IDLE, isLoadingAudio: true, playIntent: true }),
+    ).toBe(true);
+    expect(
+      resolveShowSpinner({ ...IDLE, isLoadingAudio: true, isPlaying: true }),
+    ).toBe(true);
   });
 
   test("stops spinning as soon as the requested audio has arrived", () => {
@@ -69,7 +85,11 @@ describe("resolvePlayerStateLabel", () => {
 
   test("blocked autoplay is reported first", () => {
     expect(
-      resolvePlayerStateLabel({ ...base, isAutoplayBlocked: true, playIntent: true }),
+      resolvePlayerStateLabel({
+        ...base,
+        isAutoplayBlocked: true,
+        playIntent: true,
+      }),
     ).toBe("Playback blocked by browser");
   });
 
@@ -86,7 +106,9 @@ describe("resolvePlayerStateLabel", () => {
   });
 
   test("playing", () => {
-    expect(resolvePlayerStateLabel({ ...base, isPlaying: true })).toBe("Playing");
+    expect(resolvePlayerStateLabel({ ...base, isPlaying: true })).toBe(
+      "Playing",
+    );
   });
 
   test("loading audio the client has to fetch itself", () => {
@@ -113,9 +135,13 @@ describe("resolvePlayerStateLabel", () => {
   test("loading is not a producer stall, and pre-render loading keeps preparing copy", () => {
     // Nothing rendered yet: there is no client-side audio to load, so the
     // producer-facing copy stays accurate.
-    expect(resolvePlayerStateLabel({ ...base, isLoadingAudio: true, playIntent: true })).toBe(
-      "Preparing stream…",
-    );
+    expect(
+      resolvePlayerStateLabel({
+        ...base,
+        isLoadingAudio: true,
+        playIntent: true,
+      }),
+    ).toBe("Preparing stream…");
   });
 
   test("buffering once a stream exists", () => {
@@ -130,10 +156,16 @@ describe("resolvePlayerStateLabel", () => {
   });
 
   test("preparing before any audio is rendered, then starting", () => {
-    expect(resolvePlayerStateLabel({ ...base, playIntent: true })).toBe("Preparing stream…");
-    expect(resolvePlayerStateLabel({ ...base, playIntent: true, renderedDurationSeconds: 30 })).toBe(
-      "Starting…",
+    expect(resolvePlayerStateLabel({ ...base, playIntent: true })).toBe(
+      "Preparing stream…",
     );
+    expect(
+      resolvePlayerStateLabel({
+        ...base,
+        playIntent: true,
+        renderedDurationSeconds: 30,
+      }),
+    ).toBe("Starting…");
   });
 
   test("idle", () => {
@@ -155,15 +187,21 @@ describe("isRenderingStalled", () => {
   });
 
   test("a terminal job never reports a stall", () => {
-    expect(isRenderingStalled({ ...waiting, isJobTerminal: true }, 600)).toBe(false);
+    expect(isRenderingStalled({ ...waiting, isJobTerminal: true }, 600)).toBe(
+      false,
+    );
   });
 
   test("not stalled when the user is not trying to play", () => {
-    expect(isRenderingStalled({ ...waiting, playIntent: false }, 600)).toBe(false);
+    expect(isRenderingStalled({ ...waiting, playIntent: false }, 600)).toBe(
+      false,
+    );
   });
 
   test("not stalled while audio is actually flowing", () => {
-    expect(isRenderingStalled({ ...waiting, isWaitingForData: false }, 600)).toBe(false);
+    expect(
+      isRenderingStalled({ ...waiting, isWaitingForData: false }, 600),
+    ).toBe(false);
   });
 
   test("no chunk yet (null) is not a stall", () => {

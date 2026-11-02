@@ -1,23 +1,23 @@
 import { describe, expect, test } from "vitest";
 
 import {
-  STREAM_WINDOW_AHEAD_SECONDS,
-  STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS,
-  STREAM_WINDOW_KEEP_BEHIND_SECONDS,
-  STREAM_WINDOW_REFILL_SECONDS,
   isSecondsBuffered,
   isSecondsEvicted,
   needsWindowFill,
   resolveAppendWindowEnd,
   resolveEvictionRange,
   type SecondsRange,
+  STREAM_WINDOW_AHEAD_SECONDS,
+  STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS,
+  STREAM_WINDOW_KEEP_BEHIND_SECONDS,
+  STREAM_WINDOW_REFILL_SECONDS,
 } from "./media-window";
 
 describe("resolveAppendWindowEnd", () => {
   test("keeps the configured lookahead ahead of the playhead", () => {
-    expect(resolveAppendWindowEnd({ playheadSeconds: 0, pendingSeekSeconds: null })).toBe(
-      STREAM_WINDOW_AHEAD_SECONDS,
-    );
+    expect(
+      resolveAppendWindowEnd({ playheadSeconds: 0, pendingSeekSeconds: null }),
+    ).toBe(STREAM_WINDOW_AHEAD_SECONDS);
     expect(
       resolveAppendWindowEnd({
         playheadSeconds: 100,
@@ -27,18 +27,20 @@ describe("resolveAppendWindowEnd", () => {
   });
 
   test("never buffers a negative start", () => {
-    expect(resolveAppendWindowEnd({ playheadSeconds: -5, pendingSeekSeconds: null })).toBe(
-      STREAM_WINDOW_AHEAD_SECONDS,
-    );
+    expect(
+      resolveAppendWindowEnd({ playheadSeconds: -5, pendingSeekSeconds: null }),
+    ).toBe(STREAM_WINDOW_AHEAD_SECONDS);
   });
 
   test("stretches just past a pending seek the playhead has not reached", () => {
     // One second past the target: chunks are selected by their start time, so
     // the chunk that *contains* the target has to be included.
-    expect(resolveAppendWindowEnd({ playheadSeconds: 0, pendingSeekSeconds: 500 })).toBe(501);
-    expect(resolveAppendWindowEnd({ playheadSeconds: 0, pendingSeekSeconds: 10 })).toBe(
-      STREAM_WINDOW_AHEAD_SECONDS,
-    );
+    expect(
+      resolveAppendWindowEnd({ playheadSeconds: 0, pendingSeekSeconds: 500 }),
+    ).toBe(501);
+    expect(
+      resolveAppendWindowEnd({ playheadSeconds: 0, pendingSeekSeconds: 10 }),
+    ).toBe(STREAM_WINDOW_AHEAD_SECONDS);
   });
 });
 
@@ -64,7 +66,8 @@ describe("needsWindowFill", () => {
   });
 
   test("tops up once the lookahead falls below the refill threshold", () => {
-    const refillBoundary = STREAM_WINDOW_AHEAD_SECONDS - STREAM_WINDOW_REFILL_SECONDS;
+    const refillBoundary =
+      STREAM_WINDOW_AHEAD_SECONDS - STREAM_WINDOW_REFILL_SECONDS;
     expect(
       needsWindowFill({
         playheadSeconds: 100,
@@ -109,7 +112,9 @@ describe("needsWindowFill", () => {
 describe("resolveEvictionRange", () => {
   test("never evicts at the start of a stream", () => {
     expect(resolveEvictionRange(0, 0)).toBeNull();
-    expect(resolveEvictionRange(0, STREAM_WINDOW_KEEP_BEHIND_SECONDS)).toBeNull();
+    expect(
+      resolveEvictionRange(0, STREAM_WINDOW_KEEP_BEHIND_SECONDS),
+    ).toBeNull();
   });
 
   test("evicts everything before the keep-behind margin", () => {
@@ -130,7 +135,9 @@ describe("resolveEvictionRange", () => {
     const playhead = 400;
     const keepBehind = STREAM_WINDOW_KEEP_BEHIND_SECONDS;
     expect(resolveEvictionRange(playhead - keepBehind, playhead)).toBeNull();
-    expect(resolveEvictionRange(playhead - keepBehind + 5, playhead)).toBeNull();
+    expect(
+      resolveEvictionRange(playhead - keepBehind + 5, playhead),
+    ).toBeNull();
   });
 
   test("the end always stays behind the playhead", () => {
@@ -140,7 +147,13 @@ describe("resolveEvictionRange", () => {
   });
 
   test("an emergency keep-behind frees almost everything", () => {
-    expect(resolveEvictionRange(0, 1000, STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS)).toEqual({
+    expect(
+      resolveEvictionRange(
+        0,
+        1000,
+        STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS,
+      ),
+    ).toEqual({
       start: 0,
       end: 1000 - STREAM_WINDOW_EMERGENCY_KEEP_BEHIND_SECONDS,
     });
