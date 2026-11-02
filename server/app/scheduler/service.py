@@ -23,6 +23,7 @@ from app.schemas.api import (
 )
 from app.synthesis.model_manager import ModelManager
 from app.synthesis.worker import RenderedChunkResult, SynthesisWorker
+from app.telemetry.memory import MemoryStats
 from app.telemetry.service import TelemetryService
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,11 @@ class SchedulerResidency(TypedDict):
 
 class SchedulerService:
     MEMORY_STATS_INTERVAL = 3.0
+    # A CUDA query can block behind the in-flight batch, so the live resource
+    # tick gives it a hard deadline. Exceeding it is expected under load, not an
+    # incident: the tick still publishes `memory: null` so stale readings are
+    # cleared, and the failure is reported once instead of every interval.
+    MEMORY_STATS_TIMEOUT = 2.0
 
     def __init__(
         self,
@@ -90,6 +96,9 @@ class SchedulerService:
         # Measured marginal allocated VRAM per chunk, learned from the last
         # completed batch. Used to size the next batch against the soft limit.
         self._vram_per_chunk_mb: float | None = None
+        # True while the live memory probe is failing, so the loop logs the
+        # transition once rather than dumping a traceback every interval.
+        self._memory_probe_failing = False
         # Model/voice residency. A model swap is a full weight reload (and clears
         # the prompt cache), so the scheduler holds a model for a minimum number
         # of batches; voice switches are cheap and only get a short bias.
@@ -178,13 +187,40 @@ class SchedulerService:
             self._memory_broadcast_task.cancel()
             self._memory_broadcast_task = None
 
+    async def _probe_memory_stats(self) -> MemoryStats | None:
+        """One bounded memory snapshot for the live tick, or None when unavailable.
+
+        The CUDA query runs on a thread, but it can still block behind the batch
+        being synthesized, so a timeout here is a normal consequence of a busy
+        GPU. Logging it once per failure streak keeps the log readable; the null
+        reading itself is what tells the Admin view that the value is stale.
+        """
+        try:
+            stats = await asyncio.wait_for(
+                self._model_manager.memory_stats(), timeout=self.MEMORY_STATS_TIMEOUT
+            )
+        except TimeoutError:
+            if not self._memory_probe_failing:
+                self._memory_probe_failing = True
+                logger.info(
+                    "Memory probe exceeded %.1fs (GPU busy); publishing null readings "
+                    "until it recovers",
+                    self.MEMORY_STATS_TIMEOUT,
+                )
+            return None
+        except Exception:
+            if not self._memory_probe_failing:
+                self._memory_probe_failing = True
+                logger.warning("Memory statistics unavailable", exc_info=True)
+            return None
+        if self._memory_probe_failing:
+            self._memory_probe_failing = False
+            logger.info("Memory statistics recovered")
+        return stats
+
     async def _memory_broadcast_loop(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                memory = await asyncio.wait_for(self._model_manager.memory_stats(), timeout=2.0)
-            except Exception:
-                logger.warning("Memory statistics unavailable", exc_info=True)
-                memory = None
+            memory = await self._probe_memory_stats()
             try:
                 await self._hub.broadcast(
                     WsEnvelope(

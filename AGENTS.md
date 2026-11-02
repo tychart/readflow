@@ -1537,6 +1537,19 @@ This was not theoretical. It was found by reproducing hangs and tracing live sta
 
 Future agents should preserve this test harness unless there is a very good reason to change it.
 
+## Real end-to-end without the GPU (fake provider)
+
+The unit and Playwright suites mock the backend. Before calling a reader, queue or admin change
+done, it is worth one pass against a real API. `scripts/dev.sh --fake` is the supported path,
+but the ports are fixed (8000/5173), so stop any running dev stack first — or run the API on a
+spare port and point a throwaway Vite config at it (same plugins, `server.proxy` → that port).
+
+What the pass should prove: chunks arrive live, Play advances the media clock
+(`document.querySelector('[data-testid="reader-audio-host"]').shadowRoot`), chunk-jump /
+reload / far-seek keep playing, the admin Queue tab fills in, and a completed job's Download
+yields an `.m4a`. Killing the API mid-reader is the cheapest way to exercise the WebSocket
+reconnect + 404 revalidation path — it should land back on the jobs page.
+
 ## Real-model tests
 
 The real-model suite is intentionally small and gated.
@@ -2058,11 +2071,16 @@ Do not restore the old positional tuple or duplicate the HTTP/socket mappings.
 - Monitoring queries CUDA device 0 even without a GPU-loaded model. The model's
   lifecycle affects only the device label, never whether GPU totals are shown.
   Queries run via `asyncio.to_thread`, **not the synthesis executor**, so long
-  batches do not freeze the resource panel. HTTP/live reads have a 2 s deadline;
-  a failed snapshot sends `memory: null` to clear stale readings. A GPU query
-  failure keeps valid RAM readings and null GPU fields (not fabricated zeros).
-  Missing GPU allocator readings pause GPU dispatch until readings recover;
-  never treat unknown usage as zero when enforcing scheduler limits.
+  batches do not freeze the resource panel. HTTP/live reads have a 2 s deadline
+  (`SchedulerService.MEMORY_STATS_TIMEOUT`); an exceeded deadline is expected
+  when the CUDA query blocks behind an in-flight batch, so `_probe_memory_stats`
+  reports the failure **once per streak** (and the recovery once) instead of
+  dumping a traceback every interval — a real GPU batch used to log one full
+  traceback every 2-3 s. Either way the tick sends `memory: null` to clear stale
+  readings. A GPU query failure keeps valid RAM readings and null GPU fields
+  (not fabricated zeros). Missing GPU allocator readings pause GPU dispatch
+  until readings recover; never treat unknown usage as zero when enforcing
+  scheduler limits.
 - Auto-device selection also uses device-wide free VRAM when deciding whether
   the GPU has room; `total - memory_allocated()` ignored other applications.
 - `_mb` API fields are binary **MiB**; the UI explicitly formats MiB/GiB.

@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import wave
 from typing import Any, cast
 
@@ -996,6 +997,61 @@ async def test_admin_memory_http_and_live_events_use_the_same_named_measurements
 
     await services.scheduler._memory_broadcast_loop()
     assert messages == [{"type": "memory_stats", "payload": {"memory": response.json()["memory"]}}]
+
+
+async def test_memory_probe_timeouts_are_reported_once_and_recover(
+    client, services, monkeypatch, caplog
+):
+    """A GPU-busy probe timeout is expected, so it must not spam the log.
+
+    The CUDA query blocks behind the running batch on a real device; the live
+    tick's deadline then expires roughly every interval. The reading still has
+    to go null (stale data is worse than none), but one line per failure streak
+    is all the operator needs.
+    """
+    from app.telemetry.memory import MemoryStats
+
+    recovered = MemoryStats(
+        device="cuda",
+        ram_total_mb=65536,
+        ram_available_mb=32768,
+        ram_used_mb=32768,
+        ram_process_mb=2048,
+    )
+    calls = {"n": 0}
+
+    async def memory_stats():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise TimeoutError("probe exceeded its deadline")
+        return recovered
+
+    messages = []
+
+    async def broadcast(message):
+        messages.append(message)
+        if len(messages) >= 3:
+            services.scheduler._stop_event.set()
+
+    monkeypatch.setattr(services.model_manager, "memory_stats", memory_stats)
+    monkeypatch.setattr(services.hub, "broadcast", broadcast)
+    monkeypatch.setattr(services.scheduler, "MEMORY_STATS_INTERVAL", 0)
+    caplog.set_level(logging.INFO, logger="app.scheduler.service")
+
+    await services.scheduler._memory_broadcast_loop()
+
+    assert [m["payload"]["memory"] for m in messages[:2]] == [None, None]
+    assert messages[2]["payload"]["memory"] == recovered.model_dump()
+    assert calls["n"] == 3
+
+    records = [r for r in caplog.records if r.name == "app.scheduler.service"]
+    timeout_records = [r for r in records if "Memory probe exceeded" in r.getMessage()]
+    recovery_records = [r for r in records if "Memory statistics recovered" in r.getMessage()]
+    assert len(timeout_records) == 1, [r.getMessage() for r in records]
+    assert len(recovery_records) == 1, [r.getMessage() for r in records]
+    # Expected timeouts must not dump a traceback every interval.
+    assert all(r.exc_info is None for r in timeout_records)
+    assert services.scheduler._memory_probe_failing is False
 
 
 async def test_memory_failures_clear_readings_in_http_and_live_events(

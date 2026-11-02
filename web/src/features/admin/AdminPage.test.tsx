@@ -96,7 +96,7 @@ function mockFetch({ failConfigSave = false } = {}) {
           queue_depth: 0,
           active_batch: null,
           next_batch: null,
-          items: [],
+          jobs: [],
         }),
       };
     }
