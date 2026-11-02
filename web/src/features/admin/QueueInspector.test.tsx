@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, vi } from "vitest";
 import { useAppStore } from "../../state/store";
 import type {
+  AdminConfig,
   AdminQueue,
   AdminState,
   QueueChunk,
@@ -99,7 +100,7 @@ function buildQueue(overrides: Partial<AdminQueue> = {}): AdminQueue {
   };
 }
 
-const BASE_CONFIG = {
+const BASE_CONFIG: AdminConfig = {
   device: "auto",
   idle_unload_seconds: 300,
   max_prebuffer_seconds: 300,

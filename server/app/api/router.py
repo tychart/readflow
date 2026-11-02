@@ -7,12 +7,14 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from starlette.background import BackgroundTask
 from starlette.datastructures import FormData, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
 from starlette.websockets import WebSocketDisconnect
 
+from app.core.config import RuntimeConfig
 from app.core.services import AppServices
 from app.jobs.models import ChunkStatus, Job, JobStatus
 from app.schemas.api import (
@@ -401,7 +403,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         if not wav_paths:
             raise HTTPException(status_code=409, detail="No contiguous rendered audio is ready")
 
-        export_path = app_services.media_store.build_export_file(job_id, wav_paths)
+        # Concatenating and re-encoding a whole book is seconds of ffmpeg work;
+        # keep it off the event loop so the reader and live ticks stay responsive.
+        export_path = await asyncio.to_thread(
+            app_services.media_store.build_export_file, job_id, wav_paths
+        )
         is_full_export = job.status == JobStatus.COMPLETED and len(wav_paths) == len(job.chunks)
         filename = sanitize_download_name(job.title)
         if not is_full_export:
@@ -564,7 +570,25 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> AdminConfigResponse:
         runtime = app_services.settings.runtime
-        for field_name, value in request.model_dump(exclude_none=True).items():
+        updates = request.model_dump(exclude_none=True)
+        # Validate the *merged* config before touching anything. `setattr` on the
+        # live object bypasses pydantic, so without this a typo is stored as-is:
+        # `plan_ahead_chunks=0` silently stops the planner from ever queueing a
+        # chunk, a 0 batch candidate dispatches an empty batch, and an unknown
+        # device is handed to the provider. Validating up front also keeps the
+        # update atomic — an invalid field can no longer leave a half-applied
+        # config behind.
+        try:
+            RuntimeConfig.model_validate({**runtime.model_dump(), **updates})
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors()
+            )
+            raise HTTPException(
+                status_code=422, detail=f"Invalid admin config — {details}"
+            ) from exc
+        for field_name, value in updates.items():
             setattr(runtime, field_name, value)
             # Propagate device setting change to the provider and model manager
             if field_name == "device":

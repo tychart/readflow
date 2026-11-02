@@ -5,6 +5,9 @@ description = "ReadFlow backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115.12",
+  # Used directly by app/media/peaks.py for the per-chunk waveform bins; it was
+  # already present transitively via torch, this just declares the dependency.
+  "numpy>=2.0",
   "pydantic>=2.11.4",
   "pydantic-settings>=2.9.1",
   "python-multipart>=0.0.20",

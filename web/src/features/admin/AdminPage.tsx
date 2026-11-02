@@ -8,10 +8,21 @@ import {
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { api } from "../../lib/api";
 import { useAppStore } from "../../state/store";
-import type { AdminConfig } from "../../types/api";
+import type { AdminConfig, AdminDevice } from "../../types/api";
 import { QueueInspector } from "./QueueInspector";
 
 /* ── Styles ───────────────────────────────────────────────── */
+
+/**
+ * A `<select>` value is a plain string, but the server rejects anything outside
+ * `RuntimeConfig.device`. Narrow at the boundary instead of casting, so a stray
+ * option value can never be posted and silently change GPU behaviour.
+ */
+const ADMIN_DEVICES: readonly AdminDevice[] = ["auto", "gpu", "cpu"];
+
+function toAdminDevice(value: string): AdminDevice {
+  return ADMIN_DEVICES.find((device) => device === value) ?? "auto";
+}
 
 function inputClass() {
   return "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3.5 py-2.5 text-sm text-[var(--ink-primary)] transition focus:outline-none focus:border-[var(--amber)] focus:ring-1 focus:ring-[var(--amber)]";
@@ -331,8 +342,11 @@ function AdminOverview() {
             <select
               className={`${inputClass()} mt-1.5`}
               value={formState.device}
-              onChange={(e) =>
-                setFormState({ ...formState, device: e.target.value })
+              onChange={(event) =>
+                setFormState({
+                  ...formState,
+                  device: toAdminDevice(event.target.value),
+                })
               }
             >
               <option value="auto">Auto (GPU priority, CPU fallback)</option>

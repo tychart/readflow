@@ -528,7 +528,11 @@ How it works:
 
 - `server/app/media/peaks.py` computes per-chunk max-amplitude peaks (256 bins,
   normalized per chunk) from the WAV during packaging and writes a small JSON
-  file next to each `.m4s` segment
+  file next to each `.m4s` segment. The binning is vectorised with numpy: the
+  original per-sample Python loop held the GIL for ~44 ms per 12 s chunk (and
+  stalled the API for a whole batch). `tests/unit/test_peaks.py` keeps that
+  original implementation as a reference and asserts exact equality, so a
+  rewrite cannot quietly change the waveform geometry
 - each chunk response carries `peaks_url`, served by the router
 - `useChunkWaveforms` fetches peaks per written chunk (keyed by `index:version`;
   reprocessing bumps the version and re-fetches) and exposes a
@@ -1326,7 +1330,11 @@ If you change this behavior, do it only with clear justification and updated tes
 
 ### Fake provider
 
-The fake provider exists for fast deterministic tests and CI.
+The fake provider exists for fast deterministic tests and CI. It also has to behave like
+the real one in one respect: `synthesize_batch` generates its waveform bytes on a worker
+thread (`asyncio.to_thread`) with numpy, not inline. Generating them inline was pure-Python
+CPU work on the event loop (~150 ms per chunk), which stalled HTTP/WebSocket traffic and
+made latency measurements against the fake stack measure the fake, not the app.
 
 Do not remove it unless the user asks. It is a major part of the development/testing story.
 
@@ -1394,10 +1402,19 @@ Current media format:
 Packaging path:
 
 1. provider returns WAV bytes
-2. temp WAV is written
-3. `ffmpeg` converts WAV to fragmented MP4
-4. MP4 is split into init/media segments
-5. temp WAV/MP4 intermediates are deleted
+2. the WAV is written **and kept** — it is the source for the lossless `.m4a` export
+   (`build_export_file` re-encodes those WAVs), so do not "clean up" the `.wav` files
+3. `peaks.py` derives the playbar bins from the same bytes (vectorised, see below)
+4. `ffmpeg` converts WAV to fragmented MP4
+5. the MP4 is split into init/media segments and then **deleted** (it is the only
+   disposable intermediate)
+
+Both packaging and the export run off the event loop (`asyncio.to_thread`). That is
+load-bearing: packaging an 8-chunk batch inline held the loop for the batch's total
+ffmpeg + peaks time, and a book-sized download froze every HTTP and WebSocket request
+for the length of the re-encode (measured p99 1.54 s before, 1.0 ms after). Never move
+`package_wav_chunk` or `build_export_file` back into the async path without offloading
+them.
 
 Temp storage is under:
 
@@ -2050,6 +2067,23 @@ scheduler behavior debuggable, not just pretty.
   `next_batch` without live VRAM figures (the real dispatch still applies the
   VRAM downshift in `_render_next_batch`). `test_queue_snapshot_never_calls_provider_memory_stats`
   and `test_admin_queue_does_not_depend_on_provider_memory_stats` pin this.
+
+### Admin config validation (the knobs that can stall rendering)
+
+`RuntimeConfig` (not the request model) owns the valid ranges, and
+`POST /api/admin/config` validates the **merged** config against it *before* applying
+anything, returning 422 with a field-level message. Two of these values could otherwise
+freeze rendering with no error anywhere:
+
+- `plan_ahead_chunks = 0` → `_needs_more_planning` is never satisfied, so the planner never
+  queues a chunk and the job sits at `queued` with zero chunks forever.
+- a `0` in `batch_candidates_*` → `chunks[:0]` dispatches an empty batch and the scheduler
+  returns early, again with no warning.
+
+An unknown `device` used to be `setattr`-ed onto the live config (bypassing pydantic) and
+handed to the provider; it is now a `Literal["auto", "cpu", "gpu"]`. Validation is atomic:
+a payload with one bad field applies none of it. `test_admin_config_rejects_values_that_would_stall_rendering`
+(8 cases) and `test_admin_config_update_is_atomic` pin this.
 
 ### Admin system-resource readings
 

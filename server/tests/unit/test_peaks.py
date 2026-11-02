@@ -91,3 +91,63 @@ def test_empty_wav_yields_zeros() -> None:
 def test_invalid_bins_rejected() -> None:
     with pytest.raises(ValueError):
         compute_peaks(_build_wav([1] * 100), bins=0)
+
+
+def _reference_peaks(wav_bytes: bytes, bins: int = PEAK_BINS) -> list[float]:
+    """The original per-sample implementation, kept as the semantic reference.
+
+    The production version is vectorised (numpy) because the Python loop held the
+    GIL for ~44 ms per 12 s chunk, which stalled the API for a whole batch's
+    packaging time. These values are what the reader's waveform geometry is
+    based on, so any rewrite has to reproduce them exactly.
+    """
+    with wave.open(io.BytesIO(wav_bytes), "rb") as handle:
+        frame_count = handle.getnframes()
+        channel_count = handle.getnchannels()
+        sample_width = handle.getsampwidth()
+        frames = handle.readframes(frame_count)
+    if frame_count <= 0 or sample_width not in (1, 2):
+        return [0.0] * bins
+    signed = sample_width == 2
+    peaks = [0.0] * bins
+    frames_per_bin = max(1.0, frame_count / bins)
+    bytes_per_frame = channel_count * sample_width
+    offset = 0
+    while offset < frame_count:
+        take = min(8192, frame_count - offset)
+        block = frames[offset * bytes_per_frame : (offset + take) * bytes_per_frame]
+        samples = (
+            struct.unpack(f"<{take * channel_count}h", block)
+            if signed
+            else struct.unpack(f"<{take * channel_count}B", block)
+        )
+        for local, raw_value in enumerate(samples):
+            magnitude = abs(raw_value) if signed else abs(raw_value - 128)
+            frame_index = offset + local // channel_count
+            bin_index = min(bins - 1, int(frame_index / frames_per_bin))
+            if magnitude > peaks[bin_index]:
+                peaks[bin_index] = magnitude
+        offset += take
+    loudest = max(peaks)
+    if loudest <= 0:
+        return peaks
+    scale = 0.95 / loudest
+    return [round(min(1.0, value * scale), 4) for value in peaks]
+
+
+@pytest.mark.parametrize("bins", [64, 256, 1000])
+@pytest.mark.parametrize(
+    "wav_bytes",
+    [
+        pytest.param(_build_wav([0] * 2400), id="silence"),
+        pytest.param(_build_wav([0] * 1200 + [20000] + [0] * 1199), id="single-spike"),
+        pytest.param(_build_wav([-32768] * 500 + [0] * 500), id="int16-minimum"),
+        pytest.param(_build_wav([100, -200, 300, -400] * 3), id="fewer-frames-than-bins"),
+        pytest.param(_build_wav([500] * 256), id="one-bin-of-frames"),
+        pytest.param(_build_wav([300, -900, 300, -900] * 700, channels=2), id="stereo"),
+        pytest.param(_build_wav([0, 64, 128, 192, 255] * 500, sample_width=1), id="8-bit"),
+        pytest.param(_build_wav([1000] * 2401), id="odd-frame-count"),
+    ],
+)
+def test_vectorised_peaks_match_the_reference_algorithm(wav_bytes, bins) -> None:
+    assert compute_peaks(wav_bytes, bins=bins) == _reference_peaks(wav_bytes, bins)

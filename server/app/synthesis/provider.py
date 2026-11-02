@@ -11,6 +11,8 @@ from functools import partial
 from time import perf_counter
 from typing import Any, Protocol
 
+import numpy as np
+
 from app.jobs.models import ChunkRecord
 from app.telemetry.memory import MIB, MemoryStats, system_memory_stats
 from app.voices.registry import VoicePrompt
@@ -106,6 +108,15 @@ class FakeQwenProvider:
         if batch_size > 6 or total_chars > 2400:
             raise SynthesisOOMError("Synthetic OOM triggered for oversized batch")
         await asyncio.sleep(0.01 * batch_size)
+        # Like the real provider, the waveform generation runs off the event loop.
+        # Inline it was pure-Python CPU work (~150 ms per chunk), which stalled
+        # HTTP and WebSocket traffic and made latency checks against the fake
+        # stack measure the fake instead of the app.
+        return await asyncio.to_thread(self._render_results, chunks, batch_size, total_chars)
+
+    def _render_results(
+        self, chunks: list[ChunkRecord], batch_size: int, total_chars: int
+    ) -> list[RawSynthesisResult]:
         reserved = 2600 + batch_size * 250 + total_chars // 12
         allocated = int(reserved * 0.84)
         return [
@@ -122,22 +133,19 @@ class FakeQwenProvider:
         return await asyncio.to_thread(system_memory_stats)
 
     def _build_wave_bytes(self, seed: int, text: str) -> bytes:
-        import math
-        import struct
-
         sample_rate = 22050
         seconds = max(1.0, min(12.0, len(text) / 22.0))
         total_frames = int(sample_rate * seconds)
         frequency = 220.0 + (seed % 5) * 35.0
         amplitude = 12000
+        times = np.arange(total_frames, dtype=np.float64) / sample_rate
+        samples = (amplitude * np.sin(2 * np.pi * frequency * times)).astype("<i2")
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
-            for frame in range(total_frames):
-                sample = int(amplitude * math.sin(2 * math.pi * frequency * (frame / sample_rate)))
-                wav_file.writeframes(struct.pack("<h", sample))
+            wav_file.writeframes(samples.tobytes())
         return buffer.getvalue()
 
 

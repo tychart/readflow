@@ -1,73 +1,85 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class RuntimeConfig(BaseModel):
+    """Runtime knobs, with the valid ranges expressed as field constraints.
+
+    This model is the single source of truth for what the scheduler accepts: the
+    admin update endpoint validates the *merged* config against it before
+    applying anything, so a typo cannot reach the scheduler. That matters
+    because two of these values can silently stop all rendering rather than fail
+    loudly — `plan_ahead_chunks=0` means the planner never queues a chunk, and a
+    `0` in the batch candidates means the scheduler dispatches an empty batch.
+    """
+
     device: Literal["auto", "cpu", "gpu"] = "auto"
-    idle_unload_seconds: int = 300
+    idle_unload_seconds: int = Field(default=300, ge=0)
     # Priority threshold, not a stop: an active listener with at least this much
     # audio buffered shares the lowest priority band with background work.
-    max_prebuffer_seconds: int = 300
-    target_buffer_seconds: int = 60
+    max_prebuffer_seconds: int = Field(default=300, ge=0)
+    target_buffer_seconds: int = Field(default=60, ge=0)
     # Opt-in lookahead cap. 0 (the default) means a job renders its whole text
     # and only an explicit pause stops it. A positive value stops *planning* new
     # chunks once the job has that many seconds of rendered audio buffered; the
     # plan-ahead window already in flight still finishes, so the real lookahead
     # overshoots by up to `plan_ahead_chunks` chunks. A job can opt out of the
     # cap for itself via `render_to_end` (reader: "Render rest now").
-    render_ahead_seconds: int = 0
+    render_ahead_seconds: int = Field(default=0, ge=0)
     # How long a job keeps counting as "actively listened" without a playback
     # position report. The reader syncs every ~3s while playing, so this only
     # expires a tab that was closed or stopped reporting; the job drops back to
     # background priority and keeps rendering.
-    active_listener_timeout_seconds: float = 60.0
-    planning_tick_seconds: float = 0.2
+    active_listener_timeout_seconds: float = Field(default=60.0, gt=0)
+    planning_tick_seconds: float = Field(default=0.2, gt=0)
     # How many chunks the planner keeps ready per schedulable job. Must be at
     # least the largest batch candidate, otherwise no single job can fill a
     # batch and the GPU runs undersized batches. Inactive (background) jobs use
     # the same window so they render at full batch size too.
-    plan_ahead_chunks: int = 16
-    batch_candidates_small_model: list[int] = Field(
-        default_factory=lambda: [8, 7, 6, 5, 4, 3, 2, 1]
+    plan_ahead_chunks: int = Field(default=16, ge=1)
+    batch_candidates_small_model: list[Annotated[int, Field(ge=1)]] = Field(
+        default_factory=lambda: [8, 7, 6, 5, 4, 3, 2, 1], min_length=1
     )
-    batch_candidates_large_model: list[int] = Field(default_factory=lambda: [6, 5, 4, 3, 2, 1])
-    vram_soft_limit_mb: int = 9000
-    vram_hard_limit_mb: int = 11000
+    batch_candidates_large_model: list[Annotated[int, Field(ge=1)]] = Field(
+        default_factory=lambda: [6, 5, 4, 3, 2, 1], min_length=1
+    )
+    vram_soft_limit_mb: int = Field(default=9000, ge=0)
+    vram_hard_limit_mb: int = Field(default=11000, ge=0)
     # Failed render attempts before a chunk is marked failed and skipped. The
     # job keeps rendering its other chunks; only the chunk is abandoned.
-    chunk_max_attempts: int = 3
+    chunk_max_attempts: int = Field(default=3, ge=1)
     # Size the per-batch generation budget from the longest chunk's estimated
     # duration times this headroom. It is a safety margin, not a quality knob:
     # Qwen's own default (2048 tokens ≈ 170s of audio) is what a single
     # degenerate sample used to consume, and a batch runs until its slowest
     # sequence, so one bad sample stalled the GPU for minutes.
-    synthesis_token_headroom: float = 1.4
+    synthesis_token_headroom: float = Field(default=1.4, gt=0)
     # Deadlines for the provider's single worker thread. A model load can
     # legitimately include a first-time download, so it gets a much larger
     # budget than a synthesis batch. A timeout flags the model as errored and
     # pauses dispatch until the provider is reset from Admin.
-    model_load_timeout_seconds: float = 900.0
-    synthesis_timeout_seconds: float = 300.0
+    model_load_timeout_seconds: float = Field(default=900.0, gt=0)
+    synthesis_timeout_seconds: float = Field(default=300.0, gt=0)
     # How many consecutive batches a model stays resident before the scheduler
     # will rotate to a model with pending work. A model swap unloads/reloads all
     # weights (and clears the voice prompt cache), so this floor is what keeps
     # competing models from thrashing the GPU.
-    model_residency_batches: int = 10
+    model_residency_batches: int = Field(default=10, ge=0)
     # Voice switches do not reload the model (only a cached per-voice prompt),
     # so a voice group only needs to stay on for a few batches before another
     # voice group gets a turn.
-    voice_residency_batches: int = 3
+    voice_residency_batches: int = Field(default=3, ge=0)
     default_model_id: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     default_voice_id: str = "suzy"
     default_language: str = "English"
-    chunk_target_chars: int = 700
-    estimated_chars_per_second: float = 18.0
-    recent_events_limit: int = 50
+    chunk_target_chars: int = Field(default=700, ge=1)
+    estimated_chars_per_second: float = Field(default=18.0, gt=0)
+    recent_events_limit: int = Field(default=50, ge=1)
 
 
 class Settings(BaseSettings):

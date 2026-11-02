@@ -1,9 +1,14 @@
+import asyncio
 import io
 import json
 import logging
+import threading
 import wave
 from typing import Any, cast
 
+import pytest
+
+from app.jobs.models import ChunkStatus
 from app.synthesis.worker import RenderedChunkResult
 
 
@@ -165,6 +170,53 @@ async def test_admin_config_exposes_render_ahead_policy(client, services):
     assert services.settings.runtime.active_listener_timeout_seconds == 30
 
 
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        ({"plan_ahead_chunks": 0}, "plan_ahead_chunks"),
+        ({"batch_candidates_small_model": [0]}, "batch_candidates_small_model"),
+        ({"batch_candidates_small_model": []}, "batch_candidates_small_model"),
+        ({"chunk_max_attempts": 0}, "chunk_max_attempts"),
+        ({"device": "banana"}, "device"),
+        ({"vram_soft_limit_mb": -1}, "vram_soft_limit_mb"),
+        ({"synthesis_timeout_seconds": 0}, "synthesis_timeout_seconds"),
+        ({"active_listener_timeout_seconds": 0}, "active_listener_timeout_seconds"),
+    ],
+)
+async def test_admin_config_rejects_values_that_would_stall_rendering(
+    client, services, payload, field
+):
+    """Admin knobs are validated before they reach the scheduler.
+
+    `plan_ahead_chunks=0` used to be accepted and then never planned a chunk, and
+    a 0 batch candidate dispatched an empty batch: both froze rendering with no
+    error anywhere. An unknown device was stored verbatim and handed to the
+    provider. They now fail as a 422 that names the field.
+    """
+    before = services.settings.runtime.model_dump()
+
+    response = await client.post("/api/admin/config", json=payload)
+
+    assert response.status_code == 422
+    assert field in response.json()["detail"]
+    # Nothing was applied, including the fields that were valid in the payload.
+    assert services.settings.runtime.model_dump() == before
+
+
+async def test_admin_config_update_is_atomic(client, services):
+    """A rejected update must not half-apply its valid fields."""
+    before = services.settings.runtime.model_dump()
+
+    response = await client.post(
+        "/api/admin/config",
+        json={"idle_unload_seconds": 42, "plan_ahead_chunks": 0},
+    )
+
+    assert response.status_code == 422
+    assert services.settings.runtime.idle_unload_seconds == before["idle_unload_seconds"]
+    assert services.settings.runtime.plan_ahead_chunks == before["plan_ahead_chunks"]
+
+
 async def test_render_to_end_endpoint_overrides_the_lookahead_cap(client, services):
     created = await client.post(
         "/api/jobs",
@@ -273,6 +325,68 @@ async def test_scheduler_emits_chunk_ready_without_duplicate_job_updated(client,
     payload = cast(dict[str, Any], chunk_event["payload"])
     assert payload["mime_type"].startswith("audio/mp4")
     assert payload["init_segment_url"] == f"/api/jobs/{job_id}/chunks/init"
+
+
+async def test_packaging_runs_off_the_event_loop(client, services, monkeypatch):
+    """ffmpeg packaging must not hold the event loop.
+
+    It costs hundreds of milliseconds per chunk; inline it froze every HTTP
+    request and WebSocket tick for the batch's total packaging time (~1.8 s p99
+    measured over a 150-chunk render).
+    """
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    original = services.media_store.package_wav_chunk
+
+    def spy(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(services.media_store, "package_wav_chunk", spy)
+
+    created = await client.post(
+        "/api/jobs",
+        data={"text": "Packaging should happen on a worker thread. " * 30, "voice_id": "suzy"},
+    )
+    job_id = created.json()["job"]["id"]
+
+    for _ in range(20):
+        await services.scheduler.run_once()
+        job = services.job_manager.get_job(job_id)
+        if any(chunk.status == ChunkStatus.WRITTEN for chunk in job.chunks):
+            break
+        await asyncio.sleep(0)
+
+    assert seen, "the fake provider should have rendered at least one chunk"
+    assert all(thread_id != loop_thread for thread_id in seen)
+
+
+async def test_download_export_runs_off_the_event_loop(client, services, monkeypatch):
+    """Building the .m4a re-encodes the whole job; it must not block the loop."""
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    original = services.media_store.build_export_file
+
+    def spy(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(services.media_store, "build_export_file", spy)
+
+    job = services.job_manager.create_job(
+        source_text="Export off the loop.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Export thread",
+    )
+    _seed_written_chunk(services, job, 0)
+    job.planner_cursor.offset = -1
+
+    response = await client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert seen and all(thread_id != loop_thread for thread_id in seen)
 
 
 async def test_download_job_audio_returns_full_m4a_for_completed_job(client, services):

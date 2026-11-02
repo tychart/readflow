@@ -70,8 +70,11 @@ export interface Voice {
   description: string | null;
 }
 
+/** Device override the admin can pick; mirrors `RuntimeConfig.device` on the server. */
+export type AdminDevice = "auto" | "gpu" | "cpu";
+
 export interface AdminConfig {
-  device: string;
+  device: AdminDevice;
   idle_unload_seconds: number;
   max_prebuffer_seconds: number;
   target_buffer_seconds: number;

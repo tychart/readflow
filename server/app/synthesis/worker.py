@@ -88,22 +88,7 @@ class SynthesisWorker:
                     clipped,
                 )
                 self._telemetry.record_event("synthesis_truncated", {"chunk_indices": clipped})
-            packaged: list[RenderedChunkResult] = []
-            for chunk, result in zip(chunks, results, strict=True):
-                stored = self._media_store.package_wav_chunk(
-                    chunk.job_id, chunk.index, result.wav_bytes
-                )
-                packaged.append(
-                    RenderedChunkResult(
-                        chunk_index=chunk.index,
-                        segment_path=stored.segment_path,
-                        init_segment_path=stored.init_segment_path,
-                        wav_path=stored.wav_path,
-                        duration_seconds=stored.duration_seconds,
-                        reserved_vram_mb=result.reserved_vram_mb,
-                        allocated_vram_mb=result.allocated_vram_mb,
-                    )
-                )
+            packaged = await asyncio.to_thread(self._package_chunks, chunks, results)
             duration = monotonic() - start
             last = packaged[-1] if packaged else RenderedChunkResult(0, "", "", "", 0.0, 0, 0)
             self._telemetry.record_batch(
@@ -116,6 +101,35 @@ class SynthesisWorker:
         finally:
             self._model_manager.mark_idle()
             await self._broadcast_model_state()
+
+    def _package_chunks(
+        self, chunks: list[ChunkRecord], results: list[RawSynthesisResult]
+    ) -> list[RenderedChunkResult]:
+        """Package rendered WAVs into MP4 segments and peaks.
+
+        Runs on a worker thread: `package_wav_chunk` shells out to ffmpeg and
+        computes peaks, which costs hundreds of milliseconds per chunk. Doing it
+        inline held the event loop for the batch's total packaging time, so
+        every HTTP request and WebSocket tick (playback reports included)
+        stalled — measured at ~1.8 s at p99 over a 150-chunk render.
+        """
+        packaged: list[RenderedChunkResult] = []
+        for chunk, result in zip(chunks, results, strict=True):
+            stored = self._media_store.package_wav_chunk(
+                chunk.job_id, chunk.index, result.wav_bytes
+            )
+            packaged.append(
+                RenderedChunkResult(
+                    chunk_index=chunk.index,
+                    segment_path=stored.segment_path,
+                    init_segment_path=stored.init_segment_path,
+                    wav_path=stored.wav_path,
+                    duration_seconds=stored.duration_seconds,
+                    reserved_vram_mb=result.reserved_vram_mb,
+                    allocated_vram_mb=result.allocated_vram_mb,
+                )
+            )
+        return packaged
 
     async def _synthesize_with_oom_retry(
         self, model_id: str, chunks: list[ChunkRecord], prompts: list[VoicePrompt]
