@@ -203,6 +203,20 @@ async def test_admin_config_rejects_values_that_would_stall_rendering(
     assert services.settings.runtime.model_dump() == before
 
 
+async def test_admin_config_rejects_unknown_fields(client, services):
+    """A mistyped knob must fail loudly instead of being silently dropped."""
+    before = services.settings.runtime.model_dump()
+
+    response = await client.post(
+        "/api/admin/config",
+        json={"plna_ahead_chunks": 4},  # typo of plan_ahead_chunks
+    )
+
+    assert response.status_code == 422
+    assert "plna_ahead_chunks" in response.text
+    assert services.settings.runtime.model_dump() == before
+
+
 async def test_admin_config_update_is_atomic(client, services):
     """A rejected update must not half-apply its valid fields."""
     before = services.settings.runtime.model_dump()

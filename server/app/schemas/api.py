@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.jobs.models import ChunkRecord, Job
 from app.telemetry.memory import MemoryStats as AdminMemoryStats
@@ -117,6 +117,10 @@ class AdminConfigResponse(BaseModel):
 
 
 class AdminConfigUpdateRequest(BaseModel):
+    # Admin knobs have near-identical names (vram_soft/hard, target/max buffer);
+    # a typo used to be dropped silently, so the operator saw a 200 and no change.
+    model_config = ConfigDict(extra="forbid")
+
     device: str | None = None
     idle_unload_seconds: int | None = None
     max_prebuffer_seconds: int | None = None

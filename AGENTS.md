@@ -2081,8 +2081,11 @@ freeze rendering with no error anywhere:
   returns early, again with no warning.
 
 An unknown `device` used to be `setattr`-ed onto the live config (bypassing pydantic) and
-handed to the provider; it is now a `Literal["auto", "cpu", "gpu"]`. Validation is atomic:
-a payload with one bad field applies none of it. `test_admin_config_rejects_values_that_would_stall_rendering`
+handed to the provider; it is now a `Literal["auto", "cpu", "gpu"]`. The request model also
+sets `extra="forbid"`, because the knob names are near-identical (`vram_soft_limit_mb` vs
+`vram_hard_limit_mb`, `target_buffer_seconds` vs `max_prebuffer_seconds`) and a typo used to
+return 200 with nothing changed. Validation is atomic: a payload with one bad field applies
+none of it. `test_admin_config_rejects_values_that_would_stall_rendering`
 (8 cases) and `test_admin_config_update_is_atomic` pin this.
 
 ### Admin system-resource readings
