@@ -75,6 +75,8 @@ same-origin with no extra setup.
   - **page-wide keyboard shortcuts** (Space/K, arrows, J/L) with a shortcuts guide
   - **reader settings** (speed, motion, conveyor, jump buttons, chunk window), saved per device
   - a **phone bottom dock** that puts the transport and conveyor in the thumb zone
+  - the open **job's title in the header**, fading in as the playbar compacts so
+    the document keeps its name once the heading has scrolled away
 - WebSocket-driven live job and admin updates
 - Built-in server-side voices discovered from `server/voices/`
 - Voice switching for future chunks only
@@ -184,6 +186,7 @@ Important frontend pieces:
 - [web/src/features/reader/conveyor-physics.ts](/home/tychart/projects/readflow/web/src/features/reader/conveyor-physics.ts): pure conveyor gesture physics and layout
 - [web/src/features/reader/PlaybackSpeedControl.tsx](/home/tychart/projects/readflow/web/src/features/reader/PlaybackSpeedControl.tsx): playback speed presets, slider and input (inside the settings panel)
 - [web/src/components/ChunkConveyor.tsx](/home/tychart/projects/readflow/web/src/components/ChunkConveyor.tsx): the fixed-playhead scrub strip
+- [web/src/components/NavbarJobTitle.tsx](/home/tychart/projects/readflow/web/src/components/NavbarJobTitle.tsx): the open job's title in the header (fades in with the playbar)
 - [web/src/state/reader-settings.ts](/home/tychart/projects/readflow/web/src/state/reader-settings.ts): device-local reader preferences
 - [web/src/features/admin/AdminPage.tsx](/home/tychart/projects/readflow/web/src/features/admin/AdminPage.tsx): runtime tuning and model controls
 - [web/src/hooks/useAppBootstrap.ts](/home/tychart/projects/readflow/web/src/hooks/useAppBootstrap.ts): initial data load and WebSocket wiring

@@ -301,6 +301,8 @@ Key files:
 - `web/src/features/jobs/JobCreateForm.tsx`
 - `web/src/features/reader/ReaderPage.tsx`
 - `web/src/features/admin/AdminPage.tsx`
+- `web/src/components/NavbarJobTitle.tsx` + `web/src/state/reader-title.ts`
+  (the open job's title in the header, see “The open job's title in the app header”)
 - `web/src/hooks/useAppBootstrap.ts`
 - `web/src/lib/api.ts`
 - `web/src/lib/transport.ts`
@@ -594,6 +596,73 @@ Rules and the traps behind them:
   flipping states” pins the scroll offset (anchoring), the half-way geometry and
   the fully compact geometry. jsdom cannot check `calc()`, so that test is the real
   guard; do not replace it with a unit assertion.
+
+### The open job's title in the app header (`NavbarJobTitle`)
+
+The header labels the document once the reader's own `<h2>` has scrolled away.
+`NavbarJobTitle` sits beside the compact brand and fades in on the **same**
+reader scroll progress the playbar compacts on (`* 1.5`, so it is fully opaque
+around 150px of the 220px range).
+
+- **The title travels through a tiny external store**, not a prop and not the
+  zustand workspace store: `web/src/state/reader-title.ts` (`setReaderTitle` /
+  `getReaderTitle` / `subscribeReaderTitle`), consumed by
+  `hooks/useReaderTitle.ts` (`useSyncExternalStore`). `ReaderPage` is the only
+  writer — it publishes `job.title` and clears it on unmount (in a separate
+  unmount-only effect, so changing the title does not flash `null`). Only
+  navigation touches it, so the shell re-renders per route, never per scroll.
+- **The progress is mirrored onto `<html>`.** `useScrollProgressVar({ alsoWriteRoot:
+  true })` writes `--scroll-progress` to the document as well as the reader's
+  sticky wrapper, and removes it on unmount. Custom properties inherit down the
+  tree and never sideways, and the header is a sibling of `<main>`, so the
+  wrapper's copy is unreachable there. Do not route this through React state or
+  a second scroll listener — the existing rAF-coalesced writer is the whole point.
+- **The fade is a Tailwind arbitrary value, not an inline style**:
+  `opacity-[calc(var(--scroll-progress,0)*1.5)]`. Inline styles beat every
+  selector, so an inline opacity would make `focus-visible:opacity-100`
+  impossible and leave keyboard users focused on invisible text. The class
+  bundle lives in one `TITLE_CLASSES` constant so the pair cannot drift.
+- **The divider is the button's left border**, not a sibling element: a sibling
+  hairline stayed visible at progress 0 (a stray `|` beside the brand), and
+  `sm:border-l`/`sm:pl-2` drops it on phone widths where every pixel goes to the
+  title.
+- **Clicking scrolls to the top** (`window.scrollTo`, `smooth` unless the OS asks
+  for reduced motion). It is deliberately not reader state and not navigation:
+  the header needs nothing from the reader but the string, and the top of the
+  document is where the expanded title and full controls are.
+- **On phones the brand wordmark hides** (`hidden sm:inline`) whenever a title is
+  present; the icon stays as the home link. At 375–390px the icon + wordmark +
+  title + nav tabs + badge + theme toggle do not fit, and the title truncated to
+  a couple of characters. The title itself truncates with an ellipsis and keeps
+  the full name in `title=`.
+- **The title text is now duplicated on a reader page** (header + page heading),
+  which is expected. Playwright's `getByText("Playwright job")` is therefore
+  ambiguous in e2e — use `getByRole("heading", …)` for the page heading, as the
+  reader/settings-sheet specs do.
+- **Never put an `sr-only` span inside a truncated control.** `sr-only` is
+  `position: absolute`; a `<button>` is not a positioned ancestor, so the button's
+  `overflow: hidden` does not clip it — it laid out at the end of the *untruncated*
+  title and widened the document to ~830px on a phone. The accessible-name suffix
+  therefore lives in `aria-label` (`"<title> — back to the top of the document"`,
+  which keeps the visible label inside the accessible name), not in the DOM.
+- **A too-long title must never widen the phone layout.** Ellipsis comes from
+  `truncate`; the reader's own `<h2>` additionally has `min-w-0` + `break-words`
+  (an unbroken title's min-content width is its longest word). When the document is
+  wider than the viewport, the sideways scroll carries the *sticky* header and
+  playbar — only as wide as the viewport — out of view entirely, which reads as
+  “the top bar disappeared when I scrolled”. No global `overflow-x: hidden` masks
+  this: `e2e/smoke.spec.ts` → “a long job title truncates instead of widening the
+  phone layout” asserts `scrollWidth <= innerWidth`, the ellipsis metrics, that the
+  heading stays inside the viewport, and that both sticky bars are at `top: 0`/
+  ~56px after scrolling with `scrollX === 0`.
+- Tests: `NavbarJobTitle.test.tsx` (empty state, tooltip/name, the fade+focus
+  classes, both scroll behaviours), `reader-title.test.ts` (dedupe, blank →
+  null), `App.test.tsx` (the header follows the store), `useScrollProgress.test.tsx`
+  (the `<html>` mirror and its removal), `ReaderPage.test.tsx` (publish on load,
+  clear on unmount), and `e2e/smoke.spec.ts` → “the header fades in the open job's
+  title as the playbar compacts” (resolved opacity 0 → 0<n<1 → 1, click returns to
+  the top, and no phone-width overflow). jsdom cannot resolve `calc()`, so that
+  e2e test is the real guard.
 
 ### Playhead coordinate rule (protect against a seek-position bug)
 
@@ -2477,6 +2546,34 @@ Frontend audit round (post-Biome):
 5. **Tests are typechecked.** `bun run typecheck` now runs `tsconfig.app.json` too, so the
    ~137 accumulated test-type errors are gone and cannot come back silently. Pitfall 12 was
    rewritten from “known debt” to “keep it green”.
+
+Header-title round:
+
+1. **The open job's title fades into the app header** as the reader's playbar compacts
+   (`components/NavbarJobTitle.tsx`), so the document keeps a name once its own heading has
+   scrolled away. It fades on the reader's existing `--scroll-progress` value, mirrored onto
+   `<html>`, so the header still never re-renders per scroll frame.
+2. **A three-function store carries it** (`state/reader-title.ts` + `hooks/useReaderTitle.ts`):
+   the reader publishes `job.title` and clears it on unmount; the shell reads it once per
+   route. Nothing else about the reader crosses into the shell.
+3. **The fade is a utility class, not an inline style**, so `focus-visible` can reveal the
+   label to keyboard users; clicking it scrolls back to the top of the document, and the
+   brand wordmark steps aside for it on phone widths.
+4. Two e2e specs that matched the page heading with `getByText("Playwright job")` were
+   scoped to `getByRole("heading", …)`: the header now legitimately shows the same text.
+5. **Drive-by fix found while checking the header on phone widths:** the compact brand's
+   opacity was tied to `--navbar-progress`, whose cross-fade partner (the lockup) is `md:`
+   only, so at the top of the jobs page below `md` the header rendered with **no brand at
+   all**. It is now `opacity-100 md:opacity-[var(--navbar-progress,1)]`, pinned by an e2e
+   test that reads the resolved opacity on a 390px jobs page.
+6. **Follow-up: a long job title widened the phone layout.** The accessible-name suffix was
+   an `sr-only` span inside the truncated header button; `sr-only` is absolutely positioned
+   and the button is not a positioned ancestor, so it escaped `overflow: hidden`, laid out at
+   the end of the full ~775px title and made the document 831px wide on a 390px screen. The
+   sideways scroll then carried the sticky bars out of view (“the top bar disappeared”).
+   The suffix is now `aria-label`; the reader's `<h2>` gained `min-w-0` + `break-words` (and a
+   gap from the status chip); and a phone e2e test pins `scrollWidth <= innerWidth`, the
+   ellipsis, and both sticky bars staying on screen after scrolling.
 
 ## Agent Workflow Checklist
 

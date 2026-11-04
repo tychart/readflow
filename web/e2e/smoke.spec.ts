@@ -297,6 +297,23 @@ test("jobs page creates a job", async ({ page }) => {
   await expect(page.getByText("Playwright job")).toBeVisible();
 });
 
+test("the phone jobs page keeps the brand visible at the top of the page", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  // The expanded lockup is `md:` only, so the compact brand is the only brand
+  // on a phone and must not fade out with the navbar progress.
+  const brand = page.getByRole("link", { name: "ReadFlow home" });
+  await expect(brand).toBeVisible();
+  expect(
+    await brand.evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element).opacity),
+    ),
+  ).toBe(1);
+});
+
 test("reader updates live when a new chunk arrives without a reload", async ({
   page,
 }) => {
@@ -900,6 +917,154 @@ test("the playbar shrinks continuously with scroll instead of flipping states", 
   expect(compact.timeline.height).toBeLessThan(halfway.timeline.height);
 });
 
+test("a long job title truncates instead of widening the phone layout", async ({
+  page,
+}) => {
+  // Long and unbroken enough to challenge both the header slot and the reader's
+  // heading (a single word has a min-content width larger than the viewport).
+  const longTitle =
+    "The Long Dark — Supercalifragilisticexpialidociousandthensomeotheradventuresofthereader";
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({
+      json: { ...buildJob(20, "queued"), title: longTitle },
+    });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(20) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+
+  const titleButton = page.getByTestId("navbar-job-title").getByRole("button");
+  await expect(titleButton).toBeVisible();
+
+  // The header clips the label with an ellipsis instead of growing the layout.
+  const title = await titleButton.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    textOverflow: getComputedStyle(element).textOverflow,
+    whiteSpace: getComputedStyle(element).whiteSpace,
+  }));
+  expect(title.textOverflow).toBe("ellipsis");
+  expect(title.whiteSpace).toBe("nowrap");
+  expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
+
+  // Nothing may stick out horizontally. This is the bug that made the reader
+  // unusable on a phone: a stray absolutely-positioned node inside the
+  // truncated button escaped `overflow: hidden` (the button is not a positioned
+  // ancestor) and widened the document to ~830px. The sideways scroll then
+  // carried the sticky bars — only as wide as the viewport — out of view.
+  const layout = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    heading: document.querySelector("h2")?.getBoundingClientRect()
+      .right as number,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+  expect(layout.heading).toBeLessThanOrEqual(layout.innerWidth);
+
+  // Scrolling down keeps both sticky bars on screen, with no horizontal drift.
+  await page.evaluate(() => window.scrollTo({ top: 400, behavior: "instant" }));
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => resolve(0))),
+  );
+  const afterScroll = await page.evaluate(() => ({
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    header: document
+      .querySelector('[data-testid="navbar"]')
+      ?.getBoundingClientRect()
+      .toJSON(),
+    playbar: document
+      .querySelector('[aria-label="Playback controls"]')
+      ?.getBoundingClientRect()
+      .toJSON(),
+  }));
+  expect(afterScroll.scrollY).toBe(400);
+  expect(afterScroll.scrollX).toBe(0);
+  expect(afterScroll.header?.top).toBe(0);
+  // The playbar's sticky wrapper starts at 56px; its own compact padding puts
+  // the toolbar a few pixels lower. What matters is that it is on screen.
+  expect(afterScroll.playbar?.top).toBeGreaterThanOrEqual(56);
+  expect(afterScroll.playbar?.top).toBeLessThan(120);
+});
+
+test("the header fades in the open job's title as the playbar compacts", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(40, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(40) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1");
+  await expect(page.getByText(/40\/40 chunks/i)).toBeVisible();
+
+  const title = page
+    .getByTestId("navbar-job-title")
+    .getByRole("button", { name: /Playwright job/ });
+
+  /**
+   * The title's opacity is a `calc()` on the reader's scroll progress (mirrored
+   * onto `<html>`), so this is the assertion that the header actually resolves
+   * it — jsdom cannot. It also proves the fade is continuous rather than a
+   * threshold that flips on at one offset.
+   */
+  const opacity = async () =>
+    title.evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element).opacity),
+    );
+
+  const scrollTo = async (top: number) => {
+    await page.evaluate(
+      (value) => window.scrollTo({ top: value, behavior: "instant" }),
+      top,
+    );
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => resolve(0))),
+    );
+  };
+
+  await scrollTo(0);
+  // Expanded: the page heading is on screen, so the header stays a brand.
+  expect(await opacity()).toBe(0);
+
+  await scrollTo(110);
+  const halfway = await opacity();
+  expect(halfway).toBeGreaterThan(0);
+  expect(halfway).toBeLessThan(1);
+
+  await scrollTo(220);
+  expect(await opacity()).toBe(1);
+
+  // Clicking it returns to the top of the document, where the expanded reader
+  // controls are.
+  await title.click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+
+  // Phone widths show the same title; the brand wordmark steps aside so the
+  // name still fits beside the nav tabs without overflowing the header.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await scrollTo(220);
+  await expect(title).toBeVisible();
+  expect(await opacity()).toBe(1);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
 test("playback speed lives in the reader settings sheet and badges the playbar", async ({
   page,
 }) => {
@@ -916,7 +1081,11 @@ test("playback speed lives in the reader settings sheet and badges the playbar",
   });
 
   await page.goto("/jobs/job-1");
-  await expect(page.getByText("Playwright job")).toBeVisible();
+  // The heading, not just any node with this text: the open job's title also
+  // lives in the header once the reader has loaded.
+  await expect(
+    page.getByRole("heading", { name: "Playwright job" }),
+  ).toBeVisible();
 
   // The playbar keeps its space: no speed control until the panel is opened.
   await expect(
@@ -1064,7 +1233,9 @@ test.describe("reader settings sheet gestures", () => {
     });
 
     await page.goto("/jobs/job-1");
-    await expect(page.getByText("Playwright job")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Playwright job" }),
+    ).toBeVisible();
 
     // Scroll the reader first, so "the page moved" is detectable.
     await page.evaluate(() =>

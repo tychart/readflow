@@ -16,6 +16,7 @@ import {
   resetReaderSettings,
   setReaderSettings,
 } from "../../state/reader-settings";
+import { getReaderTitle, setReaderTitle } from "../../state/reader-title";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobStatus } from "../../types/api";
 import { ReaderPage } from "./ReaderPage";
@@ -194,6 +195,7 @@ beforeEach(() => {
   // would otherwise leak that layout into every later test in the file.
   resetReaderSettings();
   invalidateReaderSettingsCache();
+  setReaderTitle(null);
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
   HTMLMediaElement.prototype.load = vi.fn();
@@ -282,6 +284,34 @@ test("loads a job and sends play plus voice actions", async () => {
     voice_id: "howard",
     rerender_written: false,
   });
+});
+
+test("publishes the open job's title to the header and clears it on unmount", async () => {
+  seedStore();
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => buildReaderJob(1) };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(1) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  const { unmount } = render(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route element={<ReaderPage />} path="/jobs/:jobId" />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await waitFor(() => expect(getReaderTitle()).toBe("Reader job"));
+
+  unmount();
+  // The header must not keep labelling the page with a job that was closed.
+  expect(getReaderTitle()).toBeNull();
 });
 
 test("full re-render rebuilds written audio and resets playback", async () => {

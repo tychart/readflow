@@ -13,10 +13,12 @@ import readflowIcon from "../assets/brand/readflow-icon.svg";
 import readflowLockupDark from "../assets/brand/readflow-lockup-dark.svg";
 import readflowLockupLight from "../assets/brand/readflow-lockup-light.svg";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { NavbarJobTitle } from "../components/NavbarJobTitle";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { AdminPage } from "../features/admin/AdminPage";
 import { JobsPage } from "../features/jobs/JobsPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
+import { useReaderTitle } from "../hooks/useReaderTitle";
 import { useScrollProgressVar } from "../hooks/useScrollProgress";
 import { useTheme } from "../hooks/useTheme";
 import { useAppStore } from "../state/store";
@@ -136,6 +138,11 @@ function Shell() {
     forced: isJobsPage ? undefined : 1,
   });
 
+  // The open reader's job title, published by `ReaderPage`. This is route-level
+  // state (set when a job loads, cleared when the reader unmounts), so it only
+  // re-renders the header on navigation — the fade itself is CSS.
+  const readerTitle = useReaderTitle();
+
   useEffect(() => {
     timerRef.current = setInterval(() => forceUpdate((n) => n + 1), 10_000);
     return () => {
@@ -184,23 +191,40 @@ function Shell() {
             />
           </span>
 
-          {/* Compact brand — always present; cross-fades under the lockup */}
-          <Link
-            aria-label="ReadFlow home"
-            className="flex items-center transition hover:opacity-80"
-            style={{ opacity: "var(--navbar-progress, 1)" }}
-            to="/"
-          >
-            <img
-              alt=""
-              className="h-7 w-7"
-              draggable={false}
-              src={readflowIcon}
-            />
-            <span className="text-sm font-semibold tracking-wide text-[var(--ink-primary)]">
-              ReadFlow
-            </span>
-          </Link>
+          {/* Brand + the open job's title. `min-w-0` on the cluster and on the
+              title is what lets a long job name truncate instead of pushing the
+              nav tabs off a phone screen. */}
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            {/* Compact brand — always present; cross-fades under the lockup.
+                The lockup is `md:` only, so below `md` there is nothing to fade
+                against and the brand stays opaque (at `progress = 0` it used to
+                fade out entirely, leaving the phone jobs page with no brand at
+                all). */}
+            <Link
+              aria-label="ReadFlow home"
+              className="flex shrink-0 items-center transition hover:opacity-80 md:opacity-[var(--navbar-progress,1)]"
+              to="/"
+            >
+              <img
+                alt=""
+                className="h-7 w-7"
+                draggable={false}
+                src={readflowIcon}
+              />
+              {/* The wordmark steps aside for the job title on phone widths
+                  (the icon stays as the home link): both do not fit beside the
+                  nav tabs at 375px. */}
+              <span
+                className={`text-sm font-semibold tracking-wide text-[var(--ink-primary)] ${
+                  readerTitle ? "hidden sm:inline" : ""
+                }`}
+              >
+                ReadFlow
+              </span>
+            </Link>
+
+            <NavbarJobTitle title={readerTitle} />
+          </div>
 
           {/* Right: nav tabs + connection badge + theme toggle */}
           <div className="flex items-center gap-3">

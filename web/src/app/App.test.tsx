@@ -1,6 +1,14 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { liveClient } from "../lib/live-client";
+import { setReaderTitle } from "../state/reader-title";
 import { useAppStore } from "../state/store";
 import { App } from "./App";
 
@@ -123,6 +131,9 @@ function seedStore() {
 beforeEach(() => {
   seedStore();
   setScrollY(0);
+  // The open reader's title outlives a route change by design, so a test that
+  // publishes one must not leak it into the next test.
+  setReaderTitle(null);
   MockWebSocket.instances = [];
   MockWebSocket.latest = null;
   vi.stubGlobal("WebSocket", MockWebSocket);
@@ -271,6 +282,28 @@ test("clicking the brand navigates back to the jobs page", async () => {
 
   await waitFor(() => expect(window.location.pathname).toBe("/"));
   expect(await screen.findByText("Live job")).toBeInTheDocument();
+});
+
+test("the header shows the open reader's job title and drops it when the reader closes", async () => {
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  // No reader open → the header is just the brand.
+  expect(screen.queryByTestId("navbar-job-title")).toBeNull();
+
+  act(() => setReaderTitle("Chapter 4 — The Long Dark"));
+
+  const title = await screen.findByTestId("navbar-job-title");
+  expect(
+    within(title).getByRole("button", {
+      name: /Chapter 4 — The Long Dark/,
+    }),
+  ).toBeInTheDocument();
+  // Navigating away must not leave the old job's name in the header.
+  act(() => setReaderTitle(null));
+  expect(screen.queryByTestId("navbar-job-title")).toBeNull();
 });
 
 test("jobs page navbar is expanded with the full lockup at the top", async () => {

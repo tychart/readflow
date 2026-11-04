@@ -32,6 +32,7 @@ import {
   resetReaderSettings,
   setReaderSettings,
 } from "../../state/reader-settings";
+import { setReaderTitle } from "../../state/reader-title";
 import { useAppStore } from "../../state/store";
 import type { Chunk, JobDetail, JobManifest } from "../../types/api";
 import type { TimelineSlotData } from "../../types/timeline";
@@ -167,6 +168,18 @@ export function ReaderPage() {
 
   const isJobTerminal = isTerminalStatus(job?.status);
   useAppBootstrap(!loading && !!job && !isJobTerminal);
+
+  // ── Header title ────────────────────────────────────────
+  // The app header lives in the shell, a sibling of this page, so the job title
+  // travels through a tiny external store rather than a prop. It is published
+  // here (the only place that loaded the job) and cleared on unmount; keeping
+  // the clear in its own effect avoids the null flash a cleanup+set pair would
+  // produce every time the title itself changes.
+  useEffect(() => {
+    setReaderTitle(job?.title ?? null);
+  }, [job?.title]);
+
+  useEffect(() => () => setReaderTitle(null), []);
 
   // Device-local reader preferences (jump controls, conveyor, motion).
   const settings = useReaderSettings();
@@ -1038,7 +1051,10 @@ export function ReaderPage() {
   // the sticky wrapper below, NOT held in state: it changes on every scroll
   // frame, and re-rendering (and re-laying-out) the page per frame is what made
   // the bar stutter and flicker mid-shrink on a phone.
-  const attachScrollProgress = useScrollProgressVar();
+  //
+  // It is mirrored onto `<html>` so the app header — outside this subtree — can
+  // fade the job title in on the same continuous value.
+  const attachScrollProgress = useScrollProgressVar({ alsoWriteRoot: true });
 
   // ── Reader text layout — must be before early returns ─────
   // Slicing the document is memoized so playback ticks (which re-render the

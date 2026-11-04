@@ -6,6 +6,7 @@ import { scrollProgressFor, useScrollProgressVar } from "./useScrollProgress";
 afterEach(() => {
   cleanup();
   setScrollY(0);
+  document.documentElement.style.removeProperty("--probe-progress");
 });
 
 function setScrollY(value: number) {
@@ -17,8 +18,20 @@ function setScrollY(value: number) {
 }
 
 /** Mounts a div that attaches the hook's callback ref to itself. */
-function Probe({ variable, forced }: { variable: string; forced?: number }) {
-  const attachRef = useScrollProgressVar<HTMLDivElement>({ variable, forced });
+function Probe({
+  variable,
+  forced,
+  alsoWriteRoot,
+}: {
+  variable: string;
+  forced?: number;
+  alsoWriteRoot?: boolean;
+}) {
+  const attachRef = useScrollProgressVar<HTMLDivElement>({
+    variable,
+    forced,
+    alsoWriteRoot,
+  });
   return <div data-testid="probe" ref={attachRef} />;
 }
 
@@ -87,5 +100,32 @@ describe("useScrollProgressVar", () => {
     expect(
       getByTestId("probe").style.getPropertyValue("--probe-progress"),
     ).toBe("1.000");
+  });
+
+  it("mirrors the value onto <html> so siblings can interpolate on it", async () => {
+    setScrollY(110);
+    const { unmount } = render(
+      <Probe alsoWriteRoot variable="--probe-progress" />,
+    );
+
+    // The reader's sticky wrapper sets its own copy; the header (a sibling of
+    // `<main>`) can only see the document-level one.
+    expect(
+      document.documentElement.style.getPropertyValue("--probe-progress"),
+    ).toBe("0.500");
+
+    setScrollY(220);
+    window.dispatchEvent(new Event("scroll"));
+    await waitFor(() =>
+      expect(
+        document.documentElement.style.getPropertyValue("--probe-progress"),
+      ).toBe("1.000"),
+    );
+
+    // A closed reader must not leave its progress on the document.
+    unmount();
+    expect(
+      document.documentElement.style.getPropertyValue("--probe-progress"),
+    ).toBe("");
   });
 });

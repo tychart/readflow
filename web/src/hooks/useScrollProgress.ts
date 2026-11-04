@@ -27,6 +27,14 @@ export interface ScrollProgressVarOptions {
    * compact on every route that is not the jobs page.
    */
   forced?: number;
+  /**
+   * Also write the value onto `<html>`, so elements *outside* the attached
+   * element's subtree can interpolate on it. Custom properties inherit down the
+   * tree and never sideways, so a sibling of `<main>` (the app header, which
+   * fades the open job's title in as the reader's playbar compacts) cannot see
+   * the reader's copy otherwise.
+   */
+  alsoWriteRoot?: boolean;
 }
 
 /**
@@ -49,15 +57,18 @@ export function useScrollProgressVar<T extends HTMLElement = HTMLDivElement>({
   variable = "--scroll-progress",
   rangePx = SCROLL_PROGRESS_RANGE_PX,
   forced,
+  alsoWriteRoot = false,
 }: ScrollProgressVarOptions = {}) {
   const elementRef = useRef<T | null>(null);
 
   const write = useCallback(() => {
-    const element = elementRef.current;
-    if (!element) return;
     const progress = forced ?? scrollProgressFor(window.scrollY || 0, rangePx);
-    element.style.setProperty(variable, progress.toFixed(3));
-  }, [forced, rangePx, variable]);
+    const value = progress.toFixed(3);
+    if (alsoWriteRoot) {
+      document.documentElement.style.setProperty(variable, value);
+    }
+    elementRef.current?.style.setProperty(variable, value);
+  }, [alsoWriteRoot, forced, rangePx, variable]);
 
   const attachRef = useCallback(
     (element: T | null) => {
@@ -70,7 +81,13 @@ export function useScrollProgressVar<T extends HTMLElement = HTMLDivElement>({
   useEffect(() => {
     write();
     // A pinned value has no scroll dependency, so there is nothing to listen for.
-    if (forced !== undefined) return undefined;
+    if (forced !== undefined) {
+      return () => {
+        if (alsoWriteRoot) {
+          document.documentElement.style.removeProperty(variable);
+        }
+      };
+    }
 
     let frameId = 0;
     const schedule = () => {
@@ -89,8 +106,13 @@ export function useScrollProgressVar<T extends HTMLElement = HTMLDivElement>({
       window.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
       if (frameId) window.cancelAnimationFrame(frameId);
+      // The header keeps a stale reading for at most one frame, but a reader
+      // that closed must not leave its progress on the document.
+      if (alsoWriteRoot) {
+        document.documentElement.style.removeProperty(variable);
+      }
     };
-  }, [forced, write]);
+  }, [alsoWriteRoot, forced, variable, write]);
 
   return attachRef;
 }

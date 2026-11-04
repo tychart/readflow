@@ -47,16 +47,19 @@ export function ReaderContent({
   return (
     <>
       {/* Header row with title + toggle */}
-      <div className="mb-4 flex items-center justify-between">
-        <div>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        {/* `min-w-0` + `break-words`: an unbroken job title has a min-content
+            width equal to its longest word, so without those it pushed the
+            reader wider than a phone screen. */}
+        <div className="min-w-0">
           <p className="text-xs uppercase tracking-[0.2em] text-[var(--ink-secondary)]">
             Reader
           </p>
-          <h2 className="mt-1 text-xl font-bold text-[var(--ink-primary)]">
+          <h2 className="mt-1 break-words text-xl font-bold text-[var(--ink-primary)]">
             {title}
           </h2>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
             {status}
           </span>
