@@ -311,8 +311,11 @@ function AdminOverview() {
 
   const recentBatch = adminState.telemetry?.recent_batches[0];
 
+  // `minmax(0, …)` keeps a long unbreakable value (a job title, a model id) from
+  // setting the track's automatic minimum to its min-content width and widening
+  // the page — the same trap the jobs page hit.
   return (
-    <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
       {/* ── Config Form ──────────────────────────────────── */}
       <form
         className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5"

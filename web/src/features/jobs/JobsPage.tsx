@@ -92,7 +92,12 @@ export function JobsPage() {
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
-      <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+      {/* Explicit `minmax(0, …)` tracks on purpose. An implicit column (mobile) and
+          a bare `1.2fr 1fr` track both take their automatic minimum from their
+          content's min-content size; a truncated (nowrap) job title has a
+          min-content width of the entire string, so the track grew past the
+          viewport and the page scrolled sideways. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <div className="space-y-4">
           {/* Page heading */}
           <div>
@@ -140,7 +145,11 @@ export function JobsPage() {
                   >
                     <div className="flex items-center justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-[var(--ink-primary)]">
+                        <div
+                          className="truncate text-sm font-medium text-[var(--ink-primary)]"
+                          data-testid="job-card-title"
+                          title={job.title ?? undefined}
+                        >
                           {job.title ?? "Untitled job"}
                         </div>
                         <div className="mt-0.5 text-xs text-[var(--ink-secondary)]">

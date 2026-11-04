@@ -297,6 +297,68 @@ test("jobs page creates a job", async ({ page }) => {
   await expect(page.getByText("Playwright job")).toBeVisible();
 });
 
+test("a long job title truncates in the jobs list instead of widening the page", async ({
+  page,
+}) => {
+  const longTitle =
+    "The Long Dark — Supercalifragilisticexpialidociousandthensomeotheradventuresofthereader";
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  // Registered in the test, so it wins over the empty list from `beforeEach`.
+  await page.route("**/api/jobs", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: [
+        {
+          id: "job-long",
+          title: longTitle,
+          status: "queued",
+          voice_id: "suzy",
+          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+          is_active_listening: false,
+          total_chunks_emitted: 20,
+          total_chunks_completed: 12,
+          buffered_seconds: 48,
+          completed_seconds: 0,
+        },
+      ],
+    });
+  });
+
+  await page.goto("/");
+
+  const cardTitle = page.getByTestId("job-card-title");
+  await expect(cardTitle).toBeVisible();
+
+  // The card is the only wide thing on the page, so this is where a `fr`/implicit
+  // grid track used to grow to the title's min-content width and take the whole
+  // page with it (document 805px wide on a 390px screen).
+  const layout = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+  const card = await page
+    .getByRole("link", { name: /Supercalifragilisticexpialidocious/ })
+    .boundingBox();
+  expect(card).not.toBeNull();
+  expect((card?.x ?? 0) + (card?.width ?? 0)).toBeLessThanOrEqual(390);
+
+  // ...and the title gives up its width with an ellipsis, not by clipping.
+  const title = await cardTitle.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    textOverflow: getComputedStyle(element).textOverflow,
+    whiteSpace: getComputedStyle(element).whiteSpace,
+  }));
+  expect(title.textOverflow).toBe("ellipsis");
+  expect(title.whiteSpace).toBe("nowrap");
+  expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
+});
+
 test("the phone jobs page keeps the brand visible at the top of the page", async ({
   page,
 }) => {

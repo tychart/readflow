@@ -655,6 +655,16 @@ around 150px of the 220px range).
   phone layout” asserts `scrollWidth <= innerWidth`, the ellipsis metrics, that the
   heading stays inside the viewport, and that both sticky bars are at `top: 0`/
   ~56px after scrolling with `scrollX === 0`.
+- **Grid tracks need `minmax(0, …)` around anything that can truncate.** A bare `fr`
+  track — and an implicit one, i.e. a plain `grid` with no `grid-cols-*` at that
+  breakpoint — takes its automatic minimum from the item's **min-content** size, and
+  a `truncate` (nowrap) title contributes the whole string. `JobsPage`'s
+  `lg:grid-cols-[1.2fr_1fr]` therefore stretched the phone jobs list to 805px. It is
+  now `grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]`,
+  `AdminPage`'s two-column grid got the same treatment, and `QueueInspector` already
+  did it. Guarded by e2e → “a long job title truncates in the jobs list instead of
+  widening the page” (`document.scrollWidth <= innerWidth`, the card's right edge,
+  and the ellipsis metrics on `[data-testid="job-card-title"]`).
 - Tests: `NavbarJobTitle.test.tsx` (empty state, tooltip/name, the fade+focus
   classes, both scroll behaviours), `reader-title.test.ts` (dedupe, blank →
   null), `App.test.tsx` (the header follows the store), `useScrollProgress.test.tsx`
@@ -2574,6 +2584,12 @@ Header-title round:
    The suffix is now `aria-label`; the reader's `<h2>` gained `min-w-0` + `break-words` (and a
    gap from the status chip); and a phone e2e test pins `scrollWidth <= innerWidth`, the
    ellipsis, and both sticky bars staying on screen after scrolling.
+7. **Follow-up 2: the jobs list had the same sideways scroll for a different reason.**
+   `JobsPage`'s `lg:grid-cols-[1.2fr_1fr]` (and the implicit single column below `lg`) took
+   its automatic minimum from the truncated card title's min-content width, stretching the
+   page to 805px on a 390px screen. Both tracks are now `minmax(0, …)` (`AdminPage`'s grid
+   too), the card title keeps a `title=` tooltip and gained `data-testid="job-card-title"`,
+   and an e2e test pins the no-overflow contract for the jobs list.
 
 ## Agent Workflow Checklist
 
