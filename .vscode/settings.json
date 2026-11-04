@@ -4,6 +4,8 @@
   // (biome.jsonc at the repo root). The extension is recommended in
   // .vscode/extensions.json; these settings are what make saving a file
   // equivalent to `bun run lint:fix` in web/.
+  "biome.enabled": true,
+  "biome.lsp.bin": "/home/tychart/projects/readflow/web/node_modules/.bin/biome",
   "editor.defaultFormatter": "biomejs.biome",
   "editor.formatOnSave": true,
   "editor.codeActionsOnSave": {
