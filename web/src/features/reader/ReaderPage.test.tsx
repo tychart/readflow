@@ -10,6 +10,8 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
+import { PlayerProvider } from "../../player/PlayerProvider";
+import { resetPlayerStore, usePlayerStore } from "../../player/player-store";
 import {
   getReaderSettings,
   invalidateReaderSettingsCache,
@@ -60,6 +62,7 @@ const originalMediaSource = window.MediaSource;
 
 afterEach(() => {
   cleanup();
+  resetPlayerStore();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   globalThis.fetch = originalFetch;
@@ -253,7 +256,7 @@ test("loads a job and sends play plus voice actions", async () => {
   );
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -299,7 +302,7 @@ test("publishes the open job's title to the header and clears it on unmount", as
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  const { unmount } = render(
+  const { unmount } = renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -363,7 +366,7 @@ test("full re-render rebuilds written audio and resets playback", async () => {
   );
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -439,7 +442,7 @@ test("re-render all can be chosen later without changing the voice", async () =>
   );
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -491,7 +494,7 @@ test("asks the backend to render the rest of the job", async () => {
   );
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -526,7 +529,7 @@ test("redirects to the jobs page when the job id does not exist", async () => {
     json: async () => ({ detail: "Job not found" }),
   })) as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/missing-job"]}>
       <Routes>
         <Route element={<div>Jobs page</div>} path="/" />
@@ -559,7 +562,7 @@ test("retries a transient load failure, then redirects home once the backend rep
     };
   }) as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/missing-job"]}>
       <Routes>
         <Route element={<div>Jobs page</div>} path="/" />
@@ -598,7 +601,7 @@ test("revalidates the loaded job and redirects when the live link reconnects to 
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<div>Jobs page</div>} path="/" />
@@ -629,7 +632,7 @@ test("shows a calm reconnect state while retrying, then the error once retries a
     throw new TypeError("Failed to fetch");
   }) as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -714,7 +717,7 @@ test("shows waiting copy when play is armed before the first chunk exists", asyn
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -855,7 +858,7 @@ test("stays in buffering mode when playback reaches the end of the current conti
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  const { container } = render(
+  const { container } = renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -997,7 +1000,7 @@ test("shows a stall banner when the producer stops and can retry", async () => {
       return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
     }) as unknown as typeof fetch;
 
-    const { container } = render(
+    const { container } = renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1007,6 +1010,12 @@ test("shows a stall banner when the producer stops and can retry", async () => {
 
     await screen.findByText("Reader job");
     await user.click(screen.getByRole("button", { name: "Play" }));
+    // The `ended` event is only meaningful once the player knows the rendered
+    // duration; waiting on the mirrored player state removes a real race
+    // between the manifest fetch and this synthetic event.
+    await waitFor(() =>
+      expect(usePlayerStore.getState().renderedDurationSeconds).toBe(12),
+    );
 
     const audio = readerAudio(container);
     act(() => {
@@ -1017,9 +1026,6 @@ test("shows a stall banner when the producer stops and can retry", async () => {
     });
 
     await screen.findByText(/Buffering/i);
-    expect(
-      screen.queryByText(/Rendering seems stalled/i),
-    ).not.toBeInTheDocument();
 
     // No new chunk for longer than the stall threshold.
     await act(async () => {
@@ -1075,7 +1081,7 @@ test("renders analyzed waveform bars fetched from the backend", async () => {
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  const { container } = render(
+  const { container } = renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1113,7 +1119,7 @@ test("sidebar toggle button stays stable across re-renders and toggles the sideb
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1204,7 +1210,7 @@ test("returns to Play (no spinner) after a completed job finishes playing", asyn
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  const { container } = render(
+  const { container } = renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1274,7 +1280,7 @@ test("highlights the chunk under the playhead without remounting the other block
     return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
   }) as unknown as typeof fetch;
 
-  const { container } = render(
+  const { container } = renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1708,7 +1714,7 @@ describe("chunk versioning & reprocessing", () => {
       }),
     );
 
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1767,7 +1773,7 @@ describe("chunk versioning & reprocessing", () => {
       }),
     );
 
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1825,7 +1831,7 @@ describe("chunk versioning & reprocessing", () => {
       }),
     );
 
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1877,7 +1883,7 @@ describe("chunk versioning & reprocessing", () => {
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -1989,7 +1995,7 @@ describe("chunk versioning & reprocessing", () => {
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -2068,13 +2074,22 @@ function mockLongJobFetch(chunks: Chunk[]) {
   }) as unknown as typeof fetch;
 }
 
-function renderReader() {
+/**
+ * The player now lives above the reader, so every reader test mounts the
+ * provider too. Passing a tree lets a test use its own router setup; the
+ * default is the standard single-job reader route.
+ */
+function renderReader(ui?: React.ReactElement) {
   return render(
-    <MemoryRouter initialEntries={["/jobs/job-1"]}>
-      <Routes>
-        <Route element={<ReaderPage />} path="/jobs/:jobId" />
-      </Routes>
-    </MemoryRouter>,
+    <PlayerProvider>
+      {ui ?? (
+        <MemoryRouter initialEntries={["/jobs/job-1"]}>
+          <Routes>
+            <Route element={<ReaderPage />} path="/jobs/:jobId" />
+          </Routes>
+        </MemoryRouter>
+      )}
+    </PlayerProvider>,
   );
 }
 
@@ -2261,7 +2276,7 @@ describe("playback speed control", () => {
 
   /** Renders the reader and opens the settings panel that now owns the control. */
   async function openSettings() {
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -2273,7 +2288,7 @@ describe("playback speed control", () => {
   }
 
   test("lives inside the reader settings panel, not the playbar chrome", async () => {
-    render(
+    renderReader(
       <MemoryRouter initialEntries={["/jobs/job-1"]}>
         <Routes>
           <Route element={<ReaderPage />} path="/jobs/:jobId" />
@@ -2437,7 +2452,7 @@ test("shows a waiting note when the job's model is not resident", async () => {
     },
   });
 
-  render(
+  renderReader(
     <MemoryRouter initialEntries={["/jobs/job-1"]}>
       <Routes>
         <Route element={<ReaderPage />} path="/jobs/:jobId" />

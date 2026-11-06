@@ -105,6 +105,7 @@ const BASE_CONFIG: AdminConfig = {
   idle_unload_seconds: 300,
   max_prebuffer_seconds: 300,
   render_ahead_seconds: 0,
+  up_next_prebuffer_seconds: 120,
   active_listener_timeout_seconds: 60,
   target_buffer_seconds: 60,
   plan_ahead_chunks: 16,

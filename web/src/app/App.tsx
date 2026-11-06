@@ -21,6 +21,9 @@ import { ReaderPage } from "../features/reader/ReaderPage";
 import { useReaderTitle } from "../hooks/useReaderTitle";
 import { useScrollProgressVar } from "../hooks/useScrollProgress";
 import { useTheme } from "../hooks/useTheme";
+import { MiniPlayer } from "../player/MiniPlayer";
+import { PlayerProvider } from "../player/PlayerProvider";
+import { usePlayerStore } from "../player/player-store";
 import { useAppStore } from "../state/store";
 import type { WebSocketStatus } from "../types/events";
 
@@ -120,6 +123,9 @@ const NAVBAR_COMPACT_HEIGHT = 56;
 
 function Shell() {
   const location = useLocation();
+  const hasPlayer = usePlayerStore((state) => state.job !== null);
+  // The reader owns its full playbar; every other route gets the mini-player.
+  const showMiniPlayer = hasPlayer && !location.pathname.startsWith("/jobs/");
   const { theme } = useTheme();
   // Periodically re-render to update the "seconds ago" display
   const [, forceUpdate] = useState(0);
@@ -258,7 +264,7 @@ function Shell() {
       {/* Main content — each page owns its own layout container.
           Keyed by pathname so navigating away from a crashed page resets the
           boundary instead of leaving the fallback in place. */}
-      <main className="flex-1">
+      <main className={showMiniPlayer ? "flex-1 pb-24" : "flex-1"}>
         <ErrorBoundary key={location.pathname}>
           <Routes>
             <Route element={<JobsPage />} path="/" />
@@ -269,6 +275,7 @@ function Shell() {
           </Routes>
         </ErrorBoundary>
       </main>
+      {showMiniPlayer ? <MiniPlayer /> : null}
     </div>
   );
 }
@@ -278,7 +285,9 @@ function Shell() {
 export function App() {
   return (
     <BrowserRouter>
-      <Shell />
+      <PlayerProvider>
+        <Shell />
+      </PlayerProvider>
     </BrowserRouter>
   );
 }

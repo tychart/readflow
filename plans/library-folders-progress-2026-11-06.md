@@ -1,6 +1,6 @@
 # Library: folders, playlists, read progress, and a persistent player
 
-Status: **M1–M2 implemented**, M3+ pending
+Status: **M1–M3 implemented**, M4+ pending
 Date: 2026-11-06
 
 ## Context
@@ -367,9 +367,23 @@ Deviations from the first draft:
 Verification: 353 server tests (incl. new contract, tree, progress, playback,
 library service, API and scheduler-warming suites), ruff, pyright clean.
 
-**M3 — Player lift + mini-player (behavior-preserving).**
-`PlayerProvider`, mini-player, playback across routes; reader consumes the
-provider. No new product behavior yet; all player tests must pass unchanged.
+**M3 — Player lift + mini-player (behavior-preserving). DONE.**
+`web/src/player/`: `player-store` (inputs/outputs/actions), `PlayerProvider`
+(owns `ShadowAudio` + `useMediaSourcePlayer` + playback reporting + terminal
+handling), `MiniPlayer`. `ReaderPage` is now a consumer. `App` wraps the shell in
+the provider and pads `<main>` while the mini-player is visible.
+
+Design notes:
+- `openJob` keeps the stream for the same job (remounts/patches) and preserves
+  intent expressed before the first job's load effect flushes.
+- The provider's `ended` handler uses `audio.currentTime` plus a latest-values
+  ref; the mirrored store is one commit behind browser events, and treating that
+  lag as "not at the end" used to stop playback on a gap.
+- Tests mount the provider; a provider test pins that the same audio element
+  survives a child route change. A new Playwright test marks the element, walks
+  to the library and asserts it is the same element with a working mini-player.
+
+Verification: 561 web tests, 22 Playwright tests, `bun run lint`, `tsc` clean.
 
 **M4 — Library UI.**
 Tree + pane, folders-first ordering, Create/Rename, Organize mode with drag and

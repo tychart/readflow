@@ -5,6 +5,7 @@ import type {
   JobDetail,
   JobManifest,
   JobSummary,
+  ProgressUpdateResponse,
   RuntimeStatus,
   Voice,
 } from "../types/api";
@@ -140,6 +141,25 @@ export const api = {
       body: JSON.stringify({
         voice_id: voiceId,
         rerender_written: rerenderWritten,
+      }),
+    }),
+
+  /**
+   * Records listening position and newly heard chunks. The heard list is
+   * additive; the server unions it with what it already has.
+   */
+  updateProgress: (
+    jobId: string,
+    positionSeconds: number,
+    isPlaying: boolean,
+    heardChunkIndexes: number[] = [],
+  ) =>
+    request<ProgressUpdateResponse>(apiPath(`/jobs/${jobId}/progress`), {
+      method: "POST",
+      body: JSON.stringify({
+        position_seconds: positionSeconds,
+        is_playing: isPlaying,
+        heard_chunk_indexes: heardChunkIndexes,
       }),
     }),
 

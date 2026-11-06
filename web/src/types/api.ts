@@ -30,6 +30,22 @@ export interface Chunk {
   char_end: number;
 }
 
+export type ReadStatus = "unread" | "in_progress" | "read";
+
+/** Server-derived listening state; never computed in the client. */
+export interface JobProgress {
+  fraction: number;
+  read_status: ReadStatus;
+  heard_chunks: number[];
+  remaining_seconds: number;
+  position_seconds: number;
+}
+
+export interface FolderBrief {
+  id: string;
+  name: string;
+}
+
 export interface JobSummary {
   id: string;
   title: string | null;
@@ -43,6 +59,9 @@ export interface JobSummary {
   total_chunks_completed: number;
   buffered_seconds: number;
   completed_seconds: number;
+  /** Library metadata; omitted on streamed summaries that do not need it. */
+  folder_id?: string | null;
+  progress?: JobProgress | null;
 }
 
 export interface JobDetail extends JobSummary {
@@ -54,6 +73,16 @@ export interface JobDetail extends JobSummary {
   active_chunk_version?: Record<number, number>;
   /** Bumped when already-rendered audio is invalidated (a full re-render). */
   audio_epoch: number;
+  /** Where the job lives and what plays next (server-computed folder order). */
+  folder_path?: FolderBrief[];
+  previous_job_id?: string | null;
+  next_job_id?: string | null;
+}
+
+export interface ProgressUpdateResponse {
+  job_id: string;
+  position_seconds: number;
+  progress: JobProgress;
 }
 
 export interface JobManifest {
@@ -78,6 +107,8 @@ export interface AdminConfig {
   idle_unload_seconds: number;
   max_prebuffer_seconds: number;
   target_buffer_seconds: number;
+  /** Warming target for the next job in a playing folder; 0 disables it. */
+  up_next_prebuffer_seconds: number;
   /** Opt-in lookahead cap in seconds; 0 (default) renders every job to the end. */
   render_ahead_seconds: number;
   /** Seconds without a playback report before a job stops counting as listened. */

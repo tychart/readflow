@@ -514,7 +514,8 @@ Important design rules:
 - the custom UI should not depend solely on browser `waiting`/`ended` behavior to decide what the player is doing
 - `playIntent` is user intent, not identical to "the browser is currently making sound"
 - real playback state comes from the hook and must stay synchronized with the custom controls
-- **the `<audio>` element is rendered in one stable wrapper for every reader state** (loading, error, loaded), **inside a shadow root** (`components/ShadowAudio.tsx` — see “The audio element lives in a shadow root” below). `useMediaSourcePlayer` attaches its media event listeners from an effect guarded on the element existing, so a remount after loading silently drops `progress`/`seeking`/`playing` events for the rest of the session. This was a real bug: the element used to live only in the loaded branch, in a different tree shape, and got remounted once.
+- **the player lives above the router**, in `PlayerProvider` (`web/src/player/`), not inside `ReaderPage` (see “App-level player” below). The `<audio>` element is created once by `ShadowAudio` and never remounted; navigation does not stop playback.
+- the reader writes only *inputs* (job, stream manifest, anchor, seek, intent) into `usePlayerStore` and reads the hook's *outputs* back through selectors. The provider mirrors the hook into the store once per commit and registers imperative controls in a module-level registry.
 
 ### Playback speed (in the settings panel, not the playbar)
 
@@ -597,6 +598,49 @@ whenever the `playbackRate` state changes (`useLayoutEffect` with
 - `SpeedSyncedAudio.tsx` was deleted: it duplicated the hook's rate application
 with an inline callback ref (which also re-ran on every render) and nothing but
 its own test imported it.
+
+### App-level player and the mini-player (`web/src/player/`)
+
+Playback must survive navigation: browsing the library while a book plays is the
+whole point of the folder/auto-advance feature. The player therefore lives above
+the router.
+
+- `player-store.ts` owns the cross-route state:
+  - inputs written by the reader: `job`, `manifest`, `anchorIndex`,
+    `anchorOffsetSeconds`, `durationSeconds`, `streamRestartKey`,
+    `pendingSeekJobSeconds`, `playIntent`;
+  - outputs mirrored from `useMediaSourcePlayer`: position, buffered end,
+    playing/waiting/loading flags, player state, rate, diagnostics, errors;
+  - `openJob()` keeps an existing stream when the same job is re-opened (a
+    reader remount or a job patch) and resets it when the job id changes.
+    Opening the *first* job preserves an already-expressed `playIntent`, because
+    a click can land before the load effect flushes; switching jobs starts
+    paused.
+- `PlayerProvider` renders `ShadowAudio` once, calls `useMediaSourcePlayer` with
+  the store inputs, mirrors outputs, registers `PlayerControls`
+  (`getPlayerControls()` / the `player*` helpers), and owns playback reporting
+  and the terminal-end reconciliation that used to live in `ReaderPage`.
+- `MiniPlayer` is the control surface on non-reader routes. `App` renders it
+  and adds bottom padding to `<main>`; the reader keeps its own playbar.
+- `ReaderPage` is now a consumer: it writes source/seek/anchor into the store and
+  reads outputs with selectors. It no longer owns the `<audio>` element, media
+  event listeners or playback sync.
+
+Rules that are easy to break:
+
+- Do **not** render a second `ShadowAudio`/`useMediaSourcePlayer` (for example
+  inside `ReaderPage` “for tests”). Two hooks would open two `MediaSource`
+  streams on two elements. Tests mount `PlayerProvider` around the reader
+  (`renderReader` in `ReaderPage.test.tsx`) and reset the store in `afterEach`.
+- Playback reporting reads `usePlayerStore.getState()` inside event handlers and
+  timers; do not close over render-time values there. The `ended` handler reads
+  `audio.currentTime` and a latest-values ref because the mirrored store state is
+  one commit behind the browser event.
+- The store must not persist to `localStorage`: position/progress belong to the
+  server (`/jobs/{id}/progress`), settings stay in `reader-settings`.
+- `openJob` must never leave the stream of a *different* job attached; the
+  provider passes the new manifest/anchor and the hook's stream key includes the
+  job id + epoch + anchor.
 
 ### The audio element lives in a shadow root (media-speed extensions)
 

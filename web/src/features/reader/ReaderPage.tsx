@@ -1,11 +1,4 @@
-import {
-  type RefObject,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
@@ -13,7 +6,6 @@ import { ChunkConveyor } from "../../components/ChunkConveyor";
 import { Playbar } from "../../components/Playbar";
 import { ReaderDock } from "../../components/ReaderDock";
 import { ReaderSettingsMenu } from "../../components/ReaderSettingsMenu";
-import { ShadowAudio } from "../../components/ShadowAudio";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { useChunkWaveforms } from "../../hooks/useChunkWaveforms";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -25,9 +17,16 @@ import {
 import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
 import { useScrollProgressVar } from "../../hooks/useScrollProgress";
 import { ApiError, api } from "../../lib/api";
-import { liveClient } from "../../lib/live-client";
-import { useMediaSourcePlayer } from "../../lib/media-source";
 import { modelLabel } from "../../lib/models";
+import {
+  playerIsSecondsBehindRetainedAudio,
+  playerIsSecondsLoaded,
+  playerPause,
+  playerRequestGesture,
+  playerSeekToSeconds,
+  playerSeekWithinBuffered,
+  usePlayerStore,
+} from "../../player/player-store";
 import {
   resetReaderSettings,
   setReaderSettings,
@@ -66,8 +65,6 @@ const READER_POLL_INTERVAL_MS = 2_000;
 /** How many times the reader retries a failed initial load before surfacing the
  *  error. A WebSocket reconnect resets the budget (see the reconnect effect). */
 const INITIAL_LOAD_MAX_RETRIES = 5;
-const PLAYBACK_SYNC_INTERVAL_MS = 3_000;
-const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
 /** How often the reader re-checks whether rendering has stalled. */
 const RENDER_STALL_POLL_MS = 5_000;
 
@@ -107,17 +104,19 @@ export function ReaderPage() {
   // Counts fallback retries of a failed initial load; bounded so a genuinely
   // dead backend surfaces an error instead of being polled forever.
   const [loadRetryAttempt, setLoadRetryAttempt] = useState(0);
-  const [playIntent, setPlayIntent] = useState(false);
-  const [playbackAnchorIndex, setPlaybackAnchorIndex] = useState(0);
+  const playIntent = usePlayerStore((state) => state.playIntent);
+  const setPlayIntent = usePlayerStore((state) => state.setPlayIntent);
+  const playbackAnchorIndex = usePlayerStore((state) => state.anchorIndex);
+  const setPlaybackAnchorIndex = usePlayerStore(
+    (state) => state.setAnchorIndex,
+  );
   // Bumped when a seek targets audio the player no longer holds (evicted behind
   // the retained window, or not fetched yet) *without* changing the anchor, so
   // the player reopens the SourceBuffer instead of clamping to loaded audio.
-  const [streamRestartKey, setStreamRestartKey] = useState(0);
+  const restartStream = usePlayerStore((state) => state.restartStream);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [lastRefreshReason, setLastRefreshReason] = useState("initial");
-  const [lastPlaybackSyncError, setLastPlaybackSyncError] = useState<
-    string | null
-  >(null);
+  const lastPlaybackSyncError = usePlayerStore((state) => state.lastSyncError);
 
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -130,7 +129,8 @@ export function ReaderPage() {
     number | null
   >(null);
   const [reprocessError, setReprocessError] = useState<string | null>(null);
-  const [seekOverride, setSeekOverride] = useState<number | null>(null);
+  const seekOverride = usePlayerStore((state) => state.pendingSeekJobSeconds);
+  const setSeekOverride = usePlayerStore((state) => state.requestSeek);
 
   // ── Responsive chrome ───────────────────────────────────
   // The first render derives from `window.innerWidth` because jsdom reports
@@ -162,7 +162,6 @@ export function ReaderPage() {
   const lastAppliedRequestIdRef = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const queuedRefreshReasonRef = useRef<string | null>(null);
-  const lastPlaybackSyncAtRef = useRef(0);
   const manifestRef = useRef<JobManifest | null>(null);
   const previousSocketStatusRef = useRef(websocketStatus);
 
@@ -203,7 +202,7 @@ export function ReaderPage() {
     if (!knownChunks.some((c) => c.index === playbackAnchorIndex)) {
       setPlaybackAnchorIndex(knownChunks[0]?.index ?? 0);
     }
-  }, [knownChunks, playbackAnchorIndex]);
+  }, [knownChunks, playbackAnchorIndex, setPlaybackAnchorIndex]);
 
   const activeChunks = useMemo(
     () => deriveActiveChunks(knownChunks, activeVersions),
@@ -251,6 +250,31 @@ export function ReaderPage() {
     [contiguousReadyChunks, manifest],
   );
 
+  // Hand the document to the app-level player. `openJob` keeps an existing
+  // stream for the same job, so a remount (or a WS patch) never interrupts
+  // playback; `setSource` only updates the stream inputs.
+  useEffect(() => {
+    if (!job) return;
+    usePlayerStore.getState().openJob({
+      id: job.id,
+      title: job.title,
+      isTerminal: isJobTerminal,
+      audioEpoch: job.audio_epoch,
+      folderId: job.folder_id ?? null,
+      nextJobId: job.next_job_id ?? null,
+      previousJobId: job.previous_job_id ?? null,
+    });
+  }, [job, isJobTerminal]);
+
+  useEffect(() => {
+    usePlayerStore.getState().setSource({
+      manifest: streamManifest,
+      anchorIndex: playbackAnchorIndex,
+      anchorOffsetSeconds: anchorOffset,
+      durationSeconds: knownDurationSeconds,
+    });
+  }, [streamManifest, playbackAnchorIndex, anchorOffset, knownDurationSeconds]);
+
   const canDownloadRenderedAudio = downloadableChunks.length > 0;
   const isDownloadComplete =
     !!job &&
@@ -258,12 +282,10 @@ export function ReaderPage() {
     downloadableChunks.length > 0 &&
     downloadableChunks.length === knownChunks.length;
 
-  // Called by the player once a pending seek has been applied; clears the
-  // reader's pending-seek state so auto-play can resume.
-  const handleSeekApplied = useCallback(() => setSeekOverride(null), []);
-
+  // Player outputs are owned by the app-level provider; the reader is a
+  // consumer. Select them shallowly so a playback tick only re-renders this
+  // page, not unrelated routes.
   const {
-    audioRef,
     appendedChunksCount,
     bufferedUntilSeconds,
     currentTimeSeconds,
@@ -271,30 +293,30 @@ export function ReaderPage() {
     isActuallyPlaying,
     isAutoplayBlocked,
     isLoadingAudio,
-    isSecondsBehindRetainedAudio,
-    isSecondsLoaded,
     isStreamPrimed,
     isWaitingForData,
     lastPlayerError,
-    pausePlayback,
-    playerState,
     playbackRate,
+    playerState,
     renderedDurationSeconds,
-    requestUserGesturePlay,
-    seekToSeconds,
-    seekWithinBuffered,
-    setPlaybackRate,
-  } = useMediaSourcePlayer({
-    jobId,
-    manifest: streamManifest,
-    playbackAnchorIndex,
-    playIntent,
-    isTerminal: isJobTerminal,
-    pendingSeekSeconds:
-      seekOverride !== null ? Math.max(0, seekOverride - anchorOffset) : null,
-    onSeekApplied: handleSeekApplied,
-    streamRestartKey,
-  });
+  } = usePlayerStore(
+    useShallow((state) => ({
+      appendedChunksCount: state.appendedChunksCount,
+      bufferedUntilSeconds: state.bufferedUntilSeconds,
+      currentTimeSeconds: state.currentTimeSeconds,
+      diagnostics: state.diagnostics,
+      isActuallyPlaying: state.isActuallyPlaying,
+      isAutoplayBlocked: state.isAutoplayBlocked,
+      isLoadingAudio: state.isLoadingAudio,
+      isStreamPrimed: state.isStreamPrimed,
+      isWaitingForData: state.isWaitingForData,
+      lastPlayerError: state.lastPlayerError,
+      playbackRate: state.playbackRate,
+      playerState: state.playerState,
+      renderedDurationSeconds: state.renderedDurationSeconds,
+    })),
+  );
+  const setPlaybackRate = usePlayerStore((state) => state.setPlaybackRate);
 
   // ── Render-stall detection ──────────────────────────────
   // The player can sit in "waiting for data" forever if the backend stops
@@ -431,54 +453,6 @@ export function ReaderPage() {
     [jobId],
   );
 
-  const syncPlaybackState = useCallback(
-    (force = false, isPlayingOverride?: boolean) => {
-      if (!job || !audioRef.current || isJobTerminal) return;
-      const now = Date.now();
-      if (
-        !force &&
-        now - lastPlaybackSyncAtRef.current < PLAYBACK_SYNC_INTERVAL_MS
-      )
-        return;
-      lastPlaybackSyncAtRef.current = now;
-      const isPlaying =
-        isPlayingOverride ??
-        (playIntent && (!audioRef.current.paused || isWaitingForData));
-      // The backend derives `buffered_seconds`/`completed_seconds` from the
-      // job timeline, but the media stream restarts at 0 every time the reader
-      // re-anchors (seek, reload). Reporting the raw stream clock made the
-      // buffer look permanently full after a seek, which kept a configured
-      // lookahead cap from ever being released. Add the anchor offset — and
-      // report the pending seek target while the stream is rebuilding.
-      const currentTime =
-        seekOverride ?? (audioRef.current.currentTime ?? 0) + anchorOffset;
-      const sent = liveClient.sendPlaybackSync(job.id, currentTime, isPlaying);
-      if (sent) {
-        setLastPlaybackSyncError(null);
-      } else {
-        void api
-          .updatePlayback(job.id, currentTime, isPlaying)
-          .then(() => setLastPlaybackSyncError(null))
-          .catch((syncError) => {
-            setLastPlaybackSyncError(
-              syncError instanceof Error
-                ? `Playback sync failed: ${syncError.message}`
-                : "Playback sync failed",
-            );
-          });
-      }
-    },
-    [
-      anchorOffset,
-      audioRef,
-      isJobTerminal,
-      isWaitingForData,
-      job,
-      playIntent,
-      seekOverride,
-    ],
-  );
-
   /**
    * Apply a job patch from a WebSocket event or a mutation response, keeping the
    * loaded detail intact. Per-chunk events carry one chunk (`payload.chunk`);
@@ -568,62 +542,6 @@ export function ReaderPage() {
     return () => window.clearInterval(timer);
   }, [refreshReaderState, shouldUsePollingFallback]);
 
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !job) return;
-    const handlePlay = () => {
-      if (isJobTerminal) setPlayIntent(true);
-      syncPlaybackState(true, true);
-    };
-    const handlePause = () => {
-      if (isJobTerminal) {
-        setPlayIntent(false);
-        syncPlaybackState(true, false);
-        return;
-      }
-      if (!playIntent) syncPlaybackState(true, false);
-    };
-    const handleWaiting = () => syncPlaybackState(true, playIntent);
-    const handleEnded = () => {
-      if (
-        !isJobTerminal &&
-        renderedDurationSeconds > 0 &&
-        audio.currentTime >=
-          Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
-      ) {
-        syncPlaybackState(true, true);
-        return;
-      }
-      setPlayIntent(false);
-      syncPlaybackState(true, false);
-    };
-    const handleError = () => syncPlaybackState(true, false);
-    audio.addEventListener("play", handlePlay);
-    audio.addEventListener("pause", handlePause);
-    audio.addEventListener("waiting", handleWaiting);
-    audio.addEventListener("ended", handleEnded);
-    audio.addEventListener("error", handleError);
-    const interval = window.setInterval(() => {
-      if (playIntent || isWaitingForData) syncPlaybackState();
-    }, PLAYBACK_SYNC_INTERVAL_MS);
-    return () => {
-      audio.removeEventListener("play", handlePlay);
-      audio.removeEventListener("pause", handlePause);
-      audio.removeEventListener("waiting", handleWaiting);
-      audio.removeEventListener("ended", handleEnded);
-      audio.removeEventListener("error", handleError);
-      window.clearInterval(interval);
-    };
-  }, [
-    audioRef,
-    isJobTerminal,
-    isWaitingForData,
-    job,
-    playIntent,
-    renderedDurationSeconds,
-    syncPlaybackState,
-  ]);
-
   // Time display values in original (non-normalized) coordinates.
   // While a seek is pending the stream is rebuilding/priming, so
   // currentTimeSeconds is stale (reset to 0 at the new anchor). Showing the seek
@@ -638,26 +556,6 @@ export function ReaderPage() {
   // playhead maximum.
   const displayRenderedDurationSeconds = anchorOffset + renderedDurationSeconds;
 
-  useEffect(() => {
-    if (
-      !isJobTerminal ||
-      !playIntent ||
-      isActuallyPlaying ||
-      renderedDurationSeconds <= 0 ||
-      currentTimeSeconds <
-        Math.max(0, renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS)
-    ) {
-      return;
-    }
-    setPlayIntent(false);
-  }, [
-    currentTimeSeconds,
-    isActuallyPlaying,
-    isJobTerminal,
-    playIntent,
-    renderedDurationSeconds,
-  ]);
-
   // ── Handlers ─────────────────────────────────────────────
 
   const handlePlay = async () => {
@@ -665,7 +563,7 @@ export function ReaderPage() {
     if (isJobTerminal) {
       setPlayIntent(true);
       setError(null);
-      await requestUserGesturePlay();
+      await playerRequestGesture();
       return;
     }
     setPlayIntent(true);
@@ -673,7 +571,7 @@ export function ReaderPage() {
     try {
       const nextJob = await api.activateJob(job.id);
       applyJobPatch(nextJob);
-      await requestUserGesturePlay();
+      await playerRequestGesture();
     } catch (playError) {
       setPlayIntent(false);
       setError(
@@ -687,12 +585,11 @@ export function ReaderPage() {
   const handlePause = async () => {
     if (!job) return;
     setPlayIntent(false);
-    pausePlayback();
+    playerPause();
     if (isJobTerminal) return;
     try {
       const nextJob = await api.pauseJob(job.id);
       applyJobPatch(nextJob);
-      syncPlaybackState(true, false);
     } catch (pauseError) {
       setError(
         pauseError instanceof Error
@@ -724,18 +621,18 @@ export function ReaderPage() {
       // and aiming at audio that has been evicted (or not fetched yet) does not,
       // so ask the player for a rebuild explicitly — otherwise MSE in sequence
       // mode would silently clamp the seek to the retained audio.
-      if (isSameAnchor && !isSecondsLoaded(streamTargetSeconds)) {
-        setStreamRestartKey((key) => key + 1);
+      if (isSameAnchor && !playerIsSecondsLoaded(streamTargetSeconds)) {
+        restartStream();
       }
       if (isJobTerminal) {
-        if (resumeAfterSeek) await requestUserGesturePlay();
+        if (resumeAfterSeek) await playerRequestGesture();
         return;
       }
       if (!resumeAfterSeek) return;
       try {
         const nextJob = await api.activateJob(job.id);
         applyJobPatch(nextJob);
-        await requestUserGesturePlay();
+        await playerRequestGesture();
       } catch (activationError) {
         setPlayIntent(false);
         setSeekOverride(null);
@@ -750,11 +647,13 @@ export function ReaderPage() {
       anchorOffset,
       applyJobPatch,
       isJobTerminal,
-      isSecondsLoaded,
       job,
       playIntent,
       playbackAnchorIndex,
-      requestUserGesturePlay,
+      restartStream,
+      setPlaybackAnchorIndex,
+      setPlayIntent,
+      setSeekOverride,
     ],
   );
 
@@ -786,11 +685,14 @@ export function ReaderPage() {
       deltaSeconds,
       renderedDurationSeconds,
     );
-    if (seekWithinBuffered(targetStreamSeconds) !== null) return;
-    if (isStreamPrimed && !isSecondsBehindRetainedAudio(targetStreamSeconds)) {
+    if (playerSeekWithinBuffered(targetStreamSeconds) !== null) return;
+    if (
+      isStreamPrimed &&
+      !playerIsSecondsBehindRetainedAudio(targetStreamSeconds)
+    ) {
       // Ahead of the buffered end: clamp into what is loaded and let the
       // appending window catch up (the player enters its waiting state).
-      seekToSeconds(targetStreamSeconds);
+      playerSeekToSeconds(targetStreamSeconds);
       return;
     }
     const timelineTarget = targetStreamSeconds + anchorOffset;
@@ -933,7 +835,7 @@ export function ReaderPage() {
         // down, and these are the reader-side equivalents (no autoplay into an
         // empty stream, playhead back at the start).
         setPlayIntent(false);
-        pausePlayback();
+        playerPause();
         setSeekOverride(null);
         setPlaybackAnchorIndex(0);
       }
@@ -1065,18 +967,6 @@ export function ReaderPage() {
   );
 
   // ── Loader / error / main content ──────────────────────
-  // A single wrapper is returned for every state so the <audio> element keeps
-  // its identity across the loading → loaded transition. useMediaSourcePlayer
-  // attaches its media event listeners from an effect guarded on the element
-  // existing, so a remount there would silently drop progress / seeking /
-  // playing events for the rest of the session.
-  //
-  // The element lives in a shadow root (see ShadowAudio) so page-wide
-  // media-speed extensions cannot discover it and force their own rate.
-  const audioElement = (
-    <ShadowAudio audioRef={audioRef as RefObject<HTMLAudioElement | null>} />
-  );
-
   // Still inside the bounded initial-load retry budget: a restart is the common
   // cause, so show a calm reconnect state instead of a red failure.
   const isRetryingInitialLoad =
@@ -1392,10 +1282,5 @@ export function ReaderPage() {
     );
   }
 
-  return (
-    <div className="flex flex-col">
-      {audioElement}
-      {content}
-    </div>
-  );
+  return <div className="flex flex-col">{content}</div>;
 }

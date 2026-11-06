@@ -1392,3 +1392,76 @@ for (const viewport of [
     ).toBe(true);
   });
 }
+
+test("playback survives leaving the reader and keeps a mini-player", async ({
+  page,
+}) => {
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(4, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(4) });
+  });
+  await page.route("**/api/jobs/job-1/activate", async (route) => {
+    await route.fulfill({ json: buildJob(4, "playing") });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+  await page.route("**/api/jobs", async (route) => {
+    await route.fulfill({ json: [buildJob(4, "playing")] });
+  });
+  await page.route("**/api/voices", async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route("**/api/status", async (route) => {
+    await route.fulfill({
+      json: {
+        resident_model_id: null,
+        resident_voice_id: null,
+        model_state: "unloaded",
+        model_residency_batches: 10,
+        voice_residency_batches: 3,
+      },
+    });
+  });
+
+  await page.goto("/jobs/job-1");
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Pause", exact: true }),
+  ).toBeVisible();
+
+  // Mark the media element so the assertion is about identity, not just
+  // presence: a remount would create a new, unmarked element.
+  await page.evaluate(() => {
+    const host = document.querySelector<HTMLElement>(
+      '[data-testid="reader-audio-host"]',
+    );
+    host?.shadowRoot
+      ?.querySelector("audio")
+      ?.setAttribute("data-survived", "yes");
+  });
+
+  await page.getByRole("link", { name: "ReadFlow home" }).click();
+  await expect(page).toHaveURL(/\/$/);
+
+  const miniPlayer = page.getByLabel("Now playing");
+  await expect(miniPlayer).toBeVisible();
+  await expect(miniPlayer.getByText("Playwright job")).toBeVisible();
+  await expect(miniPlayer.getByRole("button", { name: "Pause" })).toBeVisible();
+
+  const survived = await page.evaluate(() => {
+    const host = document.querySelector<HTMLElement>(
+      '[data-testid="reader-audio-host"]',
+    );
+    return host?.shadowRoot
+      ?.querySelector("audio")
+      ?.getAttribute("data-survived");
+  });
+  expect(survived).toBe("yes");
+
+  // The mini-player is also a working control surface.
+  await miniPlayer.getByRole("button", { name: "Pause" }).click();
+  await expect(miniPlayer.getByRole("button", { name: "Play" })).toBeVisible();
+});
