@@ -294,6 +294,8 @@ function AdminOverview() {
       adminState.config.model_load_timeout_seconds ||
     formState.synthesis_timeout_seconds !==
       adminState.config.synthesis_timeout_seconds ||
+    formState.dispatch_stall_seconds !==
+      adminState.config.dispatch_stall_seconds ||
     formState.model_residency_batches !==
       adminState.config.model_residency_batches ||
     formState.voice_residency_batches !==
@@ -565,6 +567,27 @@ function AdminOverview() {
                 })
               }
             />
+          </label>
+
+          <label className={labelClass()}>
+            Dispatch stall recovery (seconds)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="0"
+              value={formState.dispatch_stall_seconds}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  dispatch_stall_seconds: Number(e.target.value),
+                })
+              }
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              How long dispatch may stay blocked with work pending before the
+              scheduler unloads the model (or resets an errored provider) by
+              itself. 0 disables automatic recovery.
+            </span>
           </label>
 
           <label className={labelClass()}>

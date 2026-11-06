@@ -1,5 +1,5 @@
 import asyncio
-from time import time
+from time import monotonic, time
 
 from app.jobs.models import JobStatus, ModelState
 from app.synthesis.worker import RenderedChunkResult
@@ -1313,3 +1313,311 @@ async def test_missing_gpu_counters_pause_dispatch_and_recovery_resumes_it(servi
     await services.scheduler.run_once()
     assert len(calls) == 1
     assert services.scheduler._warning is None
+
+
+# ── Admission and self-recovery ────────────────────────────────────────
+#
+# Regression coverage for the "GPU full, queue frozen, nothing logged" state:
+# the hard limit was compared against the caching allocator's reserved pool,
+# which only grows, so after one peak batch it read as permanently exceeded.
+# Dispatch paused while `maybe_unload_idle` kept the model (and the pool) alive
+# because work was pending, and nothing ever recovered.
+
+
+class _CaptureSocket:
+    """WebSocket stand-in that records broadcast frames."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def accept(self) -> None:
+        return None
+
+    async def send_text(self, message: str) -> None:
+        self.messages.append(message)
+
+
+def _live_vram_stats(**overrides) -> MemoryStats:
+    """Values copied from a real 12 GB card stuck in that state."""
+    values = {
+        "device": "cuda:0",
+        "vram_total_mb": 11954,
+        "vram_used_mb": 11923,
+        "vram_free_mb": 31,
+        "vram_allocated_mb": 4047,
+        "vram_reserved_mb": 11008,
+        "ram_total_mb": 64054,
+        "ram_available_mb": 52041,
+        "ram_used_mb": 12013,
+        "ram_process_mb": 2719,
+    }
+    values.update(overrides)
+    return MemoryStats(**values)
+
+
+def _returning_stats(stats: MemoryStats):
+    async def memory_stats() -> MemoryStats:
+        return stats
+
+    return memory_stats
+
+
+def test_reclaimable_allocator_pool_does_not_pause_dispatch(services):
+    """11 GB reserved over a 4 GB working set is free cache, not usage.
+
+    This is the exact live state that froze rendering for hours: 11,008 MiB
+    reserved against an 11,000 MiB hard limit, while only 4,047 MiB was
+    allocated. The scheduler must keep dispatching.
+    """
+    job = _create_job(services, title="cache above hard limit")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.vram_hard_limit_mb = 11000
+    services.model_manager.memory_stats = _returning_stats(_live_vram_stats())  # type: ignore[method-assign]
+
+    dispatched: list[list] = []
+
+    async def render(model_id, batch):
+        dispatched.append(batch)
+        return []
+
+    services.worker.render_batch = render  # type: ignore[method-assign]
+
+    asyncio.run(services.scheduler.run_once())
+
+    assert dispatched
+    assert services.scheduler._warning is None
+
+
+def test_live_vram_excludes_reclaimable_allocator_cache(services):
+    stats = _live_vram_stats()
+    # Live tensors + whatever the device holds outside the allocator, with the
+    # free pool excluded.
+    assert services.scheduler._live_vram_mb(stats) == 4047 + (11923 - 11008)
+
+
+def test_headroom_counts_free_device_memory_and_reusable_cache(services):
+    stats = _live_vram_stats()
+    assert services.scheduler._vram_headroom_mb(stats) == 31 + (11008 - 4047)
+    missing = stats.model_copy(update={"vram_free_mb": None})
+    assert services.scheduler._vram_headroom_mb(missing) is None
+
+
+def test_batch_size_is_bounded_by_real_headroom(services):
+    services.settings.runtime.vram_soft_limit_mb = 0
+    services.scheduler._vram_per_chunk_mb = 1000.0
+    candidates = services.settings.runtime.batch_candidates_small_model
+    assert max(candidates) == 8
+
+    # 2 GB of headroom at 1 GB/chunk: two chunks, even though eight are queued.
+    assert services.scheduler._choose_batch_size(8, 2000, 12000, vram_headroom_mb=2000) == 2
+    # Unknown headroom must not constrain the batch.
+    assert services.scheduler._choose_batch_size(8, 2000, 12000, vram_headroom_mb=None) == 8
+    # Never refuse to dispatch entirely: one chunk is always worth trying.
+    assert services.scheduler._choose_batch_size(8, 2000, 12000, vram_headroom_mb=10) == 1
+
+
+def test_dispatch_skips_the_tick_when_the_memory_probe_hangs(services):
+    """An unbounded probe would freeze the whole scheduling loop."""
+    job = _create_job(services, title="probe hangs")
+    services.job_manager.activate_job(job.id)
+
+    async def hangs() -> MemoryStats:
+        await asyncio.sleep(60)
+        return _live_vram_stats()
+
+    services.model_manager.memory_stats = hangs  # type: ignore[method-assign]
+    services.scheduler.MEMORY_STATS_TIMEOUT = 0.01
+
+    asyncio.run(services.scheduler.run_once())
+
+    assert services.scheduler._warning is not None
+    assert "memory statistics unavailable" in services.scheduler._warning.lower()
+    assert services.job_manager.queue_depth() >= 1
+
+
+async def test_blocked_dispatch_unloads_the_model_after_the_stall_window(services):
+    """The deadlock breaker: give the VRAM back, then let the next tick reload."""
+    job = _create_job(services, title="stall recovery")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.vram_hard_limit_mb = 100
+    services.settings.runtime.dispatch_stall_seconds = 0.01
+    services.model_manager.memory_stats = _returning_stats(  # type: ignore[method-assign]
+        _live_vram_stats(vram_allocated_mb=4000, vram_reserved_mb=4100, vram_used_mb=5000)
+    )
+    services.model_manager._state = ModelState.WARM_IDLE
+    services.model_manager._loaded_model_id = services.settings.runtime.default_model_id
+
+    unloads: list[bool] = []
+
+    async def fake_unload() -> None:
+        unloads.append(True)
+        services.model_manager._loaded_model_id = None
+        services.model_manager._state = ModelState.UNLOADED
+
+    services.model_manager.unload = fake_unload  # type: ignore[method-assign]
+
+    await services.scheduler.run_once()
+    assert unloads == []
+    assert services.scheduler._blocked_since is not None
+
+    # Pretend the stall window has elapsed; the clock is monotonic-based, so
+    # rewinding it is deterministic where a real sleep would be timing-flaky.
+    services.scheduler._blocked_since = monotonic() - 1.0
+    await services.scheduler.run_once()
+
+    assert unloads == [True]
+    assert services.scheduler._recovery_attempts == 1
+    events = [
+        event
+        for event in services.telemetry.snapshot()["recent_events"]
+        if event["type"] == "scheduler_recovery"
+    ]
+    assert events and events[-1]["payload"]["action"] == "unload_model"
+
+
+async def test_recovery_backs_off_before_trying_again(services):
+    """Unloading and reloading a model is expensive; do not thrash it."""
+    job = _create_job(services, title="backoff")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.vram_hard_limit_mb = 100
+    services.settings.runtime.dispatch_stall_seconds = 50.0
+    services.model_manager.memory_stats = _returning_stats(  # type: ignore[method-assign]
+        _live_vram_stats(vram_allocated_mb=4000, vram_reserved_mb=4100, vram_used_mb=5000)
+    )
+    services.model_manager._state = ModelState.WARM_IDLE
+    services.model_manager._loaded_model_id = services.settings.runtime.default_model_id
+
+    unloads: list[bool] = []
+
+    async def fake_unload() -> None:
+        unloads.append(True)
+
+    services.model_manager.unload = fake_unload  # type: ignore[method-assign]
+
+    await services.scheduler.run_once()
+    services.scheduler._blocked_since = monotonic() - 50.0
+    await services.scheduler.run_once()
+    assert len(unloads) == 1
+    assert services.scheduler._recovery_attempts == 1
+
+    # The second attempt waits twice as long, measured from the same base.
+    services.scheduler._blocked_since = monotonic() - 60.0
+    await services.scheduler.run_once()
+    assert len(unloads) == 1
+
+    services.scheduler._blocked_since = monotonic() - 100.0
+    await services.scheduler.run_once()
+    assert len(unloads) == 2
+    assert services.scheduler._recovery_attempts == 2
+
+
+async def test_errored_provider_is_reset_automatically(services):
+    """A timed-out call must not need a human click to recover."""
+    job = _create_job(services, title="errored provider")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.dispatch_stall_seconds = 50.0
+    services.model_manager.mark_error("Synthesis timed out after 300s")
+
+    await services.scheduler.run_once()
+    assert services.model_manager.state == ModelState.ERROR
+
+    services.scheduler._blocked_since = monotonic() - 50.0
+    await services.scheduler.run_once()
+
+    assert services.model_manager.state != ModelState.ERROR
+    events = [
+        event
+        for event in services.telemetry.snapshot()["recent_events"]
+        if event["type"] == "scheduler_recovery"
+    ]
+    assert events and events[-1]["payload"]["action"] == "reset_provider"
+
+
+async def test_errored_provider_with_nothing_queued_is_left_alone(services):
+    services.settings.runtime.dispatch_stall_seconds = 50.0
+    services.model_manager.mark_error("Synthesis timed out after 300s")
+
+    await services.scheduler.run_once()
+    services.scheduler._blocked_since = monotonic() - 50.0
+    await services.scheduler.run_once()
+
+    assert services.model_manager.state == ModelState.ERROR
+
+
+async def test_a_dispatched_batch_clears_the_stall_clock(services):
+    job = _create_job(services, title="stall clock")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.dispatch_stall_seconds = 50.0
+    services.settings.runtime.vram_hard_limit_mb = 100
+    services.model_manager.memory_stats = _returning_stats(  # type: ignore[method-assign]
+        _live_vram_stats(vram_allocated_mb=4000, vram_reserved_mb=4100, vram_used_mb=5000)
+    )
+
+    await services.scheduler.run_once()
+    assert services.scheduler._blocked_since is not None
+
+    # The blocker clears on its own (e.g. another process exits).
+    services.settings.runtime.vram_hard_limit_mb = 11000
+    await services.scheduler.run_once()
+
+    assert services.scheduler._blocked_since is None
+    assert services.scheduler._recovery_attempts == 0
+
+
+async def test_a_model_that_cannot_load_does_not_burn_chunk_attempts(services):
+    """A full GPU must not mark a whole book failed, three attempts at a time.
+
+    Loading the model raised before any chunk was attempted, so charging the
+    batch an attempt turned one low-VRAM moment into permanent chunk failures
+    across every remaining chunk of the job.
+    """
+    from app.jobs.models import ChunkStatus
+    from app.synthesis.provider import ModelVRAMError
+
+    job = _create_job(services, title="no vram")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.batch_candidates_small_model = [1]
+
+    async def no_vram(model_id, batch):
+        raise ModelVRAMError("Not enough VRAM to load 'model' on GPU.")
+
+    services.worker.render_batch = no_vram  # type: ignore[method-assign]
+
+    for _ in range(3):
+        await services.scheduler.run_once()
+
+    chunk = services.job_manager.get_job(job.id).chunks[0]
+    assert chunk.status == ChunkStatus.PLANNED
+    assert chunk.attempts == 0
+    assert services.job_manager.get_job(job.id).status != "rendering"
+    assert services.scheduler._blocked_since is not None
+    assert "not enough vram" in (services.scheduler._warning or "").lower()
+
+
+async def test_a_jittering_warning_records_one_event_per_cause(services):
+    """The live VRAM figure moves by a few MiB every tick.
+
+    Deduplicating the telemetry by the rendered message recorded an event per
+    tick while blocked, which flushed the rest of the admin event log.
+    """
+    job = _create_job(services, title="jittering warning")
+    services.job_manager.activate_job(job.id)
+    services.settings.runtime.vram_hard_limit_mb = 5000
+    readings = iter(range(5300, 5400))
+
+    async def jittering() -> MemoryStats:
+        used = next(readings, 5399)
+        return _live_vram_stats(vram_allocated_mb=4000, vram_reserved_mb=4100, vram_used_mb=used)
+
+    services.model_manager.memory_stats = jittering  # type: ignore[method-assign]
+
+    for _ in range(5):
+        await services.scheduler.run_once()
+
+    warnings = [
+        event
+        for event in services.telemetry.snapshot()["recent_events"]
+        if event["type"] == "scheduler_warning"
+    ]
+    assert len(warnings) == 1
+    assert "hard limit" in services.scheduler._warning.lower()

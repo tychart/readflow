@@ -90,6 +90,12 @@ export interface AdminConfig {
   chunk_max_attempts: number;
   model_load_timeout_seconds: number;
   synthesis_timeout_seconds: number;
+  /**
+   * How long dispatch may stay blocked with work pending before the scheduler
+   * recovers by itself (unload the model, or reset an errored provider).
+   * 0 disables automatic recovery.
+   */
+  dispatch_stall_seconds: number;
   model_residency_batches: number;
   voice_residency_batches: number;
 }

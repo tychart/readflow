@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from time import time
+from time import monotonic, time
 from typing import TypedDict
 
 from app.chunking.planner import ChunkPlanner
@@ -11,6 +11,7 @@ from app.core.config import RuntimeConfig
 from app.core.hub import WebSocketHub
 from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, ModelState
+from app.scheduler.recovery import DispatchBlock, RecoveryAction, plan_recovery
 from app.schemas.api import (
     AdminQueueResponse,
     QueueBatch,
@@ -22,6 +23,7 @@ from app.schemas.api import (
     job_to_summary,
 )
 from app.synthesis.model_manager import ModelManager
+from app.synthesis.provider import ModelVRAMError
 from app.synthesis.worker import RenderedChunkResult, SynthesisWorker
 from app.telemetry.memory import MemoryStats
 from app.telemetry.service import TelemetryService
@@ -91,8 +93,12 @@ class SchedulerService:
         self._last_error: str | None = None
         self._consecutive_errors = 0
         # Set while dispatch is intentionally paused (e.g. the VRAM hard limit),
-        # cleared once a batch is dispatched again.
+        # cleared once a batch is dispatched again. `_warning_key` is the stable
+        # identity of the cause: the human message carries live measurements
+        # that change every tick, so deduplicating on the text would record a
+        # telemetry event per tick and flush the rest of the event log.
         self._warning: str | None = None
+        self._warning_key: str | None = None
         # Measured marginal allocated VRAM per chunk, learned from the last
         # completed batch. Used to size the next batch against the soft limit.
         self._vram_per_chunk_mb: float | None = None
@@ -106,6 +112,11 @@ class SchedulerService:
         self._resident_voice_id: str | None = None
         self._batches_on_model = 0
         self._batches_on_voice = 0
+        # Stall tracking for the self-recovery policy: when dispatch was first
+        # blocked with work pending, and how many escalating actions have been
+        # taken since. Both reset as soon as a batch dispatches.
+        self._blocked_since: float | None = None
+        self._recovery_attempts = 0
 
     def liveness_snapshot(self) -> SchedulerLiveness:
         return {
@@ -238,18 +249,10 @@ class SchedulerService:
     async def run_once(self) -> None:
         self._last_tick_at = time()
         await self._expire_stale_listeners()
-        if self._model_manager.state == ModelState.ERROR:
-            # A load or synthesis previously timed out; the worker thread may
-            # still be stuck. Do not dispatch into it — wait for an operator to
-            # reset the provider. Keep broadcasting so the failure is visible
-            # instead of the queue silently freezing.
-            await self._broadcast_scheduler_state()
-            return
         self._ensure_planned_chunks()
-        renderable = self._rank_renderable_chunks()
         self._telemetry.set_queue_depth(self._job_manager.queue_depth())
-        if renderable:
-            await self._render_next_batch(renderable)
+        block = await self._dispatch_tick()
+        await self._supervise_dispatch(block)
         # Keep the model resident while there is dispatchable work; only let it
         # idle out once the queue is genuinely empty. Paused jobs do not count:
         # they keep plan-ahead chunks in `PLANNED` but nothing will render them.
@@ -257,6 +260,92 @@ class SchedulerService:
             has_pending_work=self._job_manager.has_renderable_chunks()
         )
         await self._broadcast_scheduler_state()
+
+    async def _dispatch_tick(self) -> DispatchBlock | None:
+        """Render at most one batch.
+
+        Returns why nothing could be dispatched, or `None` when the tick either
+        dispatched a batch or had nothing to do. Those are the two states that
+        mean the scheduler is not stuck, which is what the recovery supervisor
+        keys off.
+        """
+        if self._model_manager.state == ModelState.ERROR:
+            # A load or synthesis previously timed out; the worker thread may
+            # still be stuck. Do not dispatch into it — recovery resets the
+            # provider (see `_supervise_dispatch`), and until then the failure
+            # stays visible instead of the queue silently freezing. Only worth
+            # recovering while something is actually waiting to render.
+            if not self._job_manager.has_renderable_chunks():
+                return None
+            return DispatchBlock.PROVIDER_ERROR
+        renderable = self._rank_renderable_chunks()
+        if not renderable:
+            return None
+        return await self._render_next_batch(renderable)
+
+    async def _supervise_dispatch(self, block: DispatchBlock | None) -> None:
+        """Keep a blocked scheduler from freezing for good.
+
+        Every blocking condition has to be escapable without an operator
+        noticing hours later. The policy lives in `app/scheduler/recovery.py`;
+        this only tracks how long dispatch has been blocked and applies the
+        action it chooses, with the wait doubling after each attempt.
+        """
+        if block is None:
+            self._blocked_since = None
+            self._recovery_attempts = 0
+            return
+        now = monotonic()
+        if self._blocked_since is None:
+            self._blocked_since = now
+            return
+        blocked_seconds = now - self._blocked_since
+        action = plan_recovery(
+            block=block,
+            blocked_seconds=blocked_seconds,
+            attempts=self._recovery_attempts,
+            stall_seconds=self._config.dispatch_stall_seconds,
+        )
+        if action is None:
+            return
+        self._recovery_attempts += 1
+        await self._apply_recovery(action, block, blocked_seconds)
+
+    async def _apply_recovery(
+        self, action: RecoveryAction, block: DispatchBlock, blocked_seconds: float
+    ) -> None:
+        message = (
+            f"Dispatch blocked ({block}) for {blocked_seconds:.0f}s; "
+            f"attempt {self._recovery_attempts}: {action}"
+        )
+        logger.warning("%s", message)
+        self._telemetry.record_event(
+            "scheduler_recovery",
+            {
+                "action": action,
+                "block": block,
+                "blocked_seconds": round(blocked_seconds, 1),
+                "attempt": self._recovery_attempts,
+            },
+        )
+        try:
+            if action == RecoveryAction.UNLOAD_MODEL:
+                await self._model_manager.unload()
+            else:
+                await self._model_manager.reset_provider()
+        except Exception:
+            # Recovery failing must not kill the tick; the next attempt is
+            # scheduled with a longer delay and the failure stays visible.
+            logger.exception("Scheduler auto-recovery (%s) failed", action)
+            return
+        # The admin views render `model_state` from this event, so an automatic
+        # unload/reset has to be announced the same way the Admin endpoints
+        # announce a manual one.
+        await self._hub.broadcast(
+            WsEnvelope(
+                type="model_state", payload={"state": self._model_manager.state}
+            ).model_dump()
+        )
 
     async def _broadcast_scheduler_state(self) -> None:
         """Push a lightweight scheduler tick to the admin views.
@@ -579,6 +668,8 @@ class SchedulerService:
         ranked_chunks: list[ChunkRecord],
         vram_allocated_mb: int,
         vram_total_mb: int,
+        *,
+        vram_headroom_mb: int | None = None,
     ) -> tuple[tuple[str, str, str] | None, list[ChunkRecord]]:
         """Pick the next batch exactly as the scheduler would dispatch it.
 
@@ -590,37 +681,58 @@ class SchedulerService:
             return None, []
         group_key = self._choose_group_key(list(grouped), grouped)
         chunks = grouped[group_key]
-        batch_size = self._choose_batch_size(len(chunks), vram_allocated_mb, vram_total_mb)
+        batch_size = self._choose_batch_size(
+            len(chunks),
+            vram_allocated_mb,
+            vram_total_mb,
+            vram_headroom_mb=vram_headroom_mb,
+        )
         return group_key, chunks[:batch_size]
 
-    async def _render_next_batch(self, ranked_chunks: list[ChunkRecord]) -> None:
+    async def _render_next_batch(self, ranked_chunks: list[ChunkRecord]) -> DispatchBlock | None:
         if not ranked_chunks:
-            return
-        stats = await self._model_manager.memory_stats()
-        if stats.device.startswith("cuda") and (
-            stats.vram_allocated_mb is None or stats.vram_reserved_mb is None
+            return None
+        stats = await self._dispatch_memory_stats()
+        if stats is None or (
+            stats.device.startswith("cuda")
+            and (stats.vram_allocated_mb is None or stats.vram_reserved_mb is None)
         ):
             # Monitoring can retain RAM when a GPU query fails, but dispatch
-            # must not interpret missing allocator readings as zero usage.
+            # must not interpret missing allocator readings as zero usage. A
+            # monitoring blip is not a stall, so it is not a recovery target.
             self._set_warning(
-                "GPU memory statistics unavailable; dispatch paused until readings recover."
+                "GPU memory statistics unavailable; dispatch paused until readings recover.",
+                key="gpu_memory_unavailable",
             )
-            return
+            return DispatchBlock.MONITORING
         # Keep scheduler limits scoped to ReadFlow's allocator, not device-wide
         # usage. These are different from the system totals shown in Admin.
         vram_total = stats.vram_total_mb or 0
         vram_allocated = stats.vram_allocated_mb or 0
-        vram_reserved = stats.vram_reserved_mb or 0
-        if self._hard_limit_exceeded(vram_reserved):
+        hard_limit = self._config.vram_hard_limit_mb
+        live_vram = self._live_vram_mb(stats)
+        if hard_limit > 0 and live_vram >= hard_limit:
+            # Only memory that cannot be reclaimed counts against the hard
+            # limit. Comparing the *reserved* pool here is what used to freeze
+            # the scheduler for hours: the caching allocator never shrinks it,
+            # so one peak batch pinned it above the limit permanently while
+            # most of it was free cache. Recovery unloads the model, which is
+            # the only way to give VRAM back while work is pending.
             self._set_warning(
-                f"VRAM hard limit reached ({vram_reserved} MiB >= "
-                f"{self._config.vram_hard_limit_mb} MiB); dispatch paused. "
-                "Evict the model or raise the hard limit in Admin."
+                f"Live VRAM is at the hard limit ({live_vram} MiB >= {hard_limit} MiB); "
+                "dispatch paused. The model is unloaded automatically if this does not "
+                "clear, or raise the limit in Admin.",
+                key="vram_hard_limit",
             )
-            return
-        group_key, batch = self._select_next_batch(ranked_chunks, vram_allocated, vram_total)
+            return DispatchBlock.MEMORY
+        group_key, batch = self._select_next_batch(
+            ranked_chunks,
+            vram_allocated,
+            vram_total,
+            vram_headroom_mb=self._vram_headroom_mb(stats),
+        )
         if group_key is None or not batch:
-            return
+            return None
         self._clear_warning()
         self._note_batch_affinity(group_key[0], group_key[2])
         model_id = group_key[0]
@@ -634,6 +746,20 @@ class SchedulerService:
             results = await self._worker.render_batch(model_id, batch)
         except asyncio.CancelledError:
             raise
+        except ModelVRAMError as exc:
+            # The model could not even be loaded, so no chunk was attempted.
+            # Charging an attempt here let one low-VRAM moment mark an entire
+            # book failed three chunks at a time; requeue them untouched and
+            # let the stall supervisor decide when to try loading again.
+            logger.warning("Not enough VRAM to load %s: %s", model_id, exc)
+            self._set_warning(
+                f"Not enough VRAM to load {model_id}; the batch is requeued and the "
+                "scheduler retries automatically.",
+                key="model_load_vram",
+            )
+            for chunk in batch:
+                self._job_manager.mark_chunk_planned(chunk)
+            return DispatchBlock.MEMORY
         except Exception as exc:
             # Never let one bad batch kill the loop. The chunks are retried
             # within their attempt budget; once that is spent only those chunks
@@ -641,7 +767,6 @@ class SchedulerService:
             logger.exception("Batch render failed for %d chunk(s)", len(batch))
             self._handle_batch_failure(batch, exc)
             return
-
         # `strict=False`: the worker shrinks a batch when it hits an OOM and
         # retries, so a short result list is expected here (leftovers are
         # requeued below).
@@ -676,6 +801,7 @@ class SchedulerService:
         # later tick rather than left stuck in `RENDERING`.
         for chunk in batch[len(results) :]:
             self._job_manager.mark_chunk_planned(chunk)
+        return None
 
     def _handle_batch_failure(self, batch: list[ChunkRecord], error: Exception) -> None:
         """Requeue or fail the chunks of a batch that raised.
@@ -692,21 +818,88 @@ class SchedulerService:
                 self._job_manager.mark_chunk_retry(chunk, message)
         self._telemetry.record_event("batch_failed", {"error": message, "chunk_count": len(batch)})
 
-    def _hard_limit_exceeded(self, vram_reserved_mb: int) -> bool:
-        hard = self._config.vram_hard_limit_mb
-        return hard > 0 and vram_reserved_mb >= hard
+    async def _dispatch_memory_stats(self) -> MemoryStats | None:
+        """Admission readings for one dispatch, bounded by a deadline.
 
-    def _set_warning(self, message: str) -> None:
-        if self._warning == message:
-            return
+        Dispatch needs the readings, so unlike the live resource tick a failure
+        here has to skip the batch. It must still not hang the tick: an
+        unbounded query would freeze the whole scheduling loop, which is the
+        class of bug this file exists to prevent.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._model_manager.memory_stats(), timeout=self.MEMORY_STATS_TIMEOUT
+            )
+        except TimeoutError:
+            logger.info("Memory probe exceeded %.1fs before dispatch", self.MEMORY_STATS_TIMEOUT)
+        except Exception:
+            logger.warning("Memory statistics unavailable before dispatch", exc_info=True)
+        return None
+
+    def _live_vram_mb(self, stats: MemoryStats) -> int:
+        """VRAM that dispatch cannot get back without unloading something.
+
+        That is live tensor memory plus whatever the device is using that
+        ReadFlow does not own through the allocator (CUDA context, another
+        process). `reserved - allocated` is deliberately excluded: it is the
+        caching allocator's free pool, which `torch.cuda.empty_cache()` hands
+        back, so counting it against the hard limit claimed a full GPU while
+        most of the pool was unused.
+        """
+        allocated = stats.vram_allocated_mb or 0
+        if stats.vram_used_mb is None or stats.vram_reserved_mb is None:
+            return allocated
+        return allocated + max(0, stats.vram_used_mb - stats.vram_reserved_mb)
+
+    def _vram_headroom_mb(self, stats: MemoryStats) -> int | None:
+        """Memory a new batch can use without evicting anything.
+
+        Device free memory plus the allocator's own unreserved pool: blocks
+        already reserved but not allocated are handed to the next batch instead
+        of being requested from the driver. Bounding the batch this way avoids
+        dispatching work that can only end in an OOM-and-shrink cycle during a
+        long render.
+        """
+        if stats.vram_free_mb is None:
+            return None
+        reclaimable = 0
+        if stats.vram_reserved_mb is not None and stats.vram_allocated_mb is not None:
+            reclaimable = max(0, stats.vram_reserved_mb - stats.vram_allocated_mb)
+        return stats.vram_free_mb + reclaimable
+
+    def _set_warning(self, message: str, *, key: str | None = None) -> None:
+        """Publish why dispatch is paused, recording each cause once.
+
+        `key` is the stable identity of the cause (`message` by default). The
+        VRAM figure in the message moves by a few MiB every tick, so comparing
+        the rendered text recorded hundreds of identical telemetry events and
+        pushed the rest of the event log out of its ring buffer.
+        """
+        identity = key or message
         self._warning = message
+        if self._warning_key == identity:
+            return
+        self._warning_key = identity
         logger.warning("%s", message)
         self._telemetry.record_event("scheduler_warning", {"warning": message})
 
     def _clear_warning(self) -> None:
         self._warning = None
+        self._warning_key = None
 
-    def _choose_batch_size(self, available: int, vram_allocated_mb: int, vram_total_mb: int) -> int:
+    def _choose_batch_size(
+        self,
+        available: int,
+        vram_allocated_mb: int,
+        vram_total_mb: int,
+        *,
+        vram_headroom_mb: int | None = None,
+    ) -> int:
+        """Largest candidate batch that fits both the soft limit and real headroom.
+
+        `available` is the number of chunks waiting, not a memory figure: the
+        candidate list is trimmed by the chunk count at the end.
+        """
         candidates = list(self._config.batch_candidates_small_model)
         # The configured soft limit is the budget for the batch's peak allocated
         # working set (falling back to physical VRAM when it is 0/unset). Size
@@ -719,6 +912,9 @@ class SchedulerService:
             if self._vram_per_chunk_mb:
                 max_by_budget = int((budget - vram_allocated_mb) / self._vram_per_chunk_mb)
                 candidates = [size for size in candidates if size <= max_by_budget] or [1]
+        if vram_headroom_mb is not None and self._vram_per_chunk_mb:
+            fit = int(vram_headroom_mb / self._vram_per_chunk_mb)
+            candidates = [size for size in candidates if size <= fit] or [1]
         for size in candidates:
             if available >= size:
                 return size

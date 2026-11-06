@@ -112,6 +112,7 @@ class AdminConfigResponse(BaseModel):
     chunk_max_attempts: int
     model_load_timeout_seconds: float
     synthesis_timeout_seconds: float
+    dispatch_stall_seconds: float
     model_residency_batches: int
     voice_residency_batches: int
 
@@ -135,6 +136,7 @@ class AdminConfigUpdateRequest(BaseModel):
     chunk_max_attempts: int | None = None
     model_load_timeout_seconds: float | None = None
     synthesis_timeout_seconds: float | None = None
+    dispatch_stall_seconds: float | None = None
     model_residency_batches: int | None = None
     voice_residency_batches: int | None = None
 

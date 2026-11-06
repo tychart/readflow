@@ -364,3 +364,56 @@ def test_pause_excludes_planned_chunks_from_dispatch_and_stays_paused():
     )
 
     assert manager.get_job(job.id).status == JobStatus.PAUSED
+
+
+def test_a_requeued_batch_does_not_leave_the_job_stuck_in_rendering():
+    """`rendering` claims the GPU is working on the job.
+
+    A failed batch — or one the worker shrank on an OOM — requeued its chunks
+    but left the job status at RENDERING forever, because nothing reset it. The
+    admin queue and the reader both read that status literally, which is how a
+    long job could look busy all day while nothing was rendering.
+    """
+    manager, job, chunks = _job_with_chunks(2)
+    manager.mark_chunk_queued(chunks[0])
+    manager.mark_chunk_rendering(chunks[0])
+    assert manager.get_job(job.id).status == JobStatus.RENDERING
+
+    manager.mark_chunk_retry(chunks[0], "ffmpeg exploded")
+    assert manager.get_job(job.id).status == JobStatus.QUEUED
+
+    manager.mark_chunk_queued(chunks[0])
+    manager.mark_chunk_rendering(chunks[0])
+    manager.mark_chunk_planned(chunks[0])
+    assert manager.get_job(job.id).status == JobStatus.QUEUED
+
+
+def test_a_job_whose_last_chunk_fails_stops_reporting_rendering():
+    manager, job, chunks = _job_with_chunks(1)
+    job.planner_cursor.offset = -1
+    manager.mark_chunk_queued(chunks[0])
+    manager.mark_chunk_rendering(chunks[0])
+
+    manager.mark_chunk_failed(chunks[0], "permanent")
+
+    updated = manager.get_job(job.id)
+    assert updated.status == JobStatus.COMPLETED
+    assert updated.chunks[0].status == ChunkStatus.FAILED
+
+
+def test_settling_never_revives_a_paused_job():
+    manager, job, chunks = _job_with_chunks(1)
+    manager.pause_job(job.id)
+    manager.mark_chunk_rendering(chunks[0])
+    manager.mark_chunk_retry(chunks[0], "transient")
+
+    assert manager.get_job(job.id).status == JobStatus.PAUSED
+
+
+def test_settling_keeps_an_active_listener_playing():
+    manager, job, chunks = _job_with_chunks(1)
+    manager.activate_job(job.id)
+    manager.mark_chunk_rendering(chunks[0])
+    manager.mark_chunk_retry(chunks[0], "transient")
+
+    assert manager.get_job(job.id).status == JobStatus.PLAYING

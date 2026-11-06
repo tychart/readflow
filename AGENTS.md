@@ -273,6 +273,7 @@ Key files:
 - `server/app/core/hub.py` (WebSocketHub)
 - `server/app/api/router.py`
 - `server/app/scheduler/service.py`
+- `server/app/scheduler/recovery.py` (pure stall-recovery policy)
 - `server/app/synthesis/provider.py`
 - `server/app/synthesis/model_manager.py`
 - `server/app/synthesis/worker.py`
@@ -1119,10 +1120,11 @@ stopped producing for good. The reader now distinguishes "slow" from "stopped":
   reader state and re-activates the job (`refreshReaderState` + `activateJob`)
   so scheduling resumes. A recovered producer clears the dismissal so a later
   stall is shown again.
-- This is the frontend half of the scheduler circuit breaker: when the model is
-  in `ModelState.ERROR`, dispatch stops until an operator uses Admin → **Reset
-  provider**, and the banner is what tells the listener to do that instead of
-  waiting forever.
+- This is the frontend half of the scheduler's health signalling: a stalled or
+  blocked producer is visible to the listener instead of an endless spinner.
+  Recovery itself is automatic (see "A blocked dispatcher recovers by itself");
+  the banner's Retry is the manual nudge, and Admin → **Reset provider** remains
+  the manual escape hatch for a provider that keeps failing.
 
 ### GPU residency guidance (jobs page + reader)
 
@@ -1272,17 +1274,26 @@ Important behavior:
   urgent band (and frozen at the cap) forever.
 - batch size is dynamic: it is sized from the **measured marginal allocated VRAM
   per chunk** (peak allocated minus the idle baseline, from the last completed
-  batch) against the configured VRAM soft limit. Do **not** size from
-  `memory_reserved`: the CUDA caching allocator's pool only grows, so one large
-  batch would pin it at its peak and permanently shrink every later batch
-  (`test_batch_size_uses_measured_per_chunk_cost_against_soft_limit` pins this).
-- the configured VRAM hard limit pauses dispatch and raises an Admin warning;
-  the hard check intentionally uses `memory_reserved` because that is the memory
-  the process cannot hand back
+  batch) against the configured VRAM soft limit, and additionally bounded by
+  the **real headroom** (`vram_free + (reserved - allocated)`, `_vram_headroom_mb`)
+  so a batch that cannot fit is not dispatched only to OOM-and-shrink. Do **not**
+  size from `memory_reserved`: the CUDA caching allocator's pool only grows, so
+  one large batch would pin it at its peak and permanently shrink every later
+  batch (`test_batch_size_uses_measured_per_chunk_cost_against_soft_limit` pins
+  this).
+- the configured VRAM hard limit pauses dispatch and raises an Admin warning,
+  and it is measured against **live** VRAM (`_live_vram_mb`): allocated tensors
+  plus what the device holds outside the allocator (CUDA context, other
+  processes). `reserved - allocated` is the allocator's **free pool** and must
+  not count — see "A blocked dispatcher recovers by itself".
 - the planner keeps `plan_ahead_chunks` (default 16) ready per job so a single
   job can fill the largest batch
 - on OOM, worker records telemetry and halves the batch until it fits (then
-  requeues the chunks it dropped)
+  requeues the chunks it dropped). A batch that could not even **load** the
+  model (`ModelVRAMError` from `render_batch`) does not charge the chunks an
+  attempt: one low-VRAM moment used to mark an entire book failed three chunks
+  at a time. The chunks are requeued untouched and the stall supervisor decides
+  when to try loading again.
 - **model/voice residency**: a model swap is a full weight unload/reload (and
   clears the voice prompt cache), so the scheduler holds the resident model for
   `model_residency_batches` (default 10) before rotating to a model with pending
@@ -2167,6 +2178,10 @@ return 200 with nothing changed. Validation is atomic: a payload with one bad fi
 none of it. `test_admin_config_rejects_values_that_would_stall_rendering`
 (8 cases) and `test_admin_config_update_is_atomic` pin this.
 
+`dispatch_stall_seconds` is the one knob where `0` is legal but *deliberate*: it
+disables automatic stall recovery, leaving a blocked dispatcher to an operator.
+The warning stays in Admin either way, so this is a choice, not a trap.
+
 ### Admin system-resource readings
 
 `server/app/telemetry/memory.py::MemoryStats` is the single named snapshot used
@@ -2182,8 +2197,10 @@ Do not restore the old positional tuple or duplicate the HTTP/socket mappings.
   GPU). Do not subtract PyTorch's reserve from total to invent device free space.
 - `vram_allocated_mb` and `vram_reserved_mb` remain **PyTorch-only** counters.
   The reserve includes reusable cache, not CUDA context/non-PyTorch overhead;
-  it is not an exact per-process VRAM figure. Scheduler sizing/hard-limit policy
-  still uses allocated/reserved respectively, not device-wide used memory.
+  it is not an exact per-process VRAM figure. Scheduler sizing uses allocated;
+  the hard limit uses **live** VRAM (allocated plus device-in-use outside the
+  allocator), never the reserved pool on its own. See "A blocked dispatcher
+  recovers by itself".
 - Monitoring queries CUDA device 0 even without a GPU-loaded model. The model's
   lifecycle affects only the device label, never whether GPU totals are shown.
   Queries run via `asyncio.to_thread`, **not the synthesis executor**, so long
@@ -2247,9 +2264,12 @@ load-bearing behavior that must not be "simplified" away.
 - **Bounded per-chunk retries.** `ChunkRecord.attempts` counts failures;
   `_handle_batch_failure` calls `JobManager.mark_chunk_retry` until
   `chunk_max_attempts` (default 3, Admin-tunable), then
-  `JobManager.mark_chunk_failed`. A failed chunk does **not** fail the job —
-  `mark_chunk_failed` deliberately leaves `job.status` alone so the rest of a
-  book keeps rendering with a visible gap.
+  `JobManager.mark_chunk_failed`. A failed chunk does **not** fail the job, so
+  the rest of a book keeps rendering with a visible gap. Every terminal/requeue
+  transition ends in `JobManager._settle_status`, the single place that decides
+  a job's coarse status: a requeued chunk must put the job back to
+  `queued`/`playing` instead of leaving it in `rendering` with nothing in
+  flight (the reader and the queue inspector read that status literally).
 - **Completion is decided by `Job.has_unfinished_chunks()`**, not
   `versioned_pending_chunks()`. The latter is always empty for ordinary
   (non-reprocessed) jobs, so the old check marked a job `completed` as soon as
@@ -2262,12 +2282,15 @@ load-bearing behavior that must not be "simplified" away.
   sets `ModelState.ERROR`; `run_once` then refuses to dispatch into a possibly
   stuck single worker thread and keeps broadcasting. `mark_idle` explicitly
   does not clobber `ERROR` — that guard is the circuit breaker.
-- **Recovery is manual, by design.** Admin → **Reset provider**
-  (`POST /api/admin/model/reset` → `ModelManager.reset_provider` →
-  `QwenProvider.reset`) replaces the single-worker `ThreadPoolExecutor`
-  (`shutdown(wait=False, cancel_futures=True)`, abandoning a thread stuck in
-  native code) and clears model state. Warming the model alone never unstuck a
-  dead loop; this endpoint is what actually recovers it.
+- **Recovery is automatic, with manual overrides.** A blocked dispatcher
+  recovers by itself after `dispatch_stall_seconds` (see "A blocked dispatcher
+  recovers by itself" below), which is what makes an unattended long job safe.
+  Admin still exposes **Reset provider** (`POST /api/admin/model/reset` →
+  `ModelManager.reset_provider` → `QwenProvider.reset`), which replaces the
+  single-worker `ThreadPoolExecutor` (`shutdown(wait=False,
+  cancel_futures=True)`, abandoning a thread stuck in native code), drops the
+  model refs, and collects + `empty_cache()`s so the reload it enables can
+  actually fit. Warming the model alone never unstuck a dead loop.
 - **Liveness is observable.** `/api/admin/state` and the `scheduler_state`
   WebSocket tick carry `running`, `last_tick_at`, `last_error`,
   `consecutive_errors`, plus `model_last_error`. The Admin Overview renders
@@ -2275,11 +2298,52 @@ load-bearing behavior that must not be "simplified" away.
 - **Admin HTTP paths are bounded too.** `/admin/state` reads `memory_stats()`
   behind a 2 s `wait_for`, and `/admin/model/warm` uses the load timeout, so a
   stuck worker thread cannot hang the admin panel.
+- **Nothing on the tick's path waits forever.** The dispatch admission read has
+  the same 2 s deadline (`_dispatch_memory_stats`), `WebSocketHub.broadcast`
+  bounds each send (`BROADCAST_TIMEOUT_SECONDS`, dropping a client that cannot
+  keep up) and delivers concurrently, and both ffmpeg subprocesses carry a
+  timeout (`CHUNK_ENCODE_TIMEOUT_SECONDS`, `EXPORT_TIMEOUT_SECONDS`). Each of
+  those used to be able to block `run_once` indefinitely — a sleeping phone tab
+  on the broadcast path, a wedged encoder on the packaging path — which freezes
+  the loop with nothing logged.
+
+### A blocked dispatcher recovers by itself
+
+`app/scheduler/recovery.py` + `SchedulerService._supervise_dispatch`. The policy
+is pure and unit-tested (`tests/unit/test_recovery.py`); the scheduler only
+tracks `_blocked_since` / `_recovery_attempts`.
+
+- `_dispatch_tick()` returns a `DispatchBlock` when it had work but dispatched
+  nothing: `MEMORY`, `PROVIDER_ERROR`, or `MONITORING`. `None` means a batch ran
+  or there was nothing to do, which resets the stall clock.
+- After `dispatch_stall_seconds` (default 45 s, **0 disables it**), `MEMORY`
+  unloads the model and `PROVIDER_ERROR` resets the provider; each further
+  attempt waits twice as long (capped at ×32), because a reload is tens of
+  seconds of GPU work. Each action is a `scheduler_recovery` telemetry event and
+  is announced on the socket as `model_state`, exactly like the Admin buttons.
+- `MONITORING` never triggers recovery: missing allocator readings are a query
+  blip that clears itself, and unloading cannot help.
+
+The outage this fixes: dispatch was paused because the **reserved** pool
+(11,008 MiB, of which 7 GB was free cache) was compared against the 11,000 MiB
+hard limit, while `maybe_unload_idle` kept the model resident because work was
+pending. The scheduler could neither render nor release memory, every tick
+succeeded, nothing was logged, and the queue sat frozen for hours with the GPU
+at 11.9/11.95 GB. Reproduced and re-verified live on the 12 GB card: with
+reserved 10,266 MiB against a 9,000 MiB limit it keeps rendering; with the limit
+below live usage it unloads after 45 s, reloads, and drains the whole job
+through repeated 90 s/180 s cycles instead of freezing.
+
+Do not "simplify" the hard limit back to `reserved`, and do not remove the
+supervisor because "the idle unload handles it": the crash case is precisely
+one where pending work suppresses the idle unload.
 
 `test_run_forever_survives_a_failing_tick`,
 `test_batch_failure_retries_within_budget_then_skips_chunk`,
 `test_synthesis_timeout_flags_model_error_and_pauses_dispatch`,
-`test_job_completes_only_when_every_chunk_is_written`, and the
+`test_job_completes_only_when_every_chunk_is_written`,
+`test_reclaimable_allocator_pool_does_not_pause_dispatch`,
+`test_a_model_that_cannot_load_does_not_burn_chunk_attempts`, and the
 `ModelManager` ERROR/`reset_provider` tests pin this.
 
 ## What Was Added During This Conversation
@@ -2590,6 +2654,39 @@ Header-title round:
    page to 805px on a 390px screen. Both tracks are now `minmax(0, …)` (`AdminPage`'s grid
    too), the card title keeps a `title=` tooltip and gained `data-testid="job-card-title"`,
    and an e2e test pins the no-overflow contract for the jobs list.
+
+Scheduler deadlock round (the "frozen all day with a full GPU" outage):
+
+1. **The VRAM hard limit no longer reads the allocator's free pool.**
+   `_live_vram_mb` counts live tensors plus device usage outside the allocator;
+   comparing `reserved` was a permanent false positive once one peak batch grew
+   the pool past the limit (11,008 MiB reserved vs 4,047 MiB live), because the
+   pool never shrinks and pending work suppressed the idle unload. Verified
+   live: rendering continues with reserved 10,266 MiB against a 9,000 MiB limit.
+2. **A blocked dispatcher recovers by itself** (`app/scheduler/recovery.py`,
+   `_supervise_dispatch`): after `dispatch_stall_seconds` (45 s default, 0
+   disables) it unloads the model for a memory block and resets the provider for
+   an errored one, doubling the wait after each attempt. Verified live: with the
+   hard limit forced below live usage it drained a whole job through unload /
+   reload cycles instead of freezing, backoff 45 s → 90 s → 180 s.
+3. **A load failure is not a chunk failure.** `ModelVRAMError` from
+   `render_batch` requeues the batch without charging attempts, so one low-VRAM
+   moment no longer marks an entire book failed three chunks at a time.
+4. **Batch size is bounded by real headroom** (`vram_free + reserved - allocated`)
+   so a batch that cannot fit is not dispatched into an OOM-and-shrink cycle.
+5. **Nothing on the tick's path can wait forever:** the admission memory probe
+   has the 2 s deadline, `WebSocketHub.broadcast` bounds and parallelises each
+   send (a sleeping phone tab could block the tick), and both ffmpeg
+   subprocesses carry timeouts.
+6. **A job can no longer sit in `rendering` with nothing in flight.**
+   `JobManager._settle_status` is the single decision point for requeue/failure
+   transitions; before this a failed or shrunk batch left the status at
+   `rendering` forever.
+7. **The warning dedupe uses a stable cause key**, not the rendered message: the
+   live VRAM figure moves every tick, so the old text comparison recorded a
+   `scheduler_warning` telemetry event per tick and flushed the event log.
+8. `dispatch_stall_seconds` is an Admin knob (Overview) and part of
+   `AdminConfigResponse`/`AdminConfigUpdateRequest`.
 
 ## Agent Workflow Checklist
 

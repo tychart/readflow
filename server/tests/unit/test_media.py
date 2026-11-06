@@ -58,3 +58,33 @@ def test_remove_job_cleans_peaks_file(settings: Settings) -> None:
     assert store.peaks_path("job-1", 0).exists()
     store.remove_job("job-1")
     assert not store.peaks_path("job-1", 0).exists()
+
+
+def test_a_wedged_ffmpeg_times_out_instead_of_freezing_the_scheduler(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process that never exits must fail the chunk, not hang the tick.
+
+    `package_wav_chunk` runs on a thread the scheduling loop awaits, so a hung
+    ffmpeg froze rendering permanently with nothing logged.
+    """
+    import subprocess
+
+    from app.media.store import CHUNK_ENCODE_TIMEOUT_SECONDS
+
+    calls: list[dict[str, object]] = []
+
+    def wedged(command, **kwargs):
+        calls.append(kwargs)
+        raise subprocess.TimeoutExpired(command, 1.0)
+
+    monkeypatch.setattr("app.media.store.subprocess.run", wedged)
+    store = MediaStore(settings)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            store.package_wav_chunk("job-timeout", 0, _build_wav_bytes())
+        assert calls[0]["timeout"] == CHUNK_ENCODE_TIMEOUT_SECONDS
+        # The truncated encode must not be left behind as if it were real.
+        assert not (store.job_dir("job-timeout") / "00000_v0.mp4").exists()
+    finally:
+        store.remove_job("job-timeout")

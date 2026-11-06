@@ -115,6 +115,7 @@ const BASE_CONFIG: AdminConfig = {
   chunk_max_attempts: 3,
   model_load_timeout_seconds: 900,
   synthesis_timeout_seconds: 300,
+  dispatch_stall_seconds: 45,
   model_residency_batches: 10,
   voice_residency_batches: 3,
 };

@@ -205,6 +205,19 @@ class QwenProvider:
         self._model = None
         self._loaded_model_id = None
         self._prompt_cache.clear()
+        # Dropping the references is not enough to give VRAM back: the caching
+        # allocator holds the pool until it is collected and emptied. A reset
+        # that leaves 11 GB reserved would deadlock the reload it exists to
+        # enable. Done inline (not on the executor), because the executor is
+        # the thing that may be stuck.
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("Could not release CUDA memory after provider reset", exc_info=True)
 
     def validate_environment(self) -> None:
         torch, _qwen_model_class = _import_qwen_runtime()

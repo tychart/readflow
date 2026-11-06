@@ -13,6 +13,14 @@ from app.core.config import Settings
 from app.media.mp4 import split_fragmented_mp4
 from app.media.peaks import compute_peaks
 
+# Wall-clock ceilings for the ffmpeg subprocesses. They are not performance
+# limits — encoding a 12s chunk takes ~0.1s and a book-sized export a few
+# minutes — they exist so a wedged process cannot block the scheduler forever.
+# `package_wav_chunk` runs on a thread the scheduling tick awaits, so a hung
+# ffmpeg froze rendering with nothing logged and no way to recover.
+CHUNK_ENCODE_TIMEOUT_SECONDS = 120
+EXPORT_TIMEOUT_SECONDS = 1800
+
 
 @dataclass(slots=True)
 class PackagedChunk:
@@ -116,6 +124,13 @@ class MediaStore:
             return handle.getnframes() / float(handle.getframerate())
 
     def _run_ffmpeg(self, wav_path: Path, mp4_path: Path) -> None:
+        """Encode one chunk's WAV into fragmented MP4.
+
+        The timeout is not a performance limit (a 12s chunk encodes in about
+        0.1s): it exists so a wedged ffmpeg cannot block the scheduling tick
+        forever. The packager runs on a thread the scheduler awaits, so a
+        process that never exits froze the whole loop with nothing logged.
+        """
         command = [
             "ffmpeg",
             "-y",
@@ -132,7 +147,13 @@ class MediaStore:
             "frag_keyframe+empty_moov+default_base_moof+separate_moof",
             str(mp4_path),
         ]
-        subprocess.run(command, check=True)
+        try:
+            subprocess.run(command, check=True, timeout=CHUNK_ENCODE_TIMEOUT_SECONDS)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # A killed encode leaves a truncated file behind; `-y` hides it on
+            # the retry, but it should not linger in the job directory.
+            mp4_path.unlink(missing_ok=True)
+            raise
 
     def _run_export_ffmpeg(self, concat_path: Path, output_path: Path) -> None:
         command = [
@@ -157,8 +178,8 @@ class MediaStore:
             str(output_path),
         ]
         try:
-            subprocess.run(command, check=True)
-        except subprocess.CalledProcessError:
+            subprocess.run(command, check=True, timeout=EXPORT_TIMEOUT_SECONDS)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             output_path.unlink(missing_ok=True)
             raise
 

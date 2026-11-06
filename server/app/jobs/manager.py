@@ -309,6 +309,7 @@ class JobManager:
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         self._requeue_superseded_chunk(job, chunk)
+        self._settle_status(job)
         job.updated_at = time()
 
     def mark_chunk_retry(self, chunk: ChunkRecord, error: str) -> Job:
@@ -323,6 +324,7 @@ class JobManager:
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         self._requeue_superseded_chunk(job, chunk)
+        self._settle_status(job)
         job.updated_at = time()
         return job
 
@@ -353,17 +355,7 @@ class JobManager:
         # Complete only when the planner has nothing left to emit and no chunk
         # is still queued/rendering. `has_unfinished_chunks` (not the versioned
         # helper) is what makes this correct for ordinary, non-reprocessed jobs.
-        if job.planner_cursor.exhausted and not job.has_unfinished_chunks():
-            job.status = JobStatus.COMPLETED
-            job.is_active_listening = False
-        elif job.status == JobStatus.PAUSED:
-            # Pause is sticky. Finishing an in-flight batch used to rewrite the
-            # status to QUEUED/PLAYING, which silently resumed the job.
-            job.status = JobStatus.PAUSED
-        elif job.is_active_listening:
-            job.status = JobStatus.PLAYING
-        else:
-            job.status = JobStatus.QUEUED
+        self._settle_status(job)
         job.updated_at = time()
         return job
 
@@ -380,8 +372,31 @@ class JobManager:
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         self._requeue_superseded_chunk(job, chunk)
+        self._settle_status(job)
         job.updated_at = time()
         return job
+
+    def _settle_status(self, job: Job) -> None:
+        """Recompute a job's coarse status from its chunks.
+
+        Exactly one place decides this, so the transitions cannot drift. It is
+        what keeps a job from sitting in `RENDERING` with nothing in flight —
+        the reader and the admin queue both read `rendering` as "the GPU is
+        working on this", and a failed batch or a batch the worker shrank used
+        to leave the status there forever.
+
+        Pause and the terminal states are never rewritten here: pause is sticky,
+        and a completed/failed job is only revived by an explicit action.
+        """
+        if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED, JobStatus.FAILED}:
+            return
+        if job.planner_cursor.exhausted and not job.has_unfinished_chunks():
+            job.status = JobStatus.COMPLETED
+            job.is_active_listening = False
+        elif job.is_active_listening:
+            job.status = JobStatus.PLAYING
+        else:
+            job.status = JobStatus.QUEUED
 
     def renderable_chunks(self) -> Iterable[ChunkRecord]:
         """Planned chunks the scheduler may dispatch.

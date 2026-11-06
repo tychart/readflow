@@ -183,6 +183,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             chunk_max_attempts=runtime.chunk_max_attempts,
             model_load_timeout_seconds=runtime.model_load_timeout_seconds,
             synthesis_timeout_seconds=runtime.synthesis_timeout_seconds,
+            dispatch_stall_seconds=runtime.dispatch_stall_seconds,
             model_residency_batches=runtime.model_residency_batches,
             voice_residency_batches=runtime.voice_residency_batches,
         )

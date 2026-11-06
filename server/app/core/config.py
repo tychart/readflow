@@ -62,9 +62,18 @@ class RuntimeConfig(BaseModel):
     # Deadlines for the provider's single worker thread. A model load can
     # legitimately include a first-time download, so it gets a much larger
     # budget than a synthesis batch. A timeout flags the model as errored and
-    # pauses dispatch until the provider is reset from Admin.
+    # pauses dispatch; automatic recovery resets the provider after
+    # `dispatch_stall_seconds` (or an operator can do it sooner from Admin).
     model_load_timeout_seconds: float = Field(default=900.0, gt=0)
     synthesis_timeout_seconds: float = Field(default=300.0, gt=0)
+    # Self-recovery for a scheduler that has work but cannot dispatch (see
+    # `app/scheduler/recovery.py`). Once dispatch has been blocked this long
+    # while chunks are pending, the scheduler drops what blocks it — the
+    # resident model for a memory block, the provider thread for an errored one
+    # — doubling the wait after each attempt. This is what prevents the "GPU
+    # full, queue frozen, nothing logged" state that used to need a manual Admin
+    # evict. 0 disables automatic recovery entirely.
+    dispatch_stall_seconds: float = Field(default=45.0, ge=0)
     # How many consecutive batches a model stays resident before the scheduler
     # will rotate to a model with pending work. A model swap unloads/reloads all
     # weights (and clears the voice prompt cache), so this floor is what keeps

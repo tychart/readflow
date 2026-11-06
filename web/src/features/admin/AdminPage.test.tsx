@@ -21,6 +21,7 @@ const GPU_ADMIN_STATE = {
     chunk_max_attempts: 3,
     model_load_timeout_seconds: 900,
     synthesis_timeout_seconds: 300,
+    dispatch_stall_seconds: 45,
     model_residency_batches: 10,
     voice_residency_batches: 3,
   },
@@ -124,6 +125,7 @@ function mockFetch({ failConfigSave = false } = {}) {
           chunk_max_attempts: 3,
           model_load_timeout_seconds: 900,
           synthesis_timeout_seconds: 300,
+          dispatch_stall_seconds: 45,
           model_residency_batches: 10,
           voice_residency_batches: 3,
         }),
@@ -297,6 +299,7 @@ test("form initializes from adminState.config once", () => {
         chunk_max_attempts: 3,
         model_load_timeout_seconds: 900,
         synthesis_timeout_seconds: 300,
+        dispatch_stall_seconds: 45,
         model_residency_batches: 10,
         voice_residency_batches: 3,
       },
@@ -385,6 +388,34 @@ test("edits and saves the plan-ahead window setting", async () => {
   expect(input.value).toBe("4");
 
   await user.click(screen.getByRole("button", { name: /Save config/i }));
+
+  await waitFor(() =>
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/admin/config",
+      expect.objectContaining({ method: "POST" }),
+    ),
+  );
+});
+
+test("edits and saves the dispatch stall recovery window", async () => {
+  const user = userEvent.setup();
+  mockFetch();
+  setStoreWithAdminState(GPU_ADMIN_STATE, GPU_ADMIN_STATE.memory);
+
+  render(<AdminPage />);
+
+  const input = screen.getByLabelText(
+    /Dispatch stall recovery/i,
+  ) as HTMLInputElement;
+  expect(input.value).toBe("45");
+
+  await user.clear(input);
+  await user.type(input, "0");
+  expect(input.value).toBe("0");
+
+  const save = screen.getByRole("button", { name: /Save config/i });
+  expect(save).toBeEnabled();
+  await user.click(save);
 
   await waitFor(() =>
     expect(globalThis.fetch).toHaveBeenCalledWith(
