@@ -16,7 +16,8 @@ import { ErrorBoundary } from "../components/ErrorBoundary";
 import { NavbarJobTitle } from "../components/NavbarJobTitle";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { AdminPage } from "../features/admin/AdminPage";
-import { JobsPage } from "../features/jobs/JobsPage";
+import { LibraryPage } from "../features/library/LibraryPage";
+import { TrashPage } from "../features/library/TrashPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
 import { useReaderTitle } from "../hooks/useReaderTitle";
 import { useScrollProgressVar } from "../hooks/useScrollProgress";
@@ -131,17 +132,17 @@ function Shell() {
   const [, forceUpdate] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // The expanded brand (lockup + tagline) only appears at the top of the jobs
-  // page; every other route keeps the compact navbar.
-  const isJobsPage = location.pathname === "/";
+  // The expanded brand (lockup + tagline) only appears at the top of the
+  // library page; every other route keeps the compact navbar.
+  const isLibraryPage = location.pathname === "/";
 
   // Collapse the navbar as the user scrolls by writing progress into a CSS
   // custom property instead of component state: a scroll-rate re-render of the
   // whole shell (and the page inside it) is pure waste. Routes other than the
-  // jobs page pin the value at 1, i.e. fully compact.
+  // library page pin the value at 1, i.e. fully compact.
   const attachNavbarProgress = useScrollProgressVar<HTMLElement>({
     variable: "--navbar-progress",
-    forced: isJobsPage ? undefined : 1,
+    forced: isLibraryPage ? undefined : 1,
   });
 
   // The open reader's job title, published by `ReaderPage`. This is route-level
@@ -236,7 +237,7 @@ function Shell() {
           <div className="flex items-center gap-3">
             <nav className="flex gap-1">
               {[
-                ["/", "Jobs"],
+                ["/", "Library"],
                 ["/admin", "Admin"],
               ].map(([to, label]) => (
                 <NavLink
@@ -267,7 +268,9 @@ function Shell() {
       <main className={showMiniPlayer ? "flex-1 pb-24" : "flex-1"}>
         <ErrorBoundary key={location.pathname}>
           <Routes>
-            <Route element={<JobsPage />} path="/" />
+            <Route element={<LibraryPage />} path="/" />
+            <Route element={<LibraryPage />} path="/library/:folderId" />
+            <Route element={<TrashPage />} path="/trash" />
             <Route element={<ReaderPage />} path="/jobs/:jobId" />
             <Route element={<AdminPage />} path="/admin" />
             {/* Unknown URLs redirect to the jobs page (replace keeps history clean) */}

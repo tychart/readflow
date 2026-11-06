@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useParams } from "react-router-dom";
+import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
 import { ChunkConveyor } from "../../components/ChunkConveyor";
@@ -558,7 +558,7 @@ export function ReaderPage() {
 
   // ── Handlers ─────────────────────────────────────────────
 
-  const handlePlay = async () => {
+  const handlePlay = useCallback(async () => {
     if (!job) return;
     if (isJobTerminal) {
       setPlayIntent(true);
@@ -580,7 +580,21 @@ export function ReaderPage() {
           : "Unable to activate playback",
       );
     }
-  };
+  }, [applyJobPatch, isJobTerminal, job, setPlayIntent]);
+
+  // "Play folder" and a job row's play button arrive as `?play=1`. Start once
+  // the job is loaded, then drop the parameter so a remount does not re-fire.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const autoplayForJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!job || searchParams.get("play") !== "1") return;
+    if (autoplayForJobRef.current === job.id) return;
+    autoplayForJobRef.current = job.id;
+    const next = new URLSearchParams(searchParams);
+    next.delete("play");
+    setSearchParams(next, { replace: true });
+    void handlePlay();
+  }, [handlePlay, job, searchParams, setSearchParams]);
 
   const handlePause = async () => {
     if (!job) return;

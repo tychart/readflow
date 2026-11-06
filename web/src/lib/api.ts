@@ -5,8 +5,11 @@ import type {
   JobDetail,
   JobManifest,
   JobSummary,
+  LibraryItemRef,
+  LibrarySnapshot,
   ProgressUpdateResponse,
   RuntimeStatus,
+  TrashEntry,
   Voice,
 } from "../types/api";
 import { apiPath } from "./transport";
@@ -175,6 +178,84 @@ export const api = {
         current_time_seconds: currentTimeSeconds,
         is_playing: isPlaying,
       }),
+    }),
+
+  /* ── Library ──────────────────────────────────────────── */
+
+  getLibrary: () => request<LibrarySnapshot>(apiPath("/library")),
+
+  createFolder: (name: string, parentId: string | null = null) =>
+    request<{
+      id: string;
+      name: string;
+      parent_id: string | null;
+      position: number;
+    }>(apiPath("/folders"), {
+      method: "POST",
+      body: JSON.stringify({ name, parent_id: parentId }),
+    }),
+
+  renameFolder: (folderId: string, name: string) =>
+    request<{ id: string; name: string }>(apiPath(`/folders/${folderId}`), {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  renameJob: (jobId: string, title: string) =>
+    request<JobSummary>(apiPath(`/jobs/${jobId}`), {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
+  reorderLibrary: (
+    parentId: string | null,
+    folderIds: string[],
+    jobIds: string[],
+  ) =>
+    request<void>(apiPath("/library/reorder"), {
+      method: "POST",
+      body: JSON.stringify({
+        parent_id: parentId,
+        folder_ids: folderIds,
+        job_ids: jobIds,
+      }),
+    }),
+
+  moveLibraryItems: (items: LibraryItemRef[], folderId: string | null) =>
+    request<void>(apiPath("/library/move"), {
+      method: "POST",
+      body: JSON.stringify({ items, folder_id: folderId }),
+    }),
+
+  deleteLibraryItems: (items: LibraryItemRef[]) =>
+    request<void>(apiPath("/library/delete"), {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
+
+  deleteFolderOnly: (folderId: string) =>
+    request<void>(apiPath(`/folders/${folderId}/delete-only`), {
+      method: "POST",
+    }),
+
+  markLibraryRead: (items: LibraryItemRef[], read: boolean) =>
+    request<void>(apiPath("/library/read"), {
+      method: "POST",
+      body: JSON.stringify({ items, read }),
+    }),
+
+  getTrash: () => request<TrashEntry[]>(apiPath("/trash")),
+
+  restoreTrash: (entryIds: string[]) =>
+    request<void>(apiPath("/trash/restore"), {
+      method: "POST",
+      body: JSON.stringify({ entry_ids: entryIds }),
+    }),
+
+  purgeTrash: (entryIds: string[], empty = false) =>
+    request<void>(apiPath("/trash/purge"), {
+      method: "POST",
+      body: JSON.stringify({ entry_ids: entryIds, empty }),
     }),
 
   /** Reprocess a specific chunk, optionally with new text/voice. */

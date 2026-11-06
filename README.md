@@ -180,7 +180,7 @@ The frontend lives in `web/` and uses:
 Important frontend pieces:
 
 - [web/src/app/App.tsx](/home/tychart/projects/readflow/web/src/app/App.tsx): shell and routing
-- [web/src/features/jobs/JobsPage.tsx](/home/tychart/projects/readflow/web/src/features/jobs/JobsPage.tsx): job creation and live queue
+- [web/src/features/library/LibraryPage.tsx](/home/tychart/projects/readflow/web/src/features/library/LibraryPage.tsx): folders, ordered playback, search and trash
 - [web/src/features/reader/ReaderPage.tsx](/home/tychart/projects/readflow/web/src/features/reader/ReaderPage.tsx): playback, future-voice selection, chunk status
 - [web/src/features/reader/reader-model.ts](/home/tychart/projects/readflow/web/src/features/reader/reader-model.ts): pure reader derivations (patch merging, playback model, timeline slots)
 - [web/src/features/reader/conveyor-physics.ts](/home/tychart/projects/readflow/web/src/features/reader/conveyor-physics.ts): pure conveyor gesture physics and layout

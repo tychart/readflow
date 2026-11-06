@@ -185,32 +185,47 @@ test.beforeEach(async ({ page }) => {
     `,
   });
 
+  // Library snapshot is stateful so the create-job test can observe its job.
+  const libraryJobs: Array<Record<string, unknown>> = [];
+  await page.route("**/api/library", async (route) => {
+    await route.fulfill({
+      json: { folders: [], jobs: libraryJobs, trash_count: 0 },
+    });
+  });
+  await page.route("**/api/trash", async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
   await page.route("**/api/jobs", async (route) => {
     if (route.request().method() === "GET") {
       await route.fulfill({ json: [] });
       return;
     }
-    await route.fulfill({
-      json: {
-        job: {
-          id: "job-1",
-          title: "Playwright job",
-          status: "queued",
-          voice_id: "suzy",
-          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-          is_active_listening: false,
-          total_chunks_emitted: 1,
-          total_chunks_completed: 0,
-          buffered_seconds: 0,
-          completed_seconds: 0,
-          source_kind: "text",
-          source_text: "Playwright text",
-          plan_version: 1,
-          chunks: [],
-          failed_reason: null,
-        },
-      },
+    const job = {
+      id: "job-1",
+      title: "Playwright job",
+      status: "queued",
+      voice_id: "suzy",
+      model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+      is_active_listening: false,
+      render_to_end: false,
+      total_chunks_emitted: 1,
+      total_chunks_completed: 0,
+      buffered_seconds: 0,
+      completed_seconds: 0,
+      source_kind: "text",
+      source_text: "Playwright text",
+      plan_version: 1,
+      chunks: [],
+      failed_reason: null,
+    };
+    libraryJobs.push({
+      ...job,
+      folder_id: null,
+      position: libraryJobs.length,
+      progress: null,
     });
+    await route.fulfill({ json: { job } });
   });
 
   await page.route("**/api/voices", async (route) => {
@@ -241,6 +256,7 @@ test.beforeEach(async ({ page }) => {
           device: "auto",
           idle_unload_seconds: 300,
           max_prebuffer_seconds: 300,
+          up_next_prebuffer_seconds: 120,
           render_ahead_seconds: 0,
           active_listener_timeout_seconds: 60,
           target_buffer_seconds: 60,
@@ -291,41 +307,55 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("jobs page creates a job", async ({ page }) => {
+test("library page creates a job in the root", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "New job" }).click();
   await page.getByLabel("Text source").fill("Playwright text");
   await page.getByRole("button", { name: "Create job" }).click();
   await expect(page.getByText("Playwright job")).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Folder contents" }),
+  ).toBeVisible();
 });
 
-test("a long job title truncates in the jobs list instead of widening the page", async ({
+test("a long job title truncates in the library instead of widening the page", async ({
   page,
 }) => {
   const longTitle =
     "The Long Dark — Supercalifragilisticexpialidociousandthensomeotheradventuresofthereader";
 
   await page.setViewportSize({ width: 390, height: 844 });
-  // Registered in the test, so it wins over the empty list from `beforeEach`.
-  await page.route("**/api/jobs", async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
+  // Registered in the test, so it wins over the empty snapshot from `beforeEach`.
+  await page.route("**/api/library", async (route) => {
     await route.fulfill({
-      json: [
-        {
-          id: "job-long",
-          title: longTitle,
-          status: "queued",
-          voice_id: "suzy",
-          model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-          is_active_listening: false,
-          total_chunks_emitted: 20,
-          total_chunks_completed: 12,
-          buffered_seconds: 48,
-          completed_seconds: 0,
-        },
-      ],
+      json: {
+        folders: [],
+        jobs: [
+          {
+            id: "job-long",
+            title: longTitle,
+            status: "completed",
+            voice_id: "suzy",
+            model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            is_active_listening: false,
+            render_to_end: false,
+            total_chunks_emitted: 20,
+            total_chunks_completed: 20,
+            buffered_seconds: 48,
+            completed_seconds: 0,
+            folder_id: null,
+            position: 0,
+            progress: {
+              fraction: 0.5,
+              read_status: "in_progress",
+              heard_chunks: [],
+              remaining_seconds: 600,
+              position_seconds: 0,
+            },
+          },
+        ],
+        trash_count: 0,
+      },
     });
   });
 
@@ -342,9 +372,9 @@ test("a long job title truncates in the jobs list instead of widening the page",
     scrollWidth: document.documentElement.scrollWidth,
   }));
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.innerWidth);
-  const card = await page
-    .getByRole("link", { name: /Supercalifragilisticexpialidocious/ })
-    .boundingBox();
+  const card = await cardTitle
+    .evaluateHandle((element) => element.closest("li"))
+    .then((handle) => handle.asElement()?.boundingBox());
   expect(card).not.toBeNull();
   expect((card?.x ?? 0) + (card?.width ?? 0)).toBeLessThanOrEqual(390);
 
@@ -360,7 +390,7 @@ test("a long job title truncates in the jobs list instead of widening the page",
   expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
 });
 
-test("the phone jobs page keeps the brand visible at the top of the page", async ({
+test("the phone library page keeps the brand visible at the top of the page", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1464,4 +1494,138 @@ test("playback survives leaving the reader and keeps a mini-player", async ({
   // The mini-player is also a working control surface.
   await miniPlayer.getByRole("button", { name: "Pause" }).click();
   await expect(miniPlayer.getByRole("button", { name: "Play" })).toBeVisible();
+});
+
+function libraryJob(
+  id: string,
+  title: string,
+  folderId: string | null,
+  position: number,
+) {
+  return {
+    id,
+    title,
+    status: "completed",
+    voice_id: "suzy",
+    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    is_active_listening: false,
+    render_to_end: false,
+    total_chunks_emitted: 8,
+    total_chunks_completed: 8,
+    buffered_seconds: 0,
+    completed_seconds: 0,
+    folder_id: folderId,
+    position,
+    progress: {
+      fraction: 0.5,
+      read_status: "in_progress",
+      heard_chunks: [],
+      remaining_seconds: 300,
+      position_seconds: 0,
+    },
+  };
+}
+
+test("library drags a job into a new order in organize mode", async ({
+  page,
+}) => {
+  const requests: Array<{ url: string; body: unknown }> = [];
+  await page.route("**/api/library", async (route) => {
+    await route.fulfill({
+      json: {
+        folders: [
+          {
+            id: "books",
+            name: "Books",
+            parent_id: null,
+            position: 0,
+            job_count: 2,
+            folder_count: 0,
+            progress_fraction: 0.5,
+          },
+        ],
+        jobs: [
+          libraryJob("a", "Alpha", "books", 0),
+          libraryJob("b", "Beta", "books", 1),
+        ],
+        trash_count: 0,
+      },
+    });
+  });
+  await page.route("**/api/library/reorder", async (route) => {
+    requests.push({
+      url: route.request().url(),
+      body: route.request().postDataJSON(),
+    });
+    await route.fulfill({ status: 204 });
+  });
+
+  await page.goto("/library/books");
+  await page.getByRole("button", { name: "Organize" }).click();
+
+  const alpha = page.getByText("Alpha").locator("xpath=ancestor::li[1]");
+  const beta = page.getByText("Beta").locator("xpath=ancestor::li[1]");
+  await alpha.dragTo(beta);
+
+  await expect
+    .poll(() => requests.length, { timeout: 2_000 })
+    .toBeGreaterThan(0);
+  expect(requests.at(0)?.body).toMatchObject({
+    parent_id: "books",
+    job_ids: ["b", "a"],
+  });
+});
+
+test("library moves a selected job into another folder", async ({ page }) => {
+  const requests: Array<{ url: string; body: unknown }> = [];
+  await page.route("**/api/library", async (route) => {
+    await route.fulfill({
+      json: {
+        folders: [
+          {
+            id: "books",
+            name: "Books",
+            parent_id: null,
+            position: 0,
+            job_count: 1,
+            folder_count: 0,
+            progress_fraction: 0.5,
+          },
+          {
+            id: "archive",
+            name: "Archive",
+            parent_id: null,
+            position: 1,
+            job_count: 0,
+            folder_count: 0,
+            progress_fraction: 0,
+          },
+        ],
+        jobs: [libraryJob("a", "Alpha", "books", 0)],
+        trash_count: 0,
+      },
+    });
+  });
+  await page.route("**/api/library/move", async (route) => {
+    requests.push({
+      url: route.request().url(),
+      body: route.request().postDataJSON(),
+    });
+    await route.fulfill({ status: 204 });
+  });
+
+  await page.goto("/library/books");
+  await page.getByRole("button", { name: "Organize" }).click();
+  await page.getByRole("checkbox", { name: "Select Alpha" }).check();
+  await page.getByRole("button", { name: "Move…" }).click();
+  await page.getByLabel("Destination").selectOption("archive");
+  await page.getByRole("button", { name: "Move here" }).click();
+
+  await expect
+    .poll(() => requests.length, { timeout: 2_000 })
+    .toBeGreaterThan(0);
+  expect(requests.at(0)?.body).toEqual({
+    items: [{ kind: "job", id: "a" }],
+    folder_id: "archive",
+  });
 });

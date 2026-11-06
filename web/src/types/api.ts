@@ -93,6 +93,43 @@ export interface JobManifest {
   audio_epoch: number;
 }
 
+export interface LibraryFolder {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  position: number;
+  /** Recursive live job count (nested folders included). */
+  job_count: number;
+  /** Direct sub-folder count. */
+  folder_count: number;
+  /** Chunk-weighted progress across the subtree. */
+  progress_fraction: number;
+}
+
+export interface LibraryJob extends JobSummary {
+  position: number;
+}
+
+export interface LibrarySnapshot {
+  folders: LibraryFolder[];
+  jobs: LibraryJob[];
+  trash_count: number;
+}
+
+export interface TrashEntry {
+  id: string;
+  kind: "folder" | "job";
+  name: string;
+  parent_id: string | null;
+  job_count: number;
+  created_at: number;
+}
+
+export interface LibraryItemRef {
+  kind: "folder" | "job";
+  id: string;
+}
+
 export interface Voice {
   id: string;
   display_name: string;

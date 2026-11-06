@@ -155,24 +155,35 @@ beforeEach(() => {
   });
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith("/api/jobs")) {
+    if (url.endsWith("/api/library")) {
       return {
         ok: true,
-        json: async () => [
-          {
-            id: "job-live",
-            title: "Live job",
-            status: "queued",
-            voice_id: "suzy",
-            model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-            is_active_listening: false,
-            total_chunks_emitted: 1,
-            total_chunks_completed: 0,
-            buffered_seconds: 0,
-            completed_seconds: 0,
-          },
-        ],
+        json: async () => ({
+          folders: [],
+          jobs: [
+            {
+              id: "job-live",
+              title: "Live job",
+              status: "queued",
+              voice_id: "suzy",
+              model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+              is_active_listening: false,
+              render_to_end: false,
+              total_chunks_emitted: 1,
+              total_chunks_completed: 0,
+              buffered_seconds: 0,
+              completed_seconds: 0,
+              folder_id: null,
+              position: 0,
+              progress: null,
+            },
+          ],
+          trash_count: 0,
+        }),
       };
+    }
+    if (url.endsWith("/api/jobs")) {
+      return { ok: true, json: async () => [] };
     }
     if (url.endsWith("/api/voices")) {
       return { ok: true, json: async () => [] };
@@ -233,10 +244,16 @@ test("socket reconnects and surfaces reconnecting state", async () => {
 });
 
 test("shows idle rather than connecting when nothing needs the live socket", async () => {
-  // No live jobs → the jobs page never starts the client, so no connection is
-  // attempted and the badge must not claim one is in flight.
+  // No live jobs → the library page never starts the client, so no connection
+  // is attempted and the badge must not claim one is in flight.
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.endsWith("/api/library")) {
+      return {
+        ok: true,
+        json: async () => ({ folders: [], jobs: [], trash_count: 0 }),
+      };
+    }
     if (url.endsWith("/api/jobs")) {
       return { ok: true, json: async () => [] };
     }
@@ -256,7 +273,7 @@ test("shows idle rather than connecting when nothing needs the live socket", asy
   expect(MockWebSocket.instances).toHaveLength(0);
 });
 
-test("unknown routes redirect to the jobs page", async () => {
+test("unknown routes redirect to the library page", async () => {
   window.history.pushState({}, "", "/this-page-does-not-exist");
 
   await act(async () => {
@@ -264,12 +281,12 @@ test("unknown routes redirect to the jobs page", async () => {
     await Promise.resolve();
   });
 
-  // The catch-all redirect replaces the bad URL and lands on the jobs page.
+  // The catch-all redirect replaces the bad URL and lands on the library page.
   expect(await screen.findByText("Live job")).toBeInTheDocument();
   expect(window.location.pathname).toBe("/");
 });
 
-test("clicking the brand navigates back to the jobs page", async () => {
+test("clicking the brand navigates back to the library page", async () => {
   const user = userEvent.setup();
   window.history.pushState({}, "", "/admin");
 
@@ -308,7 +325,7 @@ test("the header shows the open reader's job title and drops it when the reader 
   expect(screen.queryByTestId("navbar-job-title")).toBeNull();
 });
 
-test("jobs page navbar is expanded with the full lockup at the top", async () => {
+test("library page navbar is expanded with the full lockup at the top", async () => {
   await act(async () => {
     render(<App />);
     await Promise.resolve();
@@ -322,7 +339,7 @@ test("jobs page navbar is expanded with the full lockup at the top", async () =>
   );
   expect(navbarLockup()).toHaveAttribute("aria-hidden", "true");
   // Nav tabs stay visible even while the navbar is expanded.
-  expect(screen.getByRole("link", { name: "Jobs" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Library" })).toBeVisible();
   expect(screen.getByRole("link", { name: "Admin" })).toBeVisible();
 });
 

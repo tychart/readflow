@@ -283,6 +283,8 @@ function AdminOverview() {
       adminState.config.max_prebuffer_seconds ||
     formState.target_buffer_seconds !==
       adminState.config.target_buffer_seconds ||
+    formState.up_next_prebuffer_seconds !==
+      adminState.config.up_next_prebuffer_seconds ||
     formState.render_ahead_seconds !== adminState.config.render_ahead_seconds ||
     formState.active_listener_timeout_seconds !==
       adminState.config.active_listener_timeout_seconds ||
@@ -417,6 +419,26 @@ function AdminOverview() {
             <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
               Priority threshold: above this an active listener shares the
               lowest band with background work. It never stops rendering.
+            </span>
+          </label>
+
+          <label className={labelClass()}>
+            Up-next prebuffer (seconds, 0 = off)
+            <input
+              className={`${inputClass()} mt-1.5`}
+              type="number"
+              min="0"
+              value={formState.up_next_prebuffer_seconds}
+              onChange={(e) =>
+                setFormState({
+                  ...formState,
+                  up_next_prebuffer_seconds: Number(e.target.value),
+                })
+              }
+            />
+            <span className="mt-1 block text-[10px] text-[var(--ink-secondary)]">
+              While a folder plays, the next job in it is warmed to this many
+              seconds of audio so advancing is a short gap, not a stall.
             </span>
           </label>
 

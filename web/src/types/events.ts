@@ -2,6 +2,7 @@ import type {
   AdminConfig,
   Chunk,
   JobDetail,
+  JobProgress,
   JobSummary,
   SchedulerState,
 } from "./api";
@@ -109,6 +110,17 @@ export interface AdminMemoryStatsPayload {
   memory: AdminMemoryStats | null;
 }
 
+/** Library mutations are an invalidation signal; the client refetches. */
+export interface LibraryChangedPayload {
+  reason: string;
+}
+
+/** Compact per-job progress, throttled by the server. Never carries text. */
+export interface JobProgressPayload {
+  job_id: string;
+  progress: JobProgress;
+}
+
 export type WsEnvelope =
   | { type: "job_created"; payload: JobPayload }
   | { type: "job_updated"; payload: JobPayload }
@@ -119,4 +131,6 @@ export type WsEnvelope =
   | { type: "telemetry"; payload: TelemetryPayload }
   | { type: "admin_config_updated"; payload: AdminConfig }
   | { type: "memory_stats"; payload: AdminMemoryStatsPayload }
+  | { type: "library_changed"; payload: LibraryChangedPayload }
+  | { type: "job_progress"; payload: JobProgressPayload }
   | { type: "pong"; payload: null };

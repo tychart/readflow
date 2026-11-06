@@ -8,6 +8,8 @@ import type { Voice } from "../../types/api";
 
 interface JobCreateFormProps {
   onSubmit: (formData: FormData) => Promise<void>;
+  /** Destination folder for the new job; null/omitted means the root library. */
+  folderId?: string | null;
 }
 
 /** Remembered so a user who accepted the wait once is not asked every time. */
@@ -45,7 +47,10 @@ function writeSkipModelWarning(skip: boolean) {
 
 /* ── Component ────────────────────────────────────────────── */
 
-export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
+export function JobCreateForm({
+  onSubmit,
+  folderId = null,
+}: JobCreateFormProps) {
   const [text, setText] = useState("");
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -125,13 +130,14 @@ export function JobCreateForm({ onSubmit }: JobCreateFormProps) {
 
   const buildFormData = useCallback(() => {
     const formData = new FormData();
+    if (folderId) formData.set("folder_id", folderId);
     if (title) formData.append("title", title);
     if (text.trim()) formData.append("text", text.trim());
     if (file) formData.append("file", file);
     formData.append("voice_id", voiceId);
     formData.append("model_id", modelId);
     return formData;
-  }, [title, text, file, voiceId, modelId]);
+  }, [title, text, file, voiceId, modelId, folderId]);
 
   const submit = useCallback(
     async (formData: FormData) => {

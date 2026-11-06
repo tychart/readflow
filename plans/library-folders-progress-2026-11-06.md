@@ -1,6 +1,6 @@
 # Library: folders, playlists, read progress, and a persistent player
 
-Status: **M1–M3 implemented**, M4+ pending
+Status: **M1–M4 implemented**, M5+ pending
 Date: 2026-11-06
 
 ## Context
@@ -385,11 +385,17 @@ Design notes:
 
 Verification: 561 web tests, 22 Playwright tests, `bun run lint`, `tsc` clean.
 
-**M4 — Library UI.**
-Tree + pane, folders-first ordering, Create/Rename, Organize mode with drag and
-multi-select, Move, Trash + restore/purge, search + state filter, folder
-aggregate progress, row read state, responsive drawer. Component tests plus
-Playwright coverage for the ordering/selection/trash flows.
+**M4 — Library UI. DONE.**
+`web/src/features/library/`: pure `library-model`, `LibraryPage` (route state,
+actions, dialogs), `LibraryTree`, `LibraryPane`/`LibraryRow` (progress, read
+state, render dot, ⋮ menu), `LibraryDialogs` (prompt/move/new-job), `TrashPage`.
+The library replaces the jobs page at `/`; `/library/:folderId` is bookmarkable,
+`/trash` is a real route. Organize mode does checkboxes, select-all, drag
+reorder (same kind) and the bulk bar; cross-folder moves use a destination
+dialog. Search is global with a read-state filter. `?play=1` lets Play folder
+start the reader playing. The old `JobsPage` was deleted.
+
+Verification: 581 web tests, 24 Playwright tests, lint/typecheck clean.
 
 **M5 — Reader read state + auto-advance.**
 Progress reporting (heard detection, flush points), heard ✓ + chunk ⋮ + header

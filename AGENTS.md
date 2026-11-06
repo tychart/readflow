@@ -431,12 +431,46 @@ Rules that are easy to break:
 - `DELETE /api/jobs/{id}` remains the permanent delete used by existing tooling;
   the library's trash action is `POST /api/library/delete`.
 
+### Library page (`web/src/features/library`)
+
+The library replaced the flat jobs page at `/`. It is intentionally split into
+pure logic and thin components:
+
+- `library-model.ts` — tree building, folder paths, direct contents, global
+  search/filter, recursive job expansion, selection and reorder math. All pure
+  and unit-tested; nothing here touches the API.
+- `LibraryPage.tsx` — the route: loads `GET /api/library`, refreshes on live
+  events (coalesced by a timer), owns organize mode/selection/filter/dialog
+  state, and turns row actions into API calls. The selected folder is the URL,
+  so the tree is bookmarkable and Back works.
+- `LibraryTree.tsx` — nested folder navigation with expand/collapse, counts and
+  the Trash entry. On phones it renders inside a drawer.
+- `LibraryPane.tsx` / `LibraryRow.tsx` — breadcrumb, toolbar, search, ordered
+  rows and the bulk bar. Row actions live in a `⋮` menu whose destructive item
+  is last; deletion goes to the trash (which is the undo).
+- `LibraryDialogs.tsx` — create/rename prompt, destination picker, and the job
+  creation modal (reuses `features/jobs/JobCreateForm`).
+- `TrashPage.tsx` — restore/purge, with a confirm only for permanent deletion.
+
+Rules:
+
+- Do not recompute order, read state or folder progress in the client; the
+  server ships `position`, `progress.fraction`, `read_status` and
+  `progress_fraction`. The model only arranges that data.
+- Search/filter never mutates order; drag is disabled while a filter is active.
+- Reordering is per kind (folders and jobs have separate position sequences).
+  Moving across folders is the explicit Move dialog, never an ambiguous drop.
+- Library mutations are followed by a snapshot refetch; `library_changed` is an
+  invalidation signal, not a payload.
+- The library only opens the WebSocket while a job is rendering/playing, so the
+  idle connection state stays honest.
+
 ## Frontend architecture
 
 Key files:
 
 - `web/src/app/App.tsx`
-- `web/src/features/jobs/JobsPage.tsx`
+- `web/src/features/library/LibraryPage.tsx` (home route)
 - `web/src/features/jobs/JobCreateForm.tsx`
 - `web/src/features/reader/ReaderPage.tsx`
 - `web/src/features/admin/AdminPage.tsx`
@@ -2307,12 +2341,31 @@ slider list inside it.
 
 ## Current User-Facing Pages
 
-Jobs page:
+Library page (`/`, `/library/:folderId`):
 
-- create jobs from text or `.txt`
-- view job list
-- see status and chunk counts
-- open reader view
+- a nested folder tree (folders are the only grouping concept; they are
+  ordered, nestable and playable)
+- a folder pane with folders-first contents, manual order, per-row progress,
+  read state and a render-status dot
+- "New job" loads the same `JobCreateForm` in a modal, creating into the open
+  folder; "New folder" and row rename use a small prompt dialog
+- **Organize** mode: checkboxes, select-all, drag-to-reorder within the folder,
+  a bulk bar (Move… / Read / Unread / Delete) and a Move dialog for moving
+  across folders
+- search across folders and jobs plus All / Unread / In progress / Read filters
+- Play folder resumes at the first job that is not read and opens the reader
+  with `?play=1` (the reader starts playback once)
+- a Trash route (`/trash`) with restore, delete-forever and empty-trash
+- a phone drawer for the tree and the app-level mini-player from the player
+  provider
+- live refresh on `library_changed` / `job_progress` / job and chunk events,
+  coalesced so a rendering burst causes one refetch
+
+Trash page (`/trash`):
+
+- deferred folders/jobs with their subtree job count and deletion time
+- restore selected (a folder restores its whole subtree)
+- delete forever / empty trash, both behind a confirm
 
 Reader page:
 
