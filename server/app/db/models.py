@@ -26,3 +26,8 @@ class User:
     id: str = DEFAULT_USER_ID
     display_name: str = DEFAULT_USER_DISPLAY_NAME
     created_at: float = field(default_factory=time)
+    # Last model/voice picked in the create-job form, so the form can open with
+    # the user's own choice instead of the global default. `None` means "never
+    # chosen" and the form falls back to the resident (GPU) choice.
+    preferred_model_id: str | None = None
+    preferred_voice_id: str | None = None

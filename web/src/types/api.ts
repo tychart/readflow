@@ -141,6 +141,17 @@ export interface Voice {
   description: string | null;
 }
 
+/**
+ * The user's remembered create-job selections.
+ *
+ * `null` means nothing has been chosen yet, so the form falls back to the
+ * resident (GPU) model/voice and then the app defaults.
+ */
+export interface UserPreferences {
+  model_id: string | null;
+  voice_id: string | null;
+}
+
 /** Device override the admin can pick; mirrors `RuntimeConfig.device` on the server. */
 export type AdminDevice = "auto" | "gpu" | "cpu";
 

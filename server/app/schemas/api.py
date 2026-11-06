@@ -111,6 +111,18 @@ class UpdateVoiceRequest(BaseModel):
     rerender_written: bool = False
 
 
+class UserPreferencesResponse(BaseModel):
+    """Remembered create-job selections (null until the user has chosen)."""
+
+    model_id: str | None = None
+    voice_id: str | None = None
+
+
+class UserPreferencesUpdateRequest(BaseModel):
+    model_id: str
+    voice_id: str
+
+
 class ChunkReprocessRequest(BaseModel):
     new_text: str | None = None
     new_voice_id: str | None = None

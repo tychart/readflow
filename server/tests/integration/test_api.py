@@ -140,6 +140,47 @@ async def test_runtime_status_reports_residency(client, services):
     assert body["voice_residency_batches"] == 3
 
 
+async def test_create_job_preferences_default_to_unset(client):
+    """Nothing is remembered until the user picks a model/voice."""
+    response = await client.get("/api/preferences")
+
+    assert response.status_code == 200
+    assert response.json() == {"model_id": None, "voice_id": None}
+
+
+async def test_user_preferences_round_trip(client):
+    """The create form's last selection is remembered per user."""
+    payload = {"model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "voice_id": "howard"}
+
+    updated = await client.put("/api/preferences", json=payload)
+
+    assert updated.status_code == 200
+    assert updated.json() == payload
+    assert (await client.get("/api/preferences")).json() == payload
+
+
+async def test_user_preferences_reject_unknown_model_or_voice(client):
+    unknown_model = await client.put(
+        "/api/preferences",
+        json={"model_id": "Qwen/Not-A-Model", "voice_id": "suzy"},
+    )
+    unknown_voice = await client.put(
+        "/api/preferences",
+        json={
+            "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "voice_id": "does-not-exist",
+        },
+    )
+
+    assert unknown_model.status_code == 400
+    assert unknown_voice.status_code == 404
+    # A rejected request stores nothing.
+    assert (await client.get("/api/preferences")).json() == {
+        "model_id": None,
+        "voice_id": None,
+    }
+
+
 async def test_admin_config_exposes_residency_knobs(client, services):
     updated = await client.post("/api/admin/config", json={"model_residency_batches": 4})
 

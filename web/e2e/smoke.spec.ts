@@ -249,6 +249,21 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
+  // Remembered create-job defaults, stateful like the real endpoint.
+  const preferences: Record<string, string | null> = {
+    model_id: null,
+    voice_id: null,
+  };
+  await page.route("**/api/preferences", async (route) => {
+    if (route.request().method() === "PUT") {
+      Object.assign(
+        preferences,
+        JSON.parse(route.request().postData() ?? "{}"),
+      );
+    }
+    await route.fulfill({ json: preferences });
+  });
+
   await page.route("**/api/admin/state", async (route) => {
     await route.fulfill({
       json: {

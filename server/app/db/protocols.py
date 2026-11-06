@@ -42,6 +42,9 @@ from app.library.models import Folder, JobProgress, TrashEntry
 class UserRepository(Protocol):
     def add(self, user: User) -> None: ...
 
+    def save(self, user: User) -> None:
+        """Persist an already-loaded user row (SQL `UPDATE`)."""
+
     def get(self, user_id: str) -> User | None: ...
 
     def list(self) -> list[User]: ...

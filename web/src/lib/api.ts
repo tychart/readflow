@@ -10,6 +10,7 @@ import type {
   ProgressUpdateResponse,
   RuntimeStatus,
   TrashEntry,
+  UserPreferences,
   Voice,
 } from "../types/api";
 import { apiPath } from "./transport";
@@ -324,6 +325,19 @@ export const api = {
 
   /** Lists available voices. */
   listVoices: () => request<Voice[]>(apiPath("/voices")),
+
+  /**
+   * The model/voice this user picked last time, so a new job can start there
+   * instead of at the global default. Null fields mean "never chosen".
+   */
+  getPreferences: () => request<UserPreferences>(apiPath("/preferences")),
+
+  /** Remembers the model/voice just picked in the create-job form. */
+  updatePreferences: (preferences: { model_id: string; voice_id: string }) =>
+    request<UserPreferences>(apiPath("/preferences"), {
+      method: "PUT",
+      body: JSON.stringify(preferences),
+    }),
 
   /**
    * Current GPU commitment: resident model/voice and the residency windows.

@@ -276,6 +276,7 @@ Key files:
 - `server/app/db/protocols.py` (Database / UnitOfWork / repository protocols)
 - `server/app/db/memory.py` (the in-memory adapter)
 - `server/app/library/` (folders, ordering, progress, trash, playback order)
+- `server/app/users/preferences.py` (remembered create-job model/voice)
 - `server/app/api/library.py` (library/trash/progress endpoints)
 - `server/app/scheduler/service.py`
 - `server/app/scheduler/recovery.py` (pure stall-recovery policy)
@@ -1447,16 +1448,41 @@ windows. The store keeps it fresh from the `scheduler_state` WebSocket tick
 (`runtimeStatus`, updated even without admin state) and `useRuntimeStatus()`
 fetches it once on mount.
 
-- `JobCreateForm` defaults the voice/model to the resident ones and shows an
-  inline notice when they differ: a warn note for a different model (full GPU
-  reload, waits for rotation) and a mild note for a voice-only change.
-  Submitting a different model opens `ConfirmDialog` (with a remembered "don't
-  warn again"); a voice-only change never blocks.
+- `JobCreateForm` defaults the voice/model to the user's remembered choice (see
+  "Remembered create-job defaults" below), then the resident ones, and shows an
+  inline notice when they differ from what is loaded: a warn note for a
+  different model (full GPU reload, waits for rotation) and a mild note for a
+  voice-only change. Submitting a different model opens `ConfirmDialog` (with a
+  remembered "don't warn again"); a voice-only change never blocks.
 - `ReaderPage` shows a proactive "Waiting for the GPU: currently rendering
   <model> · <voice>" note (and suppresses the stall banner) while the job's
   model is not resident and it still has unwritten chunks.
 
 Do not re-derive the resident model in the frontend; it comes from the scheduler.
+
+### Remembered create-job defaults (`/api/preferences`)
+
+The model/voice a user picks in the create-job form is remembered per user and
+becomes the form's default. It is profile data, not job or GPU state:
+`User.preferred_model_id` / `.preferred_voice_id` in `app/db/models.py`, read
+and written by `app/users/preferences.py` (`UserPreferencesService`, one
+transaction per call, `uow.users.save`), exposed as `GET`/`PUT /api/preferences`
+and consumed by `hooks/useUserPreferences.ts`.
+
+- The form's default order is **remembered choice → resident (GPU) model/voice →
+  app default**. The remembered choice wins over residency deliberately: a model
+  the user picked for their own jobs must not be silently replaced by whatever
+  happens to be loaded. The residency notice/confirm still explains that a
+  different model waits for a rotation.
+- The form writes on a **select change** (that is literally "what I picked
+  last"), not on job creation, so a selection survives even if the job is never
+  submitted. The write is best-effort and never blocks submitting; unknown ids
+  are rejected (`400` unknown model, `404` unknown voice) and store nothing.
+- `useUserPreferences` fetches on each form mount instead of caching in the app
+  store: the form lives in a dialog and another tab may have changed it.
+- `null` fields mean "never chosen", which is why the form falls back to the
+  resident choice instead of a hardcoded default. Do not write the resident
+  choice on the user's behalf — only an explicit selection is remembered.
 
 ### Missing job ids redirect home (and stale jobs are revalidated)
 
@@ -3167,6 +3193,16 @@ Folder-playback correctness round (after the first real listener report):
 8. **Trash restore validates first and resolves destinations against the whole
    request**, so a folder and a separately-trashed child restore together
    correctly, in either order.
+
+Create-job defaults round:
+
+1. **The create form remembers the model and voice you picked last.** The
+   selection is stored per user (`User.preferred_model_id/.preferred_voice_id`,
+   `app/users/preferences.py`) and shipped as `GET`/`PUT /api/preferences`, so a
+   user who is not on the global default no longer re-selects it for every job.
+   The form writes on each select change, and the remembered choice now precedes
+   the resident (GPU) one as the form's default. See “Remembered create-job
+   defaults”.
 
 ## Agent Workflow Checklist
 

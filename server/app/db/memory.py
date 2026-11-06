@@ -96,24 +96,22 @@ class _RowTable[RowT]:
 
 
 class MemoryUserRepository:
-    def __init__(self, users: dict[str, User], journal: Journal) -> None:
-        self._users = users
-        self._journal = journal
+    def __init__(self, users: dict[object, User], journal: Journal) -> None:
+        self._table: _RowTable[User] = _RowTable(
+            users, journal, key=lambda user: user.id, label="User"
+        )
 
     def add(self, user: User) -> None:
-        if user.id in self._users:
-            raise ValueError(f"User '{user.id}' already exists")
-        self._users[user.id] = user
-        self._journal.append(lambda: self._drop_user(user.id))
+        self._table.add(user)
+
+    def save(self, user: User) -> None:
+        self._table.save(user)
 
     def get(self, user_id: str) -> User | None:
-        return self._users.get(user_id)
+        return self._table.get(user_id)
 
     def list(self) -> list[User]:
-        return list(self._users.values())
-
-    def _drop_user(self, user_id: str) -> None:
-        self._users.pop(user_id, None)
+        return self._table.values()
 
 
 class MemoryFolderRepository:
@@ -261,7 +259,7 @@ class MemoryUnitOfWork:
 
     def __init__(
         self,
-        users: dict[str, User],
+        users: dict[object, User],
         folders: dict[object, Folder],
         jobs: dict[object, Job],
         progress: dict[object, JobProgress],
@@ -309,7 +307,7 @@ class MemoryDatabase:
     """
 
     def __init__(self, *, seed: bool = True) -> None:
-        self._users: dict[str, User] = {}
+        self._users: dict[object, User] = {}
         self._folders: dict[object, Folder] = {}
         self._jobs: dict[object, Job] = {}
         self._progress: dict[object, JobProgress] = {}

@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
+import { useUserPreferences } from "../../hooks/useUserPreferences";
 import { api } from "../../lib/api";
 import { MODEL_OPTIONS, modelLabel } from "../../lib/models";
 import type { Voice } from "../../types/api";
@@ -67,6 +68,9 @@ export function JobCreateForm({
     useState(readSkipModelWarning);
 
   const status = useRuntimeStatus();
+  const preferences = useUserPreferences();
+  const preferredModelId = preferences?.model_id ?? null;
+  const preferredVoiceId = preferences?.voice_id ?? null;
   const residentModelId = status?.resident_model_id ?? null;
   const residentVoiceId = status?.resident_voice_id ?? null;
   const modelResidencyBatches = status?.model_residency_batches ?? 10;
@@ -92,16 +96,34 @@ export function JobCreateForm({
     };
   }, []);
 
-  // Default to the model/voice currently in GPU memory, until the user picks.
+  // Open on what this user picked last, then on the model/voice currently in
+  // GPU memory, until they pick something in this form.
   useEffect(() => {
-    if (modelTouched || !residentModelId) return;
-    if (MODEL_OPTIONS.some((option) => option.value === residentModelId)) {
+    if (modelTouched) return;
+    if (
+      preferredModelId &&
+      MODEL_OPTIONS.some((option) => option.value === preferredModelId)
+    ) {
+      setModelId(preferredModelId);
+      return;
+    }
+    if (
+      residentModelId &&
+      MODEL_OPTIONS.some((option) => option.value === residentModelId)
+    ) {
       setModelId(residentModelId);
     }
-  }, [residentModelId, modelTouched]);
+  }, [preferredModelId, residentModelId, modelTouched]);
 
   useEffect(() => {
     if (voiceTouched) return;
+    if (
+      preferredVoiceId &&
+      voices.some((voice) => voice.id === preferredVoiceId)
+    ) {
+      setVoiceId(preferredVoiceId);
+      return;
+    }
     if (
       residentVoiceId &&
       voices.some((voice) => voice.id === residentVoiceId)
@@ -112,7 +134,23 @@ export function JobCreateForm({
     if (!voiceId && voices.length > 0) {
       setVoiceId(voices[0].id);
     }
-  }, [residentVoiceId, voices, voiceTouched, voiceId]);
+  }, [preferredVoiceId, residentVoiceId, voices, voiceTouched, voiceId]);
+
+  /**
+   * Remember the selection for the next job. Best-effort: a failed write must
+   * never block creating the job the user actually asked for.
+   */
+  const rememberSelection = useCallback(
+    (nextModelId: string, nextVoiceId: string) => {
+      if (!nextVoiceId) return;
+      void api
+        .updatePreferences({ model_id: nextModelId, voice_id: nextVoiceId })
+        .catch(() => {
+          /* the form still submits with these values */
+        });
+    },
+    [],
+  );
 
   const voiceLabel = useCallback(
     (id: string | null) =>
@@ -252,8 +290,10 @@ export function JobCreateForm({
                 id="voice-select"
                 value={voiceId}
                 onChange={(event) => {
+                  const nextVoiceId = event.target.value;
                   setVoiceTouched(true);
-                  setVoiceId(event.target.value);
+                  setVoiceId(nextVoiceId);
+                  rememberSelection(modelId, nextVoiceId);
                 }}
               >
                 {voices.map((voice) => (
@@ -277,8 +317,10 @@ export function JobCreateForm({
                 id="model-select"
                 value={modelId}
                 onChange={(event) => {
+                  const nextModelId = event.target.value;
                   setModelTouched(true);
-                  setModelId(event.target.value);
+                  setModelId(nextModelId);
+                  rememberSelection(nextModelId, voiceId);
                 }}
               >
                 {MODEL_OPTIONS.map((option) => (

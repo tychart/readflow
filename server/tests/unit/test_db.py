@@ -47,6 +47,27 @@ def test_default_user_is_seeded_once(database: Database) -> None:
     assert database.get_user("does-not-exist") is None
 
 
+def test_user_preferences_are_saved_through_the_unit_of_work(database: Database) -> None:
+    """Profile data on the user row follows the same save contract as jobs."""
+    with database.transaction() as uow:
+        user = uow.users.get(DEFAULT_USER_ID)
+        assert user is not None
+        user.preferred_model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+        user.preferred_voice_id = "howard"
+        uow.users.save(user)
+
+    stored = database.get_user(DEFAULT_USER_ID)
+    assert stored is not None
+    assert stored.preferred_model_id == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    assert stored.preferred_voice_id == "howard"
+
+
+def test_saving_an_unknown_user_raises(database: Database) -> None:
+    with pytest.raises(KeyError):
+        with database.transaction() as uow:
+            uow.users.save(User(id="never-added"))
+
+
 def test_add_get_list_and_delete_are_user_scoped(database: Database) -> None:
     with database.transaction() as uow:
         uow.jobs.add(_job("a"))

@@ -19,6 +19,7 @@ from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import FakeQwenProvider, QwenProvider, SynthesisProvider
 from app.synthesis.worker import SynthesisWorker
 from app.telemetry.service import TelemetryService
+from app.users.preferences import UserPreferencesService
 from app.voices.registry import VoiceRegistry
 
 
@@ -32,6 +33,7 @@ class AppServices:
     job_manager: JobManager
     library: LibraryService
     progress: ProgressService
+    preferences: UserPreferencesService
     planner: ChunkPlanner
     media_store: MediaStore
     telemetry: TelemetryService
@@ -50,6 +52,7 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
         raise RuntimeError("The database did not seed a default user")
     job_manager = JobManager(database)
     library = LibraryService(database)
+    preferences = UserPreferencesService(database)
     progress = ProgressService(
         database,
         estimated_chars_per_second=settings.runtime.estimated_chars_per_second,
@@ -98,6 +101,7 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
         job_manager=job_manager,
         library=library,
         progress=progress,
+        preferences=preferences,
         planner=planner,
         media_store=media_store,
         telemetry=telemetry,

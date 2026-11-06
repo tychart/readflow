@@ -35,6 +35,8 @@ from app.schemas.api import (
     RuntimeStatusResponse,
     SchedulerStateResponse,
     UpdateVoiceRequest,
+    UserPreferencesResponse,
+    UserPreferencesUpdateRequest,
     VoiceResponse,
     WsEnvelope,
     chunk_to_response,
@@ -46,6 +48,19 @@ SUPPORTED_MODEL_IDS: set[str] = {
     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
 }
+
+
+def _reject_unsupported_model(model_id: str) -> None:
+    if model_id in SUPPORTED_MODEL_IDS:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Unsupported model '{model_id}'. Supported models: "
+            f"{', '.join(sorted(SUPPORTED_MODEL_IDS))}"
+        ),
+    )
+
 
 # Body schema for /jobs. These endpoints parse the form themselves (see
 # `read_job_form`) so the part-size limit can be raised above Starlette's 1 MiB
@@ -228,14 +243,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         selected_model = (
             _read_form_text(form, "model_id") or app_services.settings.runtime.default_model_id
         )
-        if selected_model not in SUPPORTED_MODEL_IDS:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unsupported model '{selected_model}'. Supported models: "
-                    f"{', '.join(sorted(SUPPORTED_MODEL_IDS))}"
-                ),
-            )
+        _reject_unsupported_model(selected_model)
         try:
             job = app_services.job_manager.create_job(
                 source_text=payload_text,
@@ -557,6 +565,34 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             )
             for voice in app_services.voice_registry.list_voices()
         ]
+
+    @router.get("/preferences", response_model=UserPreferencesResponse)
+    async def get_preferences(
+        app_services: AppServices = Depends(services),
+    ) -> UserPreferencesResponse:
+        """The user's remembered create-job model/voice.
+
+        `null` fields mean nothing has been chosen yet, so the create form falls
+        back to the resident (GPU) model/voice and then the app defaults.
+        """
+        preferences = app_services.preferences.get()
+        return UserPreferencesResponse(model_id=preferences.model_id, voice_id=preferences.voice_id)
+
+    @router.put("/preferences", response_model=UserPreferencesResponse)
+    async def update_preferences(
+        request: UserPreferencesUpdateRequest,
+        app_services: AppServices = Depends(services),
+    ) -> UserPreferencesResponse:
+        """Remember the model/voice just picked, so the next job starts there."""
+        _reject_unsupported_model(request.model_id)
+        try:
+            app_services.voice_registry.get_voice(request.voice_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        preferences = app_services.preferences.remember(
+            model_id=request.model_id, voice_id=request.voice_id
+        )
+        return UserPreferencesResponse(model_id=preferences.model_id, voice_id=preferences.voice_id)
 
     @router.get("/status", response_model=RuntimeStatusResponse)
     async def get_runtime_status(
