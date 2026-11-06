@@ -816,12 +816,19 @@ class SchedulerService:
         # requeued below).
         self._record_vram_estimate(len(results), results, base_allocated_mb=vram_allocated)
         for chunk, result in zip(batch, results, strict=False):
-            job = self._job_manager.mark_chunk_written(
-                chunk,
-                duration_seconds=result.duration_seconds,
-                segment_path=result.segment_path,
-                wav_path=result.wav_path,
-            )
+            try:
+                job = self._job_manager.mark_chunk_written(
+                    chunk,
+                    duration_seconds=result.duration_seconds,
+                    segment_path=result.segment_path,
+                    wav_path=result.wav_path,
+                )
+            except KeyError:
+                # The job was purged from the trash while its batch was on the
+                # GPU. Nothing to write to; drop the result instead of killing
+                # the tick.
+                logger.info("Dropping result for purged job %s", chunk.job_id)
+                continue
             message_type = "job_completed" if job.status == JobStatus.COMPLETED else "chunk_ready"
             # Per-chunk events carry the job *summary* plus the single chunk that
             # changed. Sending `job_to_detail` here meant re-serializing the whole
@@ -856,10 +863,14 @@ class SchedulerService:
         """
         message = f"{type(error).__name__}: {error}"
         for chunk in batch:
-            if chunk.attempts + 1 >= self._config.chunk_max_attempts:
-                self._job_manager.mark_chunk_failed(chunk, message)
-            else:
-                self._job_manager.mark_chunk_retry(chunk, message)
+            try:
+                if chunk.attempts + 1 >= self._config.chunk_max_attempts:
+                    self._job_manager.mark_chunk_failed(chunk, message)
+                else:
+                    self._job_manager.mark_chunk_retry(chunk, message)
+            except KeyError:
+                # A purged job's chunks no longer exist; the failure is moot.
+                continue
         self._telemetry.record_event("batch_failed", {"error": message, "chunk_count": len(batch)})
 
     async def _dispatch_memory_stats(self) -> MemoryStats | None:

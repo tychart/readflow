@@ -1,6 +1,6 @@
 # Library: folders, playlists, read progress, and a persistent player
 
-Status: **M1–M5 implemented**, M6 pending
+Status: **M1–M6 implemented** (feature complete)
 Date: 2026-11-06
 
 ## Context
@@ -413,10 +413,18 @@ Verification: 581 web tests, 24 Playwright tests, lint/typecheck clean.
 Verification: 593 web tests, 26 Playwright tests (incl. auto-advance and
 continuous-play-off), lint/typecheck clean.
 
-**M6 — Settings hub, docs, polish.**
-`SettingsDialog` with three sections and migrated reader settings; keyboard
-pass (tree arrows, `[`/`]`, `Shift+click`); empty states; AGENTS.md + README
-update; final e2e and lint/typecheck sweep.
+**M6 — Settings hub, docs, polish. DONE.**
+- The reader settings panel is now a sectioned hub (Playback / Reading /
+  Library / Keyboard), with continuous play under Playback and links to the
+  library and trash under Library.
+- The `up_next_prebuffer_seconds` warming knob is exposed in Admin → Overview.
+- README and AGENTS.md document the storage seam, library model, player lift,
+  listening progress, auto-advance, folder warming and the settings hub.
+- Final verification: full server and web suites, Playwright, lint, typecheck,
+  plus a real-browser pass against the fake backend (folders → job → real audio
+  playback → progress → mini-player pause → trash/restore) and an API-level
+  end-to-end smoke covering folders, ordering, moves, progress, read marks,
+  trash/restore/purge and media serving.
 
 ## Testing strategy
 

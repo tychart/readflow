@@ -55,6 +55,18 @@ class JobManager:
             raise KeyError(f"Unknown job '{job_id}'")
         return job
 
+    def _require_chunk_job(self, uow: UnitOfWork, job_id: str) -> Job:
+        """A job the worker can still write to, including one in the trash.
+
+        Trashing stops *new* dispatch, but a batch already on the GPU may come
+        back; writing its audio keeps a restored job consistent. A purged job is
+        genuinely gone and still raises.
+        """
+        job = uow.jobs.get(self._user_id, job_id, include_deleted=True)
+        if job is None:
+            raise KeyError(f"Unknown job '{job_id}'")
+        return job
+
     @staticmethod
     def _resolve_chunk(job: Job, chunk: ChunkRecord) -> ChunkRecord:
         """Return the aggregate's own instance for `chunk`.
@@ -365,7 +377,7 @@ class JobManager:
 
     def mark_chunk_rendering(self, chunk: ChunkRecord) -> None:
         with self._db.transaction() as uow:
-            job = self._require_job(uow, chunk.job_id)
+            job = self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.status = ChunkStatus.RENDERING
             stored.updated_at = time()
@@ -391,7 +403,7 @@ class JobManager:
         rendering its other chunks until the attempt budget is spent.
         """
         with self._db.transaction() as uow:
-            job = self._require_job(uow, chunk.job_id)
+            job = self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.attempts += 1
             stored.error = error
@@ -399,7 +411,7 @@ class JobManager:
 
     def _requeue_chunk(self, chunk: ChunkRecord) -> Job:
         with self._db.transaction() as uow:
-            job = self._require_job(uow, chunk.job_id)
+            job = self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             return self._requeue_chunk_locked(uow, job, stored)
 
@@ -421,7 +433,7 @@ class JobManager:
         wav_path: str,
     ) -> Job:
         with self._db.transaction() as uow:
-            job = self._require_job(uow, chunk.job_id)
+            job = self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             # A chunk that came back after its plan generation was superseded is
             # requeued with the job's current voice rather than written as stale
@@ -451,7 +463,7 @@ class JobManager:
         terminal and stopping all work on it.
         """
         with self._db.transaction() as uow:
-            job = self._require_job(uow, chunk.job_id)
+            job = self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.status = ChunkStatus.FAILED
             stored.error = error

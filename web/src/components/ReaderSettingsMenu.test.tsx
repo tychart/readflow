@@ -5,6 +5,7 @@ import {
   render,
   screen,
 } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { focusableWithin } from "../hooks/useModalFocusTrap";
 import {
@@ -86,14 +87,19 @@ function swipeSheet(panel: Element, startY: number, endY: number, stepMs = 16) {
   dispatchTouch(panel, "touchend", endY, stepMs * 2);
 }
 
+/** The panel links to the library and trash, so it needs router context. */
+function renderMenu(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
+
 function openMenu(props: ReturnType<typeof buildProps>) {
-  render(<ReaderSettingsMenu {...props} />);
+  renderMenu(<ReaderSettingsMenu {...props} />);
   fireEvent.click(screen.getByRole("button", { name: "Reader settings" }));
 }
 
 describe("ReaderSettingsMenu", () => {
   test("is closed until the gear is pressed, and reports its expanded state", () => {
-    render(<ReaderSettingsMenu {...buildProps()} />);
+    renderMenu(<ReaderSettingsMenu {...buildProps()} />);
     const gear = screen.getByRole("button", { name: "Reader settings" });
 
     expect(gear).toHaveAttribute("aria-expanded", "false");
@@ -417,4 +423,23 @@ describe("ReaderSettingsMenu phone sheet", () => {
       screen.getByRole("dialog", { name: "Reader settings" }),
     ).toBeInTheDocument();
   });
+});
+
+test("offers continuous play and links into the library", () => {
+  const props = buildProps({ settings: { continuousPlay: false } });
+  openMenu(props);
+
+  const continuous = screen.getByLabelText("Continuous play");
+  expect(continuous).not.toBeChecked();
+  fireEvent.click(continuous);
+  expect(props.onChange).toHaveBeenCalledWith({ continuousPlay: true });
+
+  expect(screen.getByRole("link", { name: "Open library" })).toHaveAttribute(
+    "href",
+    "/",
+  );
+  expect(screen.getByRole("link", { name: "Trash" })).toHaveAttribute(
+    "href",
+    "/trash",
+  );
 });

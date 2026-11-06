@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
+
 import { PlaybackSpeedControl } from "../features/reader/PlaybackSpeedControl";
 import { useModalFocusTrap } from "../hooks/useModalFocusTrap";
 import { PLAYBACK_SHORTCUT_GUIDE } from "../hooks/usePlaybackShortcuts";
@@ -216,13 +218,20 @@ export function ReaderSettingsMenu({
     if (open) panelRef.current?.focus();
   }, [open]);
 
+  const sectionLabel = (label: string) => (
+    <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+      {label}
+    </p>
+  );
+
   const body = (
     <div className="space-y-4">
+      {sectionLabel("Playback")}
       {/* Speed first: it is the control people actually reach for mid-listen,
           and it used to occupy the playbar's scarcest space. */}
       <section className="space-y-2">
         <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
-          Playback speed
+          Speed
         </p>
         <PlaybackSpeedControl
           onChange={onPlaybackRateChange}
@@ -239,6 +248,8 @@ export function ReaderSettingsMenu({
           onChange={(continuousPlay) => onChange({ continuousPlay })}
         />
       </section>
+
+      {sectionLabel("Reading")}
 
       {showConveyorControls ? (
         <section className="space-y-3">
@@ -291,6 +302,29 @@ export function ReaderSettingsMenu({
         />
       </section>
 
+      {sectionLabel("Library")}
+      <section className="space-y-1.5 text-[11px] leading-relaxed text-[var(--ink-secondary)]">
+        <p>
+          Play folder resumes at the first job you have not finished, then
+          continuous play follows the folder's order.
+        </p>
+        <p className="flex flex-wrap gap-3">
+          <Link
+            className="text-[var(--amber)] underline-offset-2 hover:underline"
+            to="/"
+          >
+            Open library
+          </Link>
+          <Link
+            className="text-[var(--amber)] underline-offset-2 hover:underline"
+            to="/trash"
+          >
+            Trash
+          </Link>
+        </p>
+      </section>
+
+      {sectionLabel("Keyboard")}
       <section>
         <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
           Keyboard shortcuts

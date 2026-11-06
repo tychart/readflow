@@ -28,7 +28,7 @@ The core design goal is not “lowest single-request latency.” It is:
 The repo currently contains:
 
 - a FastAPI backend with job management, chunk planning, scheduling, voice registry, model lifecycle management, media packaging, and WebSocket updates
-- a React frontend with Jobs, Reader, and Admin pages
+- a React frontend with Library, Reader, and Admin pages
 - a real Qwen provider using the official SDK usage pattern
 - a fake provider for fast deterministic local tests
 - unit, integration, browser smoke, lint, and typecheck coverage
@@ -60,7 +60,18 @@ same-origin with no extra setup.
 
 ## Features
 
-- Create jobs from pasted text or `.txt` upload
+- **Library**: ordered, nestable folders that are also playable collections;
+  single-parent membership; drag-to-reorder in an Organize mode with
+  multi-select, bulk move/read/delete, global search and a read-state filter
+- **Trash**: deleting a folder moves its whole subtree to the trash and Restore
+  brings it back; permanent deletion is a separate, confirmed action
+- **Listening progress** per job: heard chunks, a progress bar, resume position,
+  mark read/unread (whole job, from a chunk, or per chunk) — all server-derived
+- **Continuous play**: finishing a job in a folder opens and plays the next job
+  in order; the next job's buffer is warmed by the scheduler
+- **App-level player**: listening survives navigation, with a mini-player on the
+  library and admin pages
+- Create jobs from pasted text or `.txt` upload (into the open folder)
 - Shared backend queue for all jobs
 - Reader view with chunk-by-chunk buffered playback
 - Reader navigation built for book-length jobs:
@@ -72,8 +83,12 @@ same-origin with no extra setup.
   - **−10s / +10s** skip buttons
   - **playback speed** with one-tap presets (0.75×–2×) plus a slider and numeric
     input, in the reader settings panel and remembered per device
-  - **page-wide keyboard shortcuts** (Space/K, arrows, J/L) with a shortcuts guide
-  - **reader settings** (speed, motion, conveyor, jump buttons, chunk window), saved per device
+  - **page-wide keyboard shortcuts** (Space/K, arrows, J/L, `[` / `]` for
+    previous/next job) with a shortcuts guide
+  - a **job stepper** ("Job 3 of 8") and an **up-next** chip with a
+    continuous-play toggle
+  - a **settings hub** (Playback / Reading / Library / Keyboard) where
+    preferences are saved per device
   - a **phone bottom dock** that puts the transport and conveyor in the thumb zone
   - the open **job's title in the header**, fading in as the playbar compacts so
     the document keeps its name once the heading has scrolled away
@@ -90,8 +105,8 @@ same-origin with no extra setup.
 ## Main Limitations
 
 - Jobs are in memory only and are lost on restart
-- No auth or multi-user isolation
-- No persistent storage layer
+- No auth or multi-user isolation (one seeded local user in every row)
+- Storage is in memory behind a database seam; no real database yet
 - No user-uploaded voices in v1
 - No model switching mid-job
 - No word-level highlighting

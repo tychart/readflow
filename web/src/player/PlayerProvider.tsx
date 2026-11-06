@@ -13,7 +13,6 @@ import { getReaderSettings } from "../state/reader-settings";
 import { resolveAutoAdvance } from "./auto-advance";
 import { collectHeardChunkIndexes } from "./heard";
 import {
-  getPlayerControls,
   playerNavigate,
   registerPlayerControls,
   usePlayerStore,
@@ -349,21 +348,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     renderedDurationSeconds,
   ]);
 
-  // Kept reachable for debugging from the console, like the old reader-owned
-  // hook was. It is also the only way tests can wait for a registered control.
-  useEffect(() => {
-    (window as { __readflowPlayer?: unknown }).__readflowPlayer = player;
-  });
-
   return (
     <>
       <ShadowAudio audioRef={audioRef} />
       {children}
     </>
   );
-}
-
-/** True once the provider has registered its controls (i.e. a stream can be driven). */
-export function hasPlayerControls(): boolean {
-  return getPlayerControls() !== null;
 }

@@ -601,3 +601,40 @@ def test_reprocessing_a_missing_chunk_is_rejected_without_leaving_a_record():
 
     assert len(job.chunks) == before
     assert 99 not in job.active_chunk_version
+
+
+def test_trashing_a_job_still_allows_an_in_flight_batch_to_land():
+    """Trash stops new work, but a batch already on the GPU may come back.
+
+    Writing its audio keeps a restored job consistent. Purging removes the job,
+    and the scheduler treats that KeyError as "drop the result".
+    """
+    from app.db.memory import MemoryDatabase
+    from app.library.models import TrashKind
+    from app.library.service import LibraryService
+    from app.library.tree import LibraryItem
+
+    database = MemoryDatabase()
+    manager = JobManager(database)
+    library = LibraryService(database)
+    job = manager.create_job(
+        source_text="One. Two.",
+        source_kind="text",
+        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        voice_id="suzy",
+    )
+    chunk = manager.add_planned_chunk(job.id, ChunkPlan(text="One.", char_start=0, char_end=4))
+    manager.mark_chunk_rendering(chunk)
+
+    entries = library.delete([LibraryItem(kind="job", id=job.id)])
+    assert entries[0].kind == TrashKind.JOB
+
+    updated = manager.mark_chunk_written(
+        chunk, duration_seconds=1.0, segment_path="a", wav_path="b"
+    )
+    assert chunk.status == ChunkStatus.WRITTEN
+    assert updated.id == job.id
+
+    library.purge([entries[0].id])
+    with pytest.raises(KeyError):
+        manager.mark_chunk_written(chunk, duration_seconds=2.0, segment_path="c", wav_path="d")
