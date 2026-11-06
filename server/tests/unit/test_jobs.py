@@ -226,13 +226,24 @@ def test_completed_jobs_ignore_playback_lifecycle_mutations():
     assert completed.status == JobStatus.COMPLETED
 
     manager.activate_job(job.id)
+    assert manager.get_job(job.id).is_active_listening is True
     manager.pause_job(job.id)
+    assert manager.get_job(job.id).is_active_listening is False
     manager.update_playback(job.id, current_time_seconds=2.5, is_playing=True)
 
     finished = manager.get_job(job.id)
     assert finished.status == JobStatus.COMPLETED
     assert finished.playback_state.current_time_seconds == 0.0
     assert finished.playback_state.is_playing is False
+    # The listener is still tracked (folder warming), but the job stays
+    # finished and its playback state is not reopened.
+    assert finished.is_active_listening is True
+
+    finished.playback_state.last_event_at = 0.0
+    assert [job.id for job in manager.expire_stale_listeners(60)] == [job.id]
+    expired = manager.get_job(job.id)
+    assert expired.status == JobStatus.COMPLETED
+    assert expired.is_active_listening is False
 
 
 def test_create_job_stores_canonical_source_text():

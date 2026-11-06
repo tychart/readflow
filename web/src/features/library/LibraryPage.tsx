@@ -16,9 +16,12 @@ import { LibraryPane } from "./LibraryPane";
 import { LibraryTree } from "./LibraryTree";
 import {
   selectionItems as buildSelectionItems,
+  filterLibrary,
   folderContents,
   folderPath,
   type LibraryFilter,
+  rangeSelection,
+  toggleSelection,
 } from "./library-model";
 import type { LibraryRowActions } from "./library-types";
 
@@ -41,6 +44,8 @@ export function LibraryPage() {
   const [error, setError] = useState<string | null>(null);
   const [organize, setOrganize] = useState(false);
   const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
+  // Shift-click ranges extend from the last row the user actually clicked.
+  const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [filter, setFilter] = useState<LibraryFilter>(DEFAULT_FILTER);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -135,11 +140,15 @@ export function LibraryPage() {
 
   useEffect(() => {
     setSelection(new Set());
+    setSelectionAnchor(null);
     setDrawerOpen(false);
   }, [currentFolderId]);
 
   useEffect(() => {
-    if (!organize) setSelection(new Set());
+    if (!organize) {
+      setSelection(new Set());
+      setSelectionAnchor(null);
+    }
   }, [organize]);
 
   const flushNotice = useCallback((message: string) => {
@@ -224,23 +233,41 @@ export function LibraryPage() {
     },
   };
 
+  /** Rows the user can actually see, in display order (folders, then jobs).
+   *
+   * A search or a state filter replaces the folder contents with a flat list,
+   * so "Select all" and shift-ranges have to follow that list.
+   */
   const visibleIds = useMemo(() => {
     if (!snapshot) return [];
+    const listing = filterLibrary(snapshot, filter);
     const contents = folderContents(snapshot, currentFolderId);
+    const folders = listing.searching ? listing.folders : contents.folders;
+    const jobs = listing.searching ? listing.jobs : contents.jobs;
     return [
-      ...contents.folders.map((folder) => folder.id),
-      ...contents.jobs.map((job) => job.id),
+      ...folders.map((folder) => folder.id),
+      ...jobs.map((job) => job.id),
     ];
-  }, [currentFolderId, snapshot]);
+  }, [currentFolderId, filter, snapshot]);
 
-  const toggleSelected = (id: string) => {
-    setSelection((previous) => {
-      const next = new Set(previous);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const toggleSelected = (
+    id: string,
+    event: { shiftKey: boolean; metaKey: boolean },
+  ) => {
+    if (event.shiftKey && selectionAnchor !== null) {
+      // The range is over what is visible right now, matching what the user
+      // sees; it never silently selects rows hidden by the current filter.
+      setSelection(rangeSelection(visibleIds, selectionAnchor, id));
+      return;
+    }
+    setSelectionAnchor(id);
+    setSelection((previous) => toggleSelection(previous, id));
   };
+
+  const clearSelection = useCallback(() => {
+    setSelection(new Set());
+    setSelectionAnchor(null);
+  }, []);
 
   const selectionItems = useMemo(
     () => (snapshot ? buildSelectionItems(snapshot, selection) : []),
@@ -352,7 +379,7 @@ export function LibraryPage() {
           const items = dialog.items;
           setDialog(null);
           void run(() => api.moveLibraryItems(items, target), "Moved").then(
-            () => setSelection(new Set()),
+            () => clearSelection(),
           );
         }}
       />
@@ -420,7 +447,7 @@ export function LibraryPage() {
           folderId={currentFolderId}
           onBulkDelete={() => {
             const items = selectionItems;
-            setSelection(new Set());
+            clearSelection();
             void run(() => api.deleteLibraryItems(items), "Moved to trash");
           }}
           onBulkMove={() =>

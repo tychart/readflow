@@ -113,3 +113,46 @@ def test_an_active_listener_keeps_its_urgent_band(services):
     current_job.buffered_seconds = 0.0
     assert services.scheduler._priority_band(current_job) == 0
     assert current_job.status == JobStatus.PLAYING
+
+
+def test_a_finished_job_still_warms_its_folder_successor(services):
+    """A completed book is played from local audio; the listener is still live.
+
+    Warming used to require `playback_state.is_playing`, which a terminal job
+    never reports, so the "finished book, next book is still rendering" case
+    never warmed the thing the listener is about to reach.
+    """
+    folder = services.library.create_folder("Books")
+    current = _job(services, "Current", folder_id=folder.id)
+    following = _job(services, "Following", folder_id=folder.id)
+
+    with services.database.transaction() as uow:
+        stored = uow.jobs.get("local", current.id)
+        assert stored is not None
+        stored.status = JobStatus.COMPLETED
+        uow.jobs.save(stored)
+
+    services.job_manager.activate_job(current.id)
+    services.scheduler._refresh_up_next()
+
+    successor = services.job_manager.get_job(following.id)
+    assert services.scheduler._priority_band(successor) == 1
+    assert services.job_manager.get_job(current.id).status == JobStatus.COMPLETED
+
+
+def test_a_finished_job_stops_warming_when_the_listener_pauses(services):
+    folder = services.library.create_folder("Books")
+    current = _job(services, "Current", folder_id=folder.id)
+    following = _job(services, "Following", folder_id=folder.id)
+
+    with services.database.transaction() as uow:
+        stored = uow.jobs.get("local", current.id)
+        assert stored is not None
+        stored.status = JobStatus.COMPLETED
+        uow.jobs.save(stored)
+
+    services.job_manager.activate_job(current.id)
+    services.job_manager.pause_job(current.id)
+    services.scheduler._refresh_up_next()
+
+    assert services.scheduler._priority_band(services.job_manager.get_job(following.id)) == 2

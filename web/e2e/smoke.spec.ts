@@ -1657,6 +1657,7 @@ test("finished folder job auto-advances to the next one", async ({ page }) => {
   };
   const second = {
     ...buildJob(1, "queued"),
+    id: "job-2",
     title: "Second book",
     chunks: [buildChunk(0)],
     source_kind: "text",
@@ -1800,5 +1801,10 @@ test("continuous play off stops at the end of the job", async ({ page }) => {
 
   await page.waitForTimeout(500);
   await expect(page).toHaveURL(/\/jobs\/job-1$/);
-  await expect(page.getByTestId("end-of-folder")).toBeVisible();
+  const card = page.getByTestId("end-of-folder");
+  await expect(card).toBeVisible();
+  // The folder does have a next job; the card must say so instead of claiming
+  // this was the last one.
+  await expect(card).toContainText("Up next: Second book");
+  await expect(card.getByRole("button", { name: "Play next" })).toBeVisible();
 });

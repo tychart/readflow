@@ -64,6 +64,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     bufferedUntilSeconds,
     currentTimeSeconds,
     diagnostics,
+    hasEnded,
     isActuallyPlaying,
     isAutoplayBlocked,
     isLoadingAudio,
@@ -114,6 +115,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       bufferedUntilSeconds,
       currentTimeSeconds,
       diagnostics,
+      hasEnded,
       isActuallyPlaying,
       isAutoplayBlocked,
       isLoadingAudio,
@@ -243,22 +245,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // Auto-advance is a property of the end of a job, not of the reader page:
   // the provider already owns end detection, and navigating updates the reader
   // route while this provider (and the audio element) stays mounted.
+  //
+  // `hasEnded` is the one signal every way of finishing converges on: the
+  // browser's `ended` event, and the hook's reconciliation of a playhead frozen
+  // at the end of an MSE stream (which is the common case). Advancing from the
+  // `pause`/intent path instead missed that second case, because the reconcile
+  // pauses the element and the `pause` handler clears intent first.
   const autoAdvancedForRef = useRef<string | null>(null);
   useEffect(() => {
-    autoAdvancedForRef.current = null;
-  }, [job?.id]);
-  const maybeAutoAdvance = useCallback(() => {
+    // A new end transition is a new chance to advance (a replay, then end again).
+    if (!hasEnded) {
+      autoAdvancedForRef.current = null;
+      return;
+    }
+    // Read the mirrored values, not render closures: the store is updated in
+    // the layout effect of this same commit.
     const state = usePlayerStore.getState();
     const nextJobId = resolveAutoAdvance({
       job: state.job,
-      currentTimeSeconds: state.currentTimeSeconds,
-      renderedDurationSeconds: state.renderedDurationSeconds,
+      hasEnded,
+      streamEndSeconds:
+        state.anchorOffsetSeconds + state.renderedDurationSeconds,
+      durationSeconds: state.durationSeconds,
       continuousPlay: getReaderSettings().continuousPlay,
     });
     if (!nextJobId || autoAdvancedForRef.current === state.job?.id) return;
     autoAdvancedForRef.current = state.job?.id ?? null;
     playerNavigate(`/jobs/${nextJobId}?play=1`);
-  }, []);
+  }, [hasEnded]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -300,7 +314,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       state.setPlayIntent(false);
       syncPlayback(true, false);
-      if (state.job?.isTerminal) maybeAutoAdvance();
     };
     const handleError = () => syncPlayback(true, false);
     audio.addEventListener("play", handlePlay);
@@ -320,7 +333,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("error", handleError);
       window.clearInterval(interval);
     };
-  }, [audioRef, maybeAutoAdvance, syncPlayback]);
+  }, [audioRef, syncPlayback]);
 
   // A terminal job whose playhead sits at the end of a fully buffered stream
   // has finished, even when the browser never fires `ended` (MSE often does
@@ -338,12 +351,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     usePlayerStore.getState().setPlayIntent(false);
-    maybeAutoAdvance();
   }, [
     currentTimeSeconds,
     isActuallyPlaying,
     job?.isTerminal,
-    maybeAutoAdvance,
     playIntent,
     renderedDurationSeconds,
   ]);

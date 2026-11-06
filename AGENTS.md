@@ -374,7 +374,15 @@ folder and everything below it with one `trash_entry_id`, so Restore brings the
 whole subtree back where it was (or to the root if its old parent is gone).
 Trashed jobs are invisible to `JobManager`/the scheduler; their audio is kept
 until "delete forever" / "empty trash". `delete_folder_only` moves the children
-up to the parent first and then trashes the empty folder.
+up to the parent first and then trashes the empty folder (saving the folder as
+deleted *before* re-indexing the destination, so a SQL adapter sees the same
+sibling set the in-memory one does).
+
+`restore()` treats every entry in one request as live when resolving a
+destination, and validates all entries before mutating. Restoring a folder and a
+separately-trashed child together therefore keeps the child inside its parent
+regardless of the order they arrive in; resolving against the pre-call state
+used to scatter it to the root library.
 
 `LibraryService`/`ProgressService` are constructed user-scoped in
 `app/core/services.py`; when authentication lands they become per-request
@@ -411,12 +419,21 @@ progress view and folder context. Important shapes:
 ### Scheduler: folder-aware warming
 
 `up_next_job_ids()` derives, each tick, the jobs that are the folder successor of
-a job someone is actively playing. It is computed, never stored: `run_once` and
-`queue_snapshot` call `_refresh_up_next()`. Those jobs are clamped into priority
-band 1 until they have `up_next_prebuffer_seconds` of contiguous audio (Admin
-knob, default 120 s; `0` disables warming). The clamp never outranks an urgent
-active listener (band 0), and a paused job warms nothing. `_priority_info` labels
-the band "Up next" with its own reason, so the queue inspector stays honest.
+a job someone is actively listening to. It is computed, never stored: `run_once`
+and `queue_snapshot` call `_refresh_up_next()`. Those jobs are clamped into
+priority band 1 until they have `up_next_prebuffer_seconds` of contiguous audio
+(Admin knob, default 120 s; `0` disables warming). The clamp never outranks an
+urgent active listener (band 0), and a paused job warms nothing. `_priority_info`
+labels the band "Up next" with its own reason, so the queue inspector stays
+honest.
+
+The signal is `Job.is_active_listening`, **not** `playback_state.is_playing`.
+A finished job plays from local audio and never reports `is_playing=True`, so
+requiring it silently disabled warming for exactly the "book finished, next book
+still rendering" case. `activate_job`/`update_playback` set the listener flag on
+terminal jobs without touching their status (position, buffer and totals stay
+frozen), `pause_job` clears it, and `expire_stale_listeners` still expires it
+when reports stop — so a closed tab cannot keep a successor warmed forever.
 
 Rules that are easy to break:
 
@@ -459,7 +476,17 @@ Rules:
   `progress_fraction`. The model only arranges that data.
 - Search/filter never mutates order; drag is disabled while a filter is active.
 - Reordering is per kind (folders and jobs have separate position sequences).
-  Moving across folders is the explicit Move dialog, never an ambiguous drop.
+  Moving across folders is the explicit Move dialog, never an ambiguous drop,
+  and a cross-kind drop (folder onto job or the reverse) is ignored. It used to
+  splice a folder id into the job order, which the server correctly rejected.
+  Use `reorderIds` from `library-model.ts` rather than re-implementing the
+  splice.
+- Selection: `visibleIds` is what the user can see (the flat filter result while
+  searching, the folder contents otherwise). "Select all" and Shift-click ranges
+  both use it; keying them on the folder contents silently selected hidden rows.
+- The root library is **not** a playable container (only real folders have an
+  order auto-advance can follow), so "Play folder" is only rendered inside a
+  folder. Root rows still have their own Play action.
 - Library mutations are followed by a snapshot refetch; `library_changed` is an
   invalidation signal, not a payload.
 - The library only opens the WebSocket while a job is rendering/playing, so the
@@ -568,6 +595,14 @@ are derived server-side (see “Library domain”). The client's job is narrower
   player rebuilds the stream there. The restore effect must run **after** the
   `openJob`/`setSource` effects; running it before them let `openJob` reset the
   anchor/seek (this was a real bug).
+- **A finished job restarts; it never resumes at its own end.** Finishing writes
+  the end as the position, and mark-read moves it there deliberately. Resuming
+  there ends instantly, and with continuous play that made auto-advance cascade:
+  open the next job, restore at its end, "finish" it, open the next…
+  `resumePositionSeconds(saved, knownDuration, isFinished)` in
+  `reader-model.ts` owns the rule (start for a finished job, resume otherwise;
+  an unfinished job's "known duration" is only the rendered part of a longer
+  document, so being near it means nothing).
 - Heard ✓ marks come from `job.progress.heard_chunks` (memoized into a Set), not
   from playback position. The block's dimmed "played" styling still follows the
   playhead; the ✓ is the persisted truth.
@@ -576,14 +611,35 @@ are derived server-side (see “Library domain”). The client's job is narrower
   position to the end; "mark unread" resets it (and a from-chunk unread rewinds
   it to that chunk's start).
 - `continuousPlay` is a device-local reader setting (default on). Auto-advance is
-  decided by `web/src/player/auto-advance.ts`: terminal job + at the rendered
-  end + a server-provided `next_job_id` + continuous play. `PlayerProvider`
-  navigates to `/jobs/<next>?play=1`; the reader consumes `play=1` once and
-  removes it from the URL. Root jobs and the last job in a folder just stop and
-  show `ReaderEndCard`.
+  decided by `web/src/player/auto-advance.ts` from **one** signal: the player's
+  `hasEnded` (mirrored into the player store). It requires a terminal job, the
+  job's **real** end (`anchorOffset + renderedDuration` must reach
+  `durationSeconds`, so stopping at a gap is not "finished"), a server-provided
+  `next_job_id`, and continuous play. `PlayerProvider` navigates to
+  `/jobs/<next>?play=1`; the reader consumes `play=1` once **for the job in the
+  route** and removes it from the URL.
+- Do not move auto-advance back into the `ended`/`pause`/intent handlers. The
+  common end on MSE is the hook's terminal reconcile (the browser never fires
+  `ended`), which pauses the element; the `pause` handler clears `playIntent`
+  first, so keying on intent missed exactly that case. `hasEnded` is set by both
+  paths — the `ended` event and the reconcile — and the reconcile itself only
+  fires while playback was actually wanted (a paused seek to the end is not an
+  end).
+- Root jobs and the last job in a folder just stop and show `ReaderEndCard`.
+  The card must know whether a next job exists: a folder's **first** job ending
+  is not "the last job in the folder" (that copy shipped for a while).
 - The job stepper (`JobStepper`) and up-next chip use server-provided
   `folder_index`/`folder_count`/`previous_job_id`/`next_job_id` and titles. Do
-  not re-derive folder order in the reader.
+  not re-derive folder order in the reader. Folder context is derived from the
+  whole library, so the reader re-fetches on `library_changed` and `job_created`
+  events for the jobs it is subscribed to.
+- Navigating between jobs reuses the same `ReaderPage` instance: the previous
+  detail stays in state until the new fetch resolves. Two guards exist for that
+  window and must stay: `applyJobPatch` drops a patch whose id is not the
+  route's job (and only merges into a detail of the same id), and the `play=1`
+  effect waits for `job.id === jobId`. Without the second guard the autoplay
+  flag was consumed against the job just left, so the incoming job opened paused
+  — which is exactly how auto-advance silently stopped working.
 
 ### Playback speed (in the settings panel, not the playbar)
 
@@ -1337,8 +1393,15 @@ Completed jobs behave differently from in-progress jobs.
 
 Implemented behavior:
 
-- completed jobs are local-only from the reader's perspective
-- play/pause/playback heartbeats should not keep talking to the backend for completed jobs
+- completed jobs are local-only from the reader's perspective: the scheduler
+  heartbeat is not sent and `JobManager.update_playback` never moves the
+  position, buffer or totals of a terminal job
+- the **listener flag is still tracked** (`is_active_listening`), because
+  folder warming is derived from it (see “Scheduler: folder-aware warming”).
+  Pausing clears it, and `expire_stale_listeners` expires it on terminal jobs
+  too, so a closed tab cannot keep a successor warmed forever
+- listening progress (position + heard chunks) still goes over HTTP: it is what
+  makes read state and auto-advance/replay correct
 - download remains available
 - local playback after completion still needs to keep the custom play/pause button honest
 
@@ -2304,6 +2367,12 @@ Do not put `source_text` or the full chunk list back into per-chunk events.
 (that is what the "reader updates live" and gap-slot tests did before
 `buildChunk` was introduced). Use the `buildChunk` helper when adding fixtures.
 
+`JobDetail` fixtures also need the **right id**: `buildJob` hardcodes
+`id: "job-1"`, so a second job built by spreading it must override `id`. The
+reader ignores job data whose id is not the route's job (see “Listening
+progress…”), which is what made the auto-advance e2e test expose a `job-2`
+fixture that was still labelled `job-1`.
+
 ### 8. MSE/player bugs are often state-model bugs, not codec bugs
 
 Recent playback bugs were often caused by stale or mismatched state, not by the media container itself.
@@ -3062,6 +3131,42 @@ Chunk-pipeline round (simplify + fix the take bugs):
    unobservable `Queued` chunk transition removed.
 8. **The never-collected `server/app/jobs/test_*.py` modules were deleted** and
    their intent moved into `tests/unit/test_jobs.py`.
+
+Folder-playback correctness round (after the first real listener report):
+
+1. **Auto-advance now fires on the path playback actually takes.** The old rule
+   was evaluated from the `ended`/`pause`/intent handlers; on MSE the browser
+   usually never fires `ended`, and the terminal reconcile pauses the element,
+   which clears `playIntent` first — so a finished folder job just stopped. The
+   media hook now exposes `hasEnded` (set by both the `ended` event and the
+   reconcile, which additionally requires that playback was actually wanted),
+   the store mirrors it, and `PlayerProvider` has one effect that advances on
+   that transition. See “Listening progress, position restore and auto-advance”.
+2. **The end card tells the truth.** `ReaderEndCard` receives the next job and
+   the continuous-play setting: a folder's first job ending now reads “Up next:
+   …” with a Play next button instead of “This was the last job in the folder.”
+3. **A finished job restarts instead of resuming at its end**, which was what
+   made auto-advance cascade through already-read jobs
+   (`resumePositionSeconds`).
+4. **Autoplay follows the route, not the stale detail.** Navigating A→B keeps
+   A's detail in state for a render; the `play=1` effect now waits for
+   `job.id === jobId`, and `applyJobPatch` ignores patches that are not for the
+   route's job. Before this, auto-advance consumed the flag against A and B
+   opened paused.
+5. **Auto-advance ignores a gap.** Advancement (and the end card) require the
+   playable stream to reach the job's real end (`isAtJobEnd`), not merely the
+   end of the contiguous run before a failed chunk.
+6. **Completed jobs keep warming their folder successor.** Warming keyed on
+   `playback_state.is_playing`, which a terminal job never reports, so the
+   normal “finished book, next book still rendering” case never got band 1.
+   The listener flag is now tracked on terminal jobs (and expires normally).
+7. **Library UI fixes:** cross-kind drags (folder↔job) are ignored instead of
+   sending a child set the server rejects; Shift-click ranges and “Select all”
+   follow the visible list, not the hidden folder contents; “Play folder” is not
+   offered at the root library (root jobs do not chain).
+8. **Trash restore validates first and resolves destinations against the whole
+   request**, so a folder and a separately-trashed child restore together
+   correctly, in either order.
 
 ## Agent Workflow Checklist
 

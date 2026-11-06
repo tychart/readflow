@@ -1,5 +1,6 @@
 import {
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -166,6 +167,110 @@ afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+});
+
+it("shift-click selects the visible range", async () => {
+  const { calls } = installApi();
+  const user = userEvent.setup();
+  renderLibrary("/library/books");
+
+  await user.click(await screen.findByRole("button", { name: "Organize" }));
+  const dune = (await screen.findByText("Dune")).closest("li");
+  const hyperion = screen.getByText("Hyperion").closest("li");
+  await user.click(
+    within(dune as HTMLElement).getByRole("button", { name: /Dune/ }),
+  );
+  await user.keyboard("{Shift>}");
+  await user.click(
+    within(hyperion as HTMLElement).getByRole("button", { name: /Hyperion/ }),
+  );
+  await user.keyboard("{/Shift}");
+
+  await user.click(screen.getByRole("button", { name: "Read" }));
+  await waitFor(() => {
+    const readCall = calls.find((call) => call.url.endsWith("/library/read"));
+    expect(readCall?.body).toEqual({
+      items: [
+        { kind: "job", id: "dune" },
+        { kind: "job", id: "hyperion" },
+      ],
+      read: true,
+    });
+  });
+});
+
+function dragRow(from: HTMLElement, to: HTMLElement) {
+  const dataTransfer = {
+    effectAllowed: "none",
+    setData: vi.fn(),
+  };
+  fireEvent.dragStart(from, { dataTransfer });
+  fireEvent.dragOver(to, { dataTransfer });
+  fireEvent.drop(to, { dataTransfer });
+}
+
+it("reorders same-kind rows by dropping one onto another", async () => {
+  const { calls } = installApi();
+  const user = userEvent.setup();
+  renderLibrary("/library/books");
+
+  await user.click(await screen.findByRole("button", { name: "Organize" }));
+  const dune = (await screen.findByText("Dune")).closest("li");
+  const hyperion = screen.getByText("Hyperion").closest("li");
+  dragRow(hyperion as HTMLElement, dune as HTMLElement);
+
+  await waitFor(() => {
+    const reorderCall = calls.find((call) =>
+      call.url.endsWith("/api/library/reorder"),
+    );
+    expect(reorderCall?.body).toEqual({
+      parent_id: "books",
+      folder_ids: [],
+      job_ids: ["hyperion", "dune"],
+    });
+  });
+});
+
+it("ignores a drop between a folder and a job", async () => {
+  const { calls } = installApi();
+  const user = userEvent.setup();
+  renderLibrary("/");
+
+  await user.click(await screen.findByRole("button", { name: "Organize" }));
+  const pane = screen.getByRole("region", { name: "Folder contents" });
+  const folderRow = (await within(pane).findByText("Books")).closest("li");
+  const jobRow = within(pane).getByText("Loose essay").closest("li");
+  dragRow(folderRow as HTMLElement, jobRow as HTMLElement);
+
+  // Folders and jobs have separate position sequences; a mixed drop used to
+  // send a child set the server rejects.
+  expect(calls.some((call) => call.url.endsWith("/api/library/reorder"))).toBe(
+    false,
+  );
+});
+
+it("selects only the rows a filter is showing", async () => {
+  const { calls } = installApi();
+  const user = userEvent.setup();
+  renderLibrary("/");
+
+  await user.click(await screen.findByRole("button", { name: "Organize" }));
+  await user.type(
+    screen.getByRole("searchbox", { name: "Search library" }),
+    "Dune",
+  );
+  await user.click(screen.getByRole("button", { name: "Select all" }));
+  await user.click(screen.getByRole("button", { name: "Read" }));
+
+  // Select-all used to take the folder contents, silently including rows the
+  // search had hidden.
+  await waitFor(() => {
+    const readCall = calls.find((call) => call.url.endsWith("/library/read"));
+    expect(readCall?.body).toEqual({
+      items: [{ kind: "job", id: "dune" }],
+      read: true,
+    });
+  });
 });
 
 it("renders the tree and opens a folder", async () => {

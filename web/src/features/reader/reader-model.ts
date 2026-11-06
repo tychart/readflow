@@ -350,6 +350,41 @@ export function skipTargetSeconds(
   );
 }
 
+/**
+ * How close to the end of a finished job still counts as "finished" when
+ * deciding where to resume. A little slack covers rounding in duration sums.
+ */
+export const RESUME_END_EPSILON_SECONDS = 2;
+
+/**
+ * Where playback should start when a job is opened.
+ *
+ * A stored position at the end of a **finished** job is not a resume point, it
+ * is an artefact of finishing: the player reports the end position, and
+ * mark-read moves it there deliberately. Resuming there would end instantly,
+ * which is also what turned folder auto-advance into a cascade (open the next
+ * job, restore at its end, "finish" it, open the next...). Starting over is
+ * what "auto-advance replays jobs that are already read" actually needs.
+ *
+ * Unfinished jobs always resume: their known duration is only the rendered part
+ * of a longer document, so being near it means nothing.
+ */
+export function resumePositionSeconds(
+  savedSeconds: number,
+  knownDurationSeconds: number,
+  isFinished: boolean,
+): number {
+  if (!Number.isFinite(savedSeconds) || savedSeconds <= 1) return 0;
+  if (
+    isFinished &&
+    knownDurationSeconds > 0 &&
+    savedSeconds >= knownDurationSeconds - RESUME_END_EPSILON_SECONDS
+  ) {
+    return 0;
+  }
+  return savedSeconds;
+}
+
 /* ── Timeline slots ───────────────────────────────────────── */
 
 /**

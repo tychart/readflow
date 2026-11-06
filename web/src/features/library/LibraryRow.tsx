@@ -209,8 +209,14 @@ export function LibraryRow({
             aria-label={`Select ${title}`}
             checked={selected}
             className="h-4 w-4 shrink-0 accent-[var(--amber)]"
-            onChange={() =>
-              onToggleSelected({ shiftKey: false, metaKey: false })
+            // The parent owns the checked state, so the click is the real
+            // handler: it is the only event that carries Shift for a range.
+            onChange={() => undefined}
+            onClick={(event) =>
+              onToggleSelected({
+                shiftKey: event.shiftKey,
+                metaKey: event.metaKey,
+              })
             }
             type="checkbox"
           />

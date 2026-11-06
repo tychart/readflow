@@ -53,15 +53,17 @@ def test_up_next_honours_the_prebuffer_target():
     assert up_next_job_ids([current, following], prebuffer_seconds=200) == {"next"}
 
 
-def test_paused_or_inactive_jobs_do_not_warm_successors():
+def test_only_active_listeners_warm_successors():
     current = _playing(build_job("current", folder_id="f", position=0))
     following = build_job("next", folder_id="f", position=1)
     current.is_active_listening = False
     assert up_next_job_ids([current, following], prebuffer_seconds=120) == set()
 
+    # A finished job plays from local audio, so it reports `is_playing=False`.
+    # Its listener is still listening, and the warmed successor is for them.
     current.is_active_listening = True
     current.playback_state.is_playing = False
-    assert up_next_job_ids([current, following], prebuffer_seconds=120) == set()
+    assert up_next_job_ids([current, following], prebuffer_seconds=120) == {"next"}
 
 
 def test_deleted_jobs_are_ignored_in_ordering_and_warming():

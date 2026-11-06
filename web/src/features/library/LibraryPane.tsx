@@ -10,6 +10,7 @@ import {
   folderPath as buildPath,
   filterLibrary,
   folderContents,
+  reorderIds,
 } from "./library-model";
 import type { LibraryRowActions, LibraryRowKind } from "./library-types";
 
@@ -22,7 +23,10 @@ interface LibraryPaneProps {
   actions: LibraryRowActions;
   onFilterChange: (filter: Filter) => void;
   onToggleOrganize: () => void;
-  onToggleSelected: (id: string) => void;
+  onToggleSelected: (
+    id: string,
+    event: { shiftKey: boolean; metaKey: boolean },
+  ) => void;
   onSelectAll: () => void;
   onBulkMove: () => void;
   onBulkRead: (read: boolean) => void;
@@ -73,7 +77,10 @@ export function LibraryPane({
     () => filterLibrary(snapshot, filter),
     [filter, snapshot],
   );
-  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<{
+    id: string;
+    kind: LibraryRowKind;
+  } | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const visibleFolders = filtered.searching
@@ -82,21 +89,25 @@ export function LibraryPane({
   const visibleJobs = filtered.searching ? filtered.jobs : contents.jobs;
   const totalRows = visibleFolders.length + visibleJobs.length;
 
+  /**
+   * Drop one row onto another of the **same kind**. Folders and jobs have
+   * separate position sequences (the UI always shows folders first), so a
+   * cross-kind drop has no meaning: it used to insert a folder id into the job
+   * order, which the server correctly rejected as a stale child set.
+   */
   const reorder = (
     kind: LibraryRowKind,
-    draggedId: string,
+    dragged: { id: string; kind: LibraryRowKind },
     targetId: string,
   ) => {
-    if (filtered.searching) return;
+    if (filtered.searching || dragged.kind !== kind) return;
     const ordered =
       kind === "folder"
         ? contents.folders.map((folder) => folder.id)
         : contents.jobs.map((job) => job.id);
     const targetIndex = ordered.indexOf(targetId);
-    if (targetIndex < 0 || draggedId === targetId) return;
-    const next = ordered.filter((id) => id !== draggedId);
-    next.splice(targetIndex, 0, draggedId);
-    actions.reorder(kind, next);
+    if (targetIndex < 0 || dragged.id === targetId) return;
+    actions.reorder(kind, reorderIds(ordered, dragged.id, targetIndex));
   };
 
   const menuAction = (
@@ -114,28 +125,30 @@ export function LibraryPane({
 
   const folderRow = (folder: LibraryFolder) => (
     <LibraryRow
-      dragging={draggingId === folder.id}
-      dropTarget={dragOverId === folder.id && draggingId !== folder.id}
+      dragging={dragging?.id === folder.id}
+      dropTarget={
+        dragging?.kind === "folder" &&
+        dragOverId === folder.id &&
+        dragging.id !== folder.id
+      }
       folder={folder}
       key={folder.id}
       kind="folder"
       onDragEnd={() => {
-        setDraggingId(null);
+        setDragging(null);
         setDragOverId(null);
       }}
       onDragOver={() => setDragOverId(folder.id)}
-      onDragStart={() => setDraggingId(folder.id)}
+      onDragStart={() => setDragging({ id: folder.id, kind: "folder" })}
       onDrop={() => {
-        if (draggingId && draggingId !== folder.id) {
-          reorder("folder", draggingId, folder.id);
-        }
-        setDraggingId(null);
+        if (dragging) reorder("folder", dragging, folder.id);
+        setDragging(null);
         setDragOverId(null);
       }}
       onMenuAction={(action) => menuAction("folder", folder, undefined, action)}
       onOpen={() => onOpenFolder(folder.id)}
       onPlay={() => onPlayFolder(folder.id)}
-      onToggleSelected={() => onToggleSelected(folder.id)}
+      onToggleSelected={(event) => onToggleSelected(folder.id, event)}
       organize={organize}
       selected={selection.has(folder.id)}
     />
@@ -143,28 +156,30 @@ export function LibraryPane({
 
   const jobRow = (job: LibraryJob) => (
     <LibraryRow
-      dragging={draggingId === job.id}
-      dropTarget={dragOverId === job.id && draggingId !== job.id}
+      dragging={dragging?.id === job.id}
+      dropTarget={
+        dragging?.kind === "job" &&
+        dragOverId === job.id &&
+        dragging.id !== job.id
+      }
       job={job}
       key={job.id}
       kind="job"
       onDragEnd={() => {
-        setDraggingId(null);
+        setDragging(null);
         setDragOverId(null);
       }}
       onDragOver={() => setDragOverId(job.id)}
-      onDragStart={() => setDraggingId(job.id)}
+      onDragStart={() => setDragging({ id: job.id, kind: "job" })}
       onDrop={() => {
-        if (draggingId && draggingId !== job.id) {
-          reorder("job", draggingId, job.id);
-        }
-        setDraggingId(null);
+        if (dragging) reorder("job", dragging, job.id);
+        setDragging(null);
         setDragOverId(null);
       }}
       onMenuAction={(action) => menuAction("job", undefined, job, action)}
       onOpen={() => onOpenJob(job.id, false)}
       onPlay={() => onOpenJob(job.id, true)}
-      onToggleSelected={() => onToggleSelected(job.id)}
+      onToggleSelected={(event) => onToggleSelected(job.id, event)}
       organize={organize}
       selected={selection.has(job.id)}
     />
@@ -213,14 +228,20 @@ export function LibraryPane({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            className="rounded-lg bg-[var(--amber)] px-3 py-2 text-sm font-medium text-[var(--canvas)] transition hover:brightness-110 disabled:opacity-40"
-            disabled={contents.jobs.length === 0}
-            onClick={() => onPlayFolder(folderId)}
-            type="button"
-          >
-            Play folder
-          </button>
+          {/* The root library is not a playable container: only real folders
+              have an order that auto-advance can follow, so a "Play folder"
+              button here would promise a sequence that stops after one job.
+              Play a row directly instead. */}
+          {folderId !== null ? (
+            <button
+              className="rounded-lg bg-[var(--amber)] px-3 py-2 text-sm font-medium text-[var(--canvas)] transition hover:brightness-110 disabled:opacity-40"
+              disabled={contents.jobs.length === 0}
+              onClick={() => onPlayFolder(folderId)}
+              type="button"
+            >
+              Play folder
+            </button>
+          ) : null}
           <button
             className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm text-[var(--ink-primary)] transition hover:bg-[var(--hover-bg)]"
             onClick={onCreateJob}

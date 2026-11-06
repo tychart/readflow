@@ -23,6 +23,7 @@ import { useRuntimeStatus } from "../../hooks/useRuntimeStatus";
 import { useScrollProgressVar } from "../../hooks/useScrollProgress";
 import { ApiError, api } from "../../lib/api";
 import { modelLabel } from "../../lib/models";
+import { isAtJobEnd } from "../../player/auto-advance";
 import {
   playerIsSecondsBehindRetainedAudio,
   playerIsSecondsLoaded,
@@ -65,6 +66,7 @@ import {
   deriveTimelineSlots,
   mergeJobPatch,
   mergeKnownChunks,
+  resumePositionSeconds,
   type StreamEventMeta,
   type StreamEventPayload,
   skipTargetSeconds,
@@ -81,8 +83,6 @@ const READER_POLL_INTERVAL_MS = 2_000;
 const INITIAL_LOAD_MAX_RETRIES = 5;
 /** How often the reader re-checks whether rendering has stalled. */
 const RENDER_STALL_POLL_MS = 5_000;
-/** How close to the end of the rendered audio counts as "finished". */
-const END_EPSILON_SECONDS = 0.5;
 
 /* ── Store state type ─────────────────────────────────────── */
 
@@ -191,8 +191,8 @@ export function ReaderPage() {
   // the clear in its own effect avoids the null flash a cleanup+set pair would
   // produce every time the title itself changes.
   useEffect(() => {
-    setReaderTitle(job?.title ?? null);
-  }, [job?.title]);
+    setReaderTitle(job && job.id === jobId ? job.title : null);
+  }, [job, jobId]);
 
   useEffect(() => () => setReaderTitle(null), []);
 
@@ -291,21 +291,41 @@ export function ReaderPage() {
     });
   }, [streamManifest, playbackAnchorIndex, anchorOffset, knownDurationSeconds]);
 
+  // A different job starts at the top of the page. Without this the browser
+  // keeps the previous scroll offset, so opening the reader from a scrolled
+  // library — or auto-advancing from the end of the previous book — lands the
+  // listener in the middle of a document they have not read yet.
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [jobId]);
+
   // Restore the saved position once per job, after the first chunks are known.
   // The anchor and the pending seek are set together; the player applies the
-  // seek once the rebuilt stream covers it.
+  // seek once the rebuilt stream covers it. A finished job starts over instead
+  // of resuming at its own end (see `resumePositionSeconds`).
   const restoredPositionForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!job || activeChunks.length === 0) return;
     if (restoredPositionForRef.current === job.id) return;
     restoredPositionForRef.current = job.id;
-    const savedPosition = job.progress?.position_seconds ?? 0;
+    const savedPosition = resumePositionSeconds(
+      job.progress?.position_seconds ?? 0,
+      knownDurationSeconds,
+      isJobTerminal,
+    );
     if (savedPosition <= 1) return;
     const index = chunkIndexAtSeconds(activeChunks, savedPosition);
     if (index === null) return;
     setPlaybackAnchorIndex(index);
     setSeekOverride(savedPosition);
-  }, [activeChunks, job, setPlaybackAnchorIndex, setSeekOverride]);
+  }, [
+    activeChunks,
+    isJobTerminal,
+    job,
+    knownDurationSeconds,
+    setPlaybackAnchorIndex,
+    setSeekOverride,
+  ]);
 
   // Listening state is server-derived; the reader only mirrors what came back.
   const heardList = job?.progress?.heard_chunks;
@@ -551,6 +571,11 @@ export function ReaderPage() {
    * Apply a job patch from a WebSocket event or a mutation response, keeping the
    * loaded detail intact. Per-chunk events carry one chunk (`payload.chunk`);
    * `job_updated` and the voice/reprocess endpoints still carry full detail.
+   *
+   * A patch is only applied to the detail it describes. Navigating between jobs
+   * keeps the previous detail mounted until the next fetch lands, so without
+   * this guard a patch for the *incoming* job could be merged into the outgoing
+   * one (hybrid detail, wrong chunks) for a render or two.
    */
   const applyJobPatch = useCallback(
     (
@@ -558,11 +583,13 @@ export function ReaderPage() {
       chunk?: Chunk,
       meta: StreamEventMeta = {},
     ) => {
-      if (!patch) return;
-      setJob((prev) => (prev ? mergeJobPatch(prev, patch, chunk) : prev));
+      if (!patch || patch.id !== jobId) return;
+      setJob((prev) =>
+        prev && prev.id === patch.id ? mergeJobPatch(prev, patch, chunk) : prev,
+      );
       setManifest((prev) => buildManifestFromPatch(prev, patch, chunk, meta));
     },
-    [],
+    [jobId],
   );
 
   useEffect(() => {
@@ -636,6 +663,22 @@ export function ReaderPage() {
     return () => window.clearInterval(timer);
   }, [refreshReaderState, shouldUsePollingFallback]);
 
+  // Folder context (index/count, neighbours, neighbour titles) is derived from
+  // the whole library, so it can change without this job changing at all — a
+  // job created, moved, reordered or deleted elsewhere. Re-fetch the detail on
+  // those signals instead of keeping a stale "Job 1 of 1" / "last job in the
+  // folder" (and a stale auto-advance target) for as long as the reader is open.
+  useEffect(() => {
+    if (!lastEvent) return;
+    if (
+      lastEvent.type !== "job_created" &&
+      lastEvent.type !== "library_changed"
+    ) {
+      return;
+    }
+    void refreshReaderState(`ws:${lastEvent.type}`);
+  }, [lastEvent, refreshReaderState]);
+
   // Time display values in original (non-normalized) coordinates.
   // While a seek is pending the stream is rebuilding/priming, so
   // currentTimeSeconds is stale (reset to 0 at the new anchor). Showing the seek
@@ -657,6 +700,12 @@ export function ReaderPage() {
       navigate(`/jobs/${nextJobId}${shouldPlay ? "?play=1" : ""}`);
     },
     [isActuallyPlaying, navigate, playIntent],
+  );
+  // An explicit "next" (the end card's button) always starts playback; the
+  // stepper/keys keep the current play state instead.
+  const openJobAndPlay = useCallback(
+    (nextJobId: string) => navigate(`/jobs/${nextJobId}?play=1`),
+    [navigate],
   );
 
   const jobStepperSlot = job ? (
@@ -681,8 +730,7 @@ export function ReaderPage() {
   const atEnd =
     isJobTerminal &&
     !isActuallyPlaying &&
-    renderedDurationSeconds > 0 &&
-    displayTimeSeconds >= displayRenderedDurationSeconds - END_EPSILON_SECONDS;
+    isAtJobEnd(displayTimeSeconds, displayDurationSeconds);
 
   const handleReplay = useCallback(() => {
     const first = activeChunks[0];
@@ -719,19 +767,23 @@ export function ReaderPage() {
     }
   }, [applyJobPatch, isJobTerminal, job, setPlayIntent]);
 
-  // "Play folder" and a job row's play button arrive as `?play=1`. Start once
-  // the job is loaded, then drop the parameter so a remount does not re-fire.
+  // "Play folder", a job row's play button and folder auto-advance all arrive
+  // as `?play=1`. Start once the route's own job is loaded, then drop the
+  // parameter so a remount does not re-fire.
   const [searchParams, setSearchParams] = useSearchParams();
   const autoplayForJobRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!job || searchParams.get("play") !== "1") return;
+    // The previous job's detail is still mounted for a render after navigating,
+    // so acting on `job` alone consumed the flag against the job we just left.
+    if (!job || job.id !== jobId) return;
+    if (searchParams.get("play") !== "1") return;
     if (autoplayForJobRef.current === job.id) return;
     autoplayForJobRef.current = job.id;
     const next = new URLSearchParams(searchParams);
     next.delete("play");
     setSearchParams(next, { replace: true });
     void handlePlay();
-  }, [handlePlay, job, searchParams, setSearchParams]);
+  }, [handlePlay, job, jobId, searchParams, setSearchParams]);
 
   const handlePause = async () => {
     if (!job) return;
@@ -1334,8 +1386,15 @@ export function ReaderPage() {
 
         {atEnd ? (
           <ReaderEndCard
+            continuousPlay={settings.continuousPlay}
             folderName={job.folder_path?.at(-1)?.name ?? null}
+            nextJobTitle={
+              job.next_job_id ? (job.next_job_title ?? "the next job") : null
+            }
             onBackToLibrary={() => navigate("/")}
+            onPlayNext={() =>
+              job.next_job_id && openJobAndPlay(job.next_job_id)
+            }
             onReplay={handleReplay}
           />
         ) : null}

@@ -39,6 +39,13 @@ export interface PlayerOutputs {
   isActuallyPlaying: boolean;
   isWaitingForData: boolean;
   isLoadingAudio: boolean;
+  /**
+   * The media element reached the end of a terminal job. This is the single
+   * signal auto-advance keys off, so every way playback can end (browser
+   * `ended`, or the hook reconciling a frozen playhead at the end of an MSE
+   * stream) is handled by one rule instead of three handlers.
+   */
+  hasEnded: boolean;
   isStreamPrimed: boolean;
   isReady: boolean;
   isAutoplayBlocked: boolean;
@@ -63,6 +70,7 @@ const IDLE_OUTPUTS: PlayerOutputs = {
   isActuallyPlaying: false,
   isWaitingForData: false,
   isLoadingAudio: false,
+  hasEnded: false,
   isStreamPrimed: false,
   isReady: false,
   isAutoplayBlocked: false,

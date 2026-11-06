@@ -45,15 +45,21 @@ def previous_job_in_folder(jobs: Iterable[Job], job: Job) -> Job | None:
 def up_next_job_ids(jobs: Iterable[Job], *, prebuffer_seconds: int) -> set[str]:
     """Jobs that should be warmed because a listener is about to reach them.
 
-    Derived, never stored: every actively playing job contributes its folder
+    Derived, never stored: every actively listening job contributes its folder
     successor, and a successor stops needing priority once it already has
     `prebuffer_seconds` of contiguous audio. Root jobs have no successor, and a
     paused job contributes nothing.
+
+    `is_active_listening` is the signal, not `playback_state.is_playing`: a
+    finished job is listened to from local audio, so it never reports playing,
+    and requiring that flag silently disabled warming for exactly the
+    "finished book, next book still rendering" case it exists for. Pause clears
+    the flag, so a paused job still contributes nothing.
     """
     all_jobs = list(jobs)
     up_next: set[str] = set()
     for job in all_jobs:
-        if not job.is_active_listening or not job.playback_state.is_playing:
+        if not job.is_active_listening:
             continue
         successor = next_job_in_folder(all_jobs, job)
         if successor is None:

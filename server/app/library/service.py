@@ -381,11 +381,14 @@ class LibraryService:
             folder.deleted_at = now
             folder.trash_entry_id = entry.id
             folder.updated_at = now
-            # Dense order at the destination, computed after the folder stops
-            # counting as a sibling.
+            # Save the deletion *before* re-indexing, so the destination order is
+            # computed without this folder as a sibling. Relying on the in-memory
+            # object being mutated in place would break against a SQL adapter,
+            # which only sees the row once it is written.
+            uow.folders.save(folder)
+            # Dense order at the destination.
             self._reindex_folders(uow, parent_id)
             self._reindex_jobs(uow, parent_id)
-            uow.folders.save(folder)
             uow.trash.add(entry)
             return entry
 
@@ -394,28 +397,78 @@ class LibraryService:
             return uow.trash.list(self._user_id)
 
     def restore(self, entry_ids: list[str]) -> None:
+        """Put trashed entries back where they were.
+
+        Validation happens before any mutation, and every entry in the same
+        call is treated as live when resolving a destination. Restoring a
+        folder and a separately-trashed child in one request therefore keeps
+        the child inside its parent regardless of the order the entries arrive
+        in; resolving against the pre-call state used to scatter it to the root
+        library.
+        """
         if not entry_ids:
             return
         now = time()
         with self._db.transaction() as uow:
             folders = uow.folders.list(self._user_id, include_deleted=True)
             jobs = uow.jobs.list(self._user_id, include_deleted=True)
-            live_folder_ids = {folder.id for folder in folders if folder.deleted_at is None}
 
-            for entry_id in entry_ids:
+            entries: list[TrashEntry] = []
+            for entry_id in dict.fromkeys(entry_ids):
                 entry = uow.trash.get(self._user_id, entry_id)
                 if entry is None:
                     raise KeyError(f"Unknown trash entry '{entry_id}'")
-                tagged_folders = [folder for folder in folders if folder.trash_entry_id == entry.id]
-                tagged_jobs = [job for job in jobs if job.trash_entry_id == entry.id]
+                entries.append(entry)
+
+            selected_entry_ids = {entry.id for entry in entries}
+            tagged_folders = [
+                folder for folder in folders if folder.trash_entry_id in selected_entry_ids
+            ]
+            tagged_jobs = [job for job in jobs if job.trash_entry_id in selected_entry_ids]
+            tagged_folder_ids = {folder.id for folder in tagged_folders}
+            tagged_job_ids = {job.id for job in tagged_jobs}
+            for entry in entries:
+                if entry.kind == TrashKind.FOLDER and entry.root_id not in tagged_folder_ids:
+                    raise KeyError(f"Trash entry '{entry.id}' has no folder to restore")
+                if entry.kind == TrashKind.JOB and entry.root_id not in tagged_job_ids:
+                    raise KeyError(f"Trash entry '{entry.id}' has no job to restore")
+
+            # Folders that will be live by the end of this call, so a child can
+            # be restored into a parent that is itself being restored.
+            live_folder_ids = {
+                folder.id for folder in folders if folder.deleted_at is None
+            } | tagged_folder_ids
+
+            # Append to the destination, counting from the current live order
+            # and from everything restored earlier in this same call.
+            folder_positions: dict[str | None, int] = {}
+            for folder in folders:
+                if folder.deleted_at is None:
+                    folder_positions[folder.parent_id] = max(
+                        folder_positions.get(folder.parent_id, 0), folder.position + 1
+                    )
+            job_positions: dict[str | None, int] = {}
+            for job in jobs:
+                if job.deleted_at is None:
+                    job_positions[job.folder_id] = max(
+                        job_positions.get(job.folder_id, 0), job.position + 1
+                    )
+
+            affected_folders: set[str | None] = set()
+            affected_jobs: set[str | None] = set()
+            for entry in entries:
+                entry_folders = [
+                    folder for folder in tagged_folders if folder.trash_entry_id == entry.id
+                ]
+                entry_jobs = [job for job in tagged_jobs if job.trash_entry_id == entry.id]
 
                 if entry.kind == TrashKind.FOLDER:
                     root = next(
-                        (folder for folder in tagged_folders if folder.id == entry.root_id),
+                        (folder for folder in entry_folders if folder.id == entry.root_id),
                         None,
                     )
                     if root is None:
-                        raise KeyError(f"Trash entry '{entry_id}' has no folder to restore")
+                        raise KeyError(f"Trash entry '{entry.id}' has no folder to restore")
                     # Put it back where it was; if its parent is gone, the root
                     # library is the only safe destination.
                     target_parent = (
@@ -424,49 +477,42 @@ class LibraryService:
                         else None
                     )
                     root.parent_id = target_parent
-                    root.position = max(
-                        (
-                            folder.position + 1
-                            for folder in folders
-                            if folder.parent_id == target_parent and folder.deleted_at is None
-                        ),
-                        default=0,
-                    )
-                    for folder in tagged_folders:
-                        folder.deleted_at = None
-                        folder.trash_entry_id = None
-                        folder.updated_at = now
-                        uow.folders.save(folder)
-                    for job in tagged_jobs:
-                        job.deleted_at = None
-                        job.trash_entry_id = None
-                        job.updated_at = now
-                        uow.jobs.save(job)
+                    root.position = folder_positions.get(target_parent, 0)
+                    folder_positions[target_parent] = root.position + 1
+                    affected_folders.add(target_parent)
                 else:
-                    job = next((item for item in tagged_jobs if item.id == entry.root_id), None)
+                    job = next(
+                        (item for item in entry_jobs if item.id == entry.root_id),
+                        None,
+                    )
                     if job is None:
-                        raise KeyError(f"Trash entry '{entry_id}' has no job to restore")
+                        raise KeyError(f"Trash entry '{entry.id}' has no job to restore")
                     target_folder = (
                         entry.parent_id
                         if entry.parent_id is None or entry.parent_id in live_folder_ids
                         else None
                     )
                     job.folder_id = target_folder
-                    job.position = max(
-                        (
-                            item.position + 1
-                            for item in jobs
-                            if item.folder_id == target_folder and item.deleted_at is None
-                        ),
-                        default=0,
-                    )
-                    for item in tagged_jobs:
-                        item.deleted_at = None
-                        item.trash_entry_id = None
-                        item.updated_at = now
-                        uow.jobs.save(item)
+                    job.position = job_positions.get(target_folder, 0)
+                    job_positions[target_folder] = job.position + 1
+                    affected_jobs.add(target_folder)
 
+                for folder in entry_folders:
+                    folder.deleted_at = None
+                    folder.trash_entry_id = None
+                    folder.updated_at = now
+                    uow.folders.save(folder)
+                for item in entry_jobs:
+                    item.deleted_at = None
+                    item.trash_entry_id = None
+                    item.updated_at = now
+                    uow.jobs.save(item)
                 uow.trash.delete(self._user_id, entry.id)
+
+            for parent_id in affected_folders:
+                self._reindex_folders(uow, parent_id)
+            for folder_id in affected_jobs:
+                self._reindex_jobs(uow, folder_id)
 
     def purge(self, entry_ids: list[str] | None = None) -> list[str]:
         """Permanently delete trashed items. Returns job ids that were removed.

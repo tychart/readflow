@@ -16,6 +16,7 @@ import {
   deriveTimelineSlots,
   mergeJobPatch,
   mergeKnownChunks,
+  resumePositionSeconds,
   skipTargetSeconds,
 } from "./reader-model";
 
@@ -358,6 +359,31 @@ describe("skipTargetSeconds", () => {
   test("stops at the end of the rendered range instead of seeking into silence", () => {
     expect(skipTargetSeconds(55, 10, 60)).toBe(60);
     expect(skipTargetSeconds(60, 10, 60)).toBe(60);
+  });
+});
+
+describe("resumePositionSeconds", () => {
+  test("resumes an unfinished job where it was left", () => {
+    expect(resumePositionSeconds(120, 900, false)).toBe(120);
+    // An unfinished job's known duration is only the rendered part of a longer
+    // document, so a position near it must not be treated as "finished".
+    expect(resumePositionSeconds(298, 300, false)).toBe(298);
+  });
+
+  test("starts a finished job over instead of resuming at its own end", () => {
+    // Finishing (and mark-read) stores the end as the position. Resuming there
+    // ends instantly and used to cascade folder auto-advance.
+    expect(resumePositionSeconds(900, 900, true)).toBe(0);
+    expect(resumePositionSeconds(898.5, 900, true)).toBe(0);
+  });
+
+  test("keeps a mid-document position even when the job is finished", () => {
+    expect(resumePositionSeconds(400, 900, true)).toBe(400);
+  });
+
+  test("treats the first second and unknown values as the start", () => {
+    expect(resumePositionSeconds(0.5, 900, true)).toBe(0);
+    expect(resumePositionSeconds(Number.NaN, 900, false)).toBe(0);
   });
 });
 

@@ -16,6 +16,10 @@ from app.jobs.models import (
     JobStatus,
 )
 
+# Coarse statuses that mean "nothing more will render". Playback of them is
+# local-only, but the listener state (folder warming) is still tracked.
+_TERMINAL_JOB_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED})
+
 # Chunk states a partial voice change can re-point at the new voice. `WRITTEN`
 # keeps its rendered audio and `RENDERING` is reconciled when the batch returns.
 _REVOICEABLE_STATUSES = frozenset(
@@ -132,14 +136,18 @@ class JobManager:
             uow.jobs.delete(self._user_id, job_id)
 
     def activate_job(self, job_id: str) -> Job:
+        """Record that someone is listening to this job.
+
+        A finished job is still listened to: its audio is local (the status must
+        stay COMPLETED), but the active-listener flag is what makes the
+        scheduler warm the folder's next job, so it is set either way.
+        """
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
-            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
-                return job
             job.is_active_listening = True
-            job.playback_state.is_playing = True
             job.playback_state.last_event_at = time()
-            if job.status != JobStatus.COMPLETED:
+            if job.status not in _TERMINAL_JOB_STATUSES:
+                job.playback_state.is_playing = True
                 job.status = JobStatus.PLAYING
             job.updated_at = time()
             uow.jobs.save(job)
@@ -148,12 +156,11 @@ class JobManager:
     def pause_job(self, job_id: str) -> Job:
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
-            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
-                return job
             job.is_active_listening = False
             job.playback_state.is_playing = False
             job.playback_state.last_event_at = time()
-            job.status = JobStatus.PAUSED
+            if job.status not in _TERMINAL_JOB_STATUSES:
+                job.status = JobStatus.PAUSED
             job.updated_at = time()
             uow.jobs.save(job)
             return job
@@ -180,7 +187,14 @@ class JobManager:
         """
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
-            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            if job.status in _TERMINAL_JOB_STATUSES:
+                # A finished job plays from local audio: position, buffer and
+                # totals are frozen. Listener intent is not, because the folder
+                # successor is warmed from it.
+                job.is_active_listening = is_playing
+                job.playback_state.last_event_at = time()
+                job.updated_at = time()
+                uow.jobs.save(job)
                 return job
             job.playback_state.current_time_seconds = current_time_seconds
             job.playback_state.is_playing = is_playing
@@ -229,8 +243,6 @@ class JobManager:
         with self._db.transaction() as uow:
             for job in uow.jobs.list(self._user_id):
                 if not job.is_active_listening:
-                    continue
-                if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED, JobStatus.FAILED}:
                     continue
                 if now - job.playback_state.last_event_at <= timeout_seconds:
                     continue

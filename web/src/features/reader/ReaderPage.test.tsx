@@ -8,7 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, vi } from "vitest";
 import { PlayerProvider } from "../../player/PlayerProvider";
 import { resetPlayerStore, usePlayerStore } from "../../player/player-store";
@@ -199,6 +199,8 @@ beforeEach(() => {
   resetReaderSettings();
   invalidateReaderSettingsCache();
   setReaderTitle(null);
+  // jsdom does not implement scrolling; the reader scrolls to the top per job.
+  vi.stubGlobal("scrollTo", vi.fn());
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
   HTMLMediaElement.prototype.pause = vi.fn();
   HTMLMediaElement.prototype.load = vi.fn();
@@ -2573,6 +2575,26 @@ test("restores the saved listening position on open", async () => {
   expect((await screen.findAllByText("0:08")).length).toBeGreaterThan(0);
 });
 
+test("starts a finished job over instead of resuming at its end", async () => {
+  seedStore();
+  mockListeningJob({
+    fraction: 1,
+    read_status: "read",
+    heard_chunks: [0, 1, 2],
+    remaining_seconds: 0,
+    // Mark-read moves the stored position to the end of the job.
+    position_seconds: 12,
+  });
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  // Resuming at the end ends instantly, which is what turned folder
+  // auto-advance into a cascade through already-read jobs.
+  expect(usePlayerStore.getState().pendingSeekJobSeconds).toBeNull();
+  expect((await screen.findAllByText("0:00")).length).toBeGreaterThan(0);
+});
+
 test("does not restore a zero position as a seek", async () => {
   seedStore();
   mockListeningJob({
@@ -2739,4 +2761,102 @@ test("shows the folder job stepper and the up-next chip", async () => {
 
   expect(screen.getByTestId("job-stepper")).toHaveTextContent("Job 1 of 3");
   expect(screen.getByTestId("up-next-chip")).toHaveTextContent("Next book");
+});
+
+function NavigateProbe({ to }: { to: string }) {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(to)} type="button">
+      Go
+    </button>
+  );
+}
+
+test("autoplay follows the route's job, not the detail still on screen", async () => {
+  seedStore();
+  const user = userEvent.setup();
+  const calls: string[] = [];
+  const jobOne = { ...buildReaderJob(1), id: "job-1", title: "First book" };
+  const jobTwo = { ...buildReaderJob(1), id: "job-2", title: "Second book" };
+
+  globalThis.fetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(`${method} ${url}`);
+      if (url.endsWith("/api/jobs/job-1")) {
+        return { ok: true, json: async () => jobOne };
+      }
+      if (url.endsWith("/api/jobs/job-1/manifest")) {
+        return { ok: true, json: async () => buildManifest(1) };
+      }
+      if (url.endsWith("/api/jobs/job-2")) {
+        return { ok: true, json: async () => jobTwo };
+      }
+      if (url.endsWith("/api/jobs/job-2/manifest")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ...buildManifest(1),
+            init_segment_url: "/api/jobs/job-2/chunks/init",
+          }),
+        };
+      }
+      if (url.endsWith("/api/jobs/job-2/activate")) {
+        return {
+          ok: true,
+          json: async () => ({ ...jobTwo, status: "playing" }),
+        };
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+    },
+  ) as unknown as typeof fetch;
+
+  renderReader(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route
+          element={
+            <>
+              <ReaderPage />
+              <NavigateProbe to="/jobs/job-2?play=1" />
+            </>
+          }
+          path="/jobs/:jobId"
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("First book");
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  await screen.findByText("Second book");
+
+  // The previous job's detail is still mounted for a render after navigating.
+  // Autoplay used to be consumed against it, so the incoming job opened paused.
+  await waitFor(() => expect(usePlayerStore.getState().playIntent).toBe(true));
+  expect(calls).not.toContain("POST /api/jobs/job-1/activate");
+  expect(calls).toContain("POST /api/jobs/job-2/activate");
+});
+
+test("starts a job at the top of the page", async () => {
+  seedStore();
+  mockListeningJob({
+    fraction: 0,
+    read_status: "unread",
+    heard_chunks: [],
+    remaining_seconds: 12,
+    position_seconds: 0,
+  });
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  // A scroll offset carried over from the library or from the end of the
+  // previous book must not land the listener mid-document.
+  expect(window.scrollTo).toHaveBeenCalledWith({
+    top: 0,
+    left: 0,
+    behavior: "auto",
+  });
 });

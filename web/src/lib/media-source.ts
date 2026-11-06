@@ -419,13 +419,6 @@ export function useMediaSourcePlayer({
     renderedDurationRef.current = renderedDurationSeconds;
   }, [renderedDurationSeconds]);
 
-  useEffect(() => {
-    if (!isTerminal) {
-      return;
-    }
-    setIsWaitingForData(false);
-  }, [isTerminal]);
-
   const updatePlaybackState = useCallback((force = false) => {
     const audio = audioRef.current;
     const nextSnapshot = {
@@ -452,6 +445,10 @@ export function useMediaSourcePlayer({
       previousSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
     const terminalEnded =
       pendingSeekSecondsRef.current === null &&
+      // A paused element sitting at the end is not "playback finished": it is
+      // what a seek to the end of a completed job looks like. Advancing on that
+      // would throw the listener into the next job without playing anything.
+      playIntentRef.current &&
       isTerminalRef.current &&
       renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
       nextSnapshot.bufferedUntilSeconds >=
@@ -539,6 +536,19 @@ export function useMediaSourcePlayer({
       setIsWaitingForData(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!isTerminal) {
+      return;
+    }
+    setIsWaitingForData(false);
+    // The job can become terminal *after* playback already stopped at the end
+    // of the rendered audio (the last chunk arrived while the listener was
+    // waiting). That transition is the only thing that changes here, so run the
+    // ended reconciliation explicitly instead of relying on a rAF tick that may
+    // already have stopped.
+    updatePlaybackState(true);
+  }, [isTerminal, updatePlaybackState]);
 
   const attemptPlay = useCallback(
     async (reason: "auto" | "user") => {
@@ -1343,6 +1353,7 @@ export function useMediaSourcePlayer({
     bufferedUntilSeconds,
     currentTimeSeconds,
     diagnostics,
+    hasEnded,
     isActuallyPlaying,
     isAutoplayBlocked,
     isLoadingAudio,
