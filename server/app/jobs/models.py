@@ -15,6 +15,16 @@ class JobStatus(StrEnum):
 
 
 class ChunkStatus(StrEnum):
+    """Lifecycle of one chunk record.
+
+    The scheduler produces `PLANNED`, `RENDERING`, `WRITTEN` and `FAILED`.
+    `QUEUED`, `STALE`, `REPROCESSING` and `MAX_RETRIES_EXCEEDED` are part of the
+    wire vocabulary the reader and the queue inspector render, so they stay in
+    the enum even though nothing assigns them today. Everything that needs "is
+    this chunk still work" uses the sets below rather than listing statuses
+    again.
+    """
+
     PLANNED = "planned"
     QUEUED = "queued"
     RENDERING = "rendering"
@@ -23,6 +33,17 @@ class ChunkStatus(StrEnum):
     FAILED = "failed"
     REPROCESSING = "reprocessing"
     MAX_RETRIES_EXCEEDED = "max_retries_exceeded"
+
+
+# A chunk the scheduler can still act on: waiting to be picked, picked, or in
+# flight. This used to be spelled out in five places (`Job.pending_chunks`,
+# `queue_depth`, `renderable_chunks`, the scheduler's own `_PENDING_STATUSES`
+# and the queue snapshot), which is exactly how they drifted apart.
+PENDING_CHUNK_STATUSES = frozenset({ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING})
+
+# Everything that keeps a job from being `completed`: pending work plus a chunk
+# that is being reprocessed.
+UNFINISHED_CHUNK_STATUSES = PENDING_CHUNK_STATUSES | {ChunkStatus.REPROCESSING}
 
 
 class ModelState(StrEnum):
@@ -34,8 +55,8 @@ class ModelState(StrEnum):
     NOT_ENOUGH_VRAM = "not_enough_vram"
     # A load or synthesis failed in a way the provider cannot recover from by
     # itself (timeout, executor hang, non-VRAM load error). Scheduling pauses
-    # until an operator hits "Reset provider", so a poisoned worker thread does
-    # not silently absorb every subsequent batch.
+    # until the provider is reset — automatically after `dispatch_stall_seconds`,
+    # or immediately from Admin.
     ERROR = "error"
 
 
@@ -74,6 +95,9 @@ class ChunkRecord:
     wav_path: str | None = None
     error: str | None = None
     parent_chunk_index: int | None = None
+    # True for superseded takes: they stay in `Job.chunks` as history (the
+    # queue inspector shows the version list) but are excluded from the
+    # timeline, the buffer, the export and the counts.
     deprecated: bool = False
     reprocessing: bool = False
     # Number of failed attempts so far. The scheduler retries a failed chunk up
@@ -112,97 +136,90 @@ class Job:
     submitted_at: float = field(default_factory=time)
     updated_at: float = field(default_factory=time)
     planner_cursor: PlannerCursor = field(default_factory=PlannerCursor)
+    # Every record ever produced, including superseded takes. `active_chunks()`
+    # is the one place that knows which of them are live.
     chunks: list[ChunkRecord] = field(default_factory=list)
+    # Index for the next planned chunk. Indexes are therefore dense and
+    # monotonically assigned, which is what makes `total_chunks_emitted`
+    # exact even after reprocessing appended extra records.
+    next_chunk_index: int = 0
+    # index -> live version. Authoritative: `deprecated` mirrors it, and the
+    # reader uses this map (it is part of the job payload) to pick its takes.
+    active_chunk_version: dict[int, int] = field(default_factory=dict)
     buffered_seconds: float = 0.0
     completed_seconds: float = 0.0
-    total_chunks_emitted: int = 0
+    # Derived from `chunks` by `JobManager` (see `_refresh_derived`): number of
+    # live chunks that are written, and the duration of the playable run from
+    # index 0. Both exclude superseded takes.
     total_chunks_completed: int = 0
-    active_chunk_version: dict[int, int] = field(default_factory=dict)
-    total_versioned_chunks: int = 0
-    total_versioned_completed: int = 0
+    contiguous_written_seconds: float = 0.0
     playback_state: PlaybackState = field(default_factory=PlaybackState)
     failed_reason: str | None = None
 
-    def written_chunks(self) -> list[ChunkRecord]:
-        return [chunk for chunk in self.chunks if chunk.status == ChunkStatus.WRITTEN]
+    @property
+    def total_chunks_emitted(self) -> int:
+        """Number of distinct chunks in the job (superseded takes excluded)."""
+        return self.next_chunk_index
 
-    def pending_chunks(self) -> list[ChunkRecord]:
-        return [
-            chunk
-            for chunk in self.chunks
-            if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}
-        ]
+    def active_chunks(self) -> list[ChunkRecord]:
+        """The live take of every chunk index, in timeline order."""
+        return sorted(
+            (chunk for chunk in self.chunks if not chunk.deprecated),
+            key=lambda chunk: chunk.index,
+        )
+
+    def active_chunk(self, index: int) -> ChunkRecord | None:
+        """The live take for one chunk index, or None when it does not exist."""
+        version = self.active_chunk_version.get(index)
+        if version is None:
+            return None
+        return next(
+            (chunk for chunk in self.chunks if chunk.index == index and chunk.version == version),
+            None,
+        )
 
     def has_unfinished_chunks(self) -> bool:
-        """True while any non-deprecated chunk still needs rendering.
+        """True while any live chunk still needs rendering.
 
-        Completion must be decided from this, not from
-        `versioned_pending_chunks()`: that only knows about reprocessed
-        versions, so for a normal job it is always empty and a job would be
-        marked `completed` as soon as the planner reached the end of the text —
-        even with a whole batch still queued.
+        Completion must be decided from this, not from a pending-version list:
+        that only knows about reprocessed versions, so for a normal job it is
+        always empty and a job would be marked `completed` as soon as the
+        planner reached the end of the text — even with a whole batch queued.
+        Superseded takes never count: the listener will not hear them.
         """
-        unfinished = {
-            ChunkStatus.PLANNED,
-            ChunkStatus.QUEUED,
-            ChunkStatus.RENDERING,
-            ChunkStatus.REPROCESSING,
-        }
-        return any(not chunk.deprecated and chunk.status in unfinished for chunk in self.chunks)
-
-    def next_unwritten_chunk(self) -> ChunkRecord | None:
-        for chunk in sorted(self.chunks, key=lambda item: item.index):
-            if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}:
-                return chunk
-        return None
-
-    def get_active_chunk(self, index: int) -> ChunkRecord | None:
-        """Return the currently active version of a chunk, or None if not found."""
-        version = self.active_chunk_version.get(index)
-        for chunk in self.chunks:
-            if chunk.index == index and chunk.version == version:
-                return chunk
-        return None
+        return any(
+            not chunk.deprecated and chunk.status in UNFINISHED_CHUNK_STATUSES
+            for chunk in self.chunks
+        )
 
     def get_latest_chunk_version(self, index: int) -> int:
-        """Return the highest version number for a chunk index."""
-        return max((c.version for c in self.chunks if c.index == index), default=-1)
+        """Highest version number recorded for `index`, or -1 when absent."""
+        return max((chunk.version for chunk in self.chunks if chunk.index == index), default=-1)
 
-    def versioned_pending_chunks(self) -> list[ChunkRecord]:
-        """Return active-version chunks that still need rendering."""
-        result = []
-        for index, version in self.active_chunk_version.items():
-            for chunk in self.chunks:
-                if chunk.index == index and chunk.version == version:
-                    if chunk.status in {
-                        ChunkStatus.PLANNED,
-                        ChunkStatus.QUEUED,
-                        ChunkStatus.RENDERING,
-                        ChunkStatus.REPROCESSING,
-                    }:
-                        result.append(chunk)
-                    break
-        return result
+    def activate_chunk_version(self, index: int, version: int) -> ChunkRecord:
+        """Make `version` the live take for `index` and deprecate the others.
 
-    def versioned_written_chunks(self) -> list[ChunkRecord]:
-        """Return active-version chunks that are already rendered."""
-        result = []
-        for index, version in self.active_chunk_version.items():
-            for chunk in self.chunks:
-                if chunk.index == index and chunk.version == version:
-                    if chunk.status == ChunkStatus.WRITTEN:
-                        result.append(chunk)
-                    break
-        return result
+        This is the only place that writes `deprecated`/`active_chunk_version`,
+        so the two can never disagree (they used to: activating an older take
+        un-deprecated it without deprecating the newer one, leaving two live
+        records for one index — which duplicated timeline seconds, kept the
+        rejected take in the download, and let the reader pick the wrong one).
 
-    def mark_all_chunk_versions_deprecated(self, index: int) -> None:
-        """Mark all versions of a chunk as deprecated."""
+        Validation happens before any mutation, so an unknown version leaves
+        the job exactly as it was.
+        """
+        target = next(
+            (chunk for chunk in self.chunks if chunk.index == index and chunk.version == version),
+            None,
+        )
+        if target is None:
+            raise KeyError(f"Chunk {index} has no version {version}")
+        now = time()
         for chunk in self.chunks:
-            if chunk.index == index:
-                chunk.deprecated = True
-                chunk.updated_at = time()
-
-    def set_active_chunk_version(self, index: int, version: int) -> None:
-        """Mark a specific version as the active one for a chunk index."""
+            if chunk.index != index:
+                continue
+            chunk.deprecated = chunk.version != version
+            chunk.updated_at = now
         self.active_chunk_version[index] = version
-        self.updated_at = time()
+        self.updated_at = now
+        return target

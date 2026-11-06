@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from app.chunking.estimate import estimated_speech_seconds
 from app.jobs.models import ChunkRecord
 from app.telemetry.memory import MIB, MemoryStats, system_memory_stats
 from app.voices.registry import VoicePrompt
@@ -452,7 +453,9 @@ class QwenProvider:
         the longest chunk's expected duration plus headroom instead.
         """
         longest_chars = max(len(chunk.text) for chunk in chunks)
-        expected_seconds = max(0.5, longest_chars / self._estimated_chars_per_second)
+        expected_seconds = estimated_speech_seconds(
+            longest_chars, chars_per_second=self._estimated_chars_per_second
+        )
         budget = int(expected_seconds * CODEC_TOKENS_PER_SECOND * self._synthesis_token_headroom)
         return max(MIN_SYNTHESIS_TOKENS, budget)
 

@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.core.config import RuntimeConfig
 from app.core.services import AppServices
-from app.jobs.models import ChunkStatus, Job, JobStatus
+from app.jobs.models import JobStatus
 from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
@@ -188,16 +188,6 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             voice_residency_batches=runtime.voice_residency_batches,
         )
 
-    def contiguous_export_wav_paths(job: Job) -> list[str]:
-        wav_paths: list[str] = []
-        for expected_index, chunk in enumerate(sorted(job.chunks, key=lambda item: item.index)):
-            if chunk.index != expected_index:
-                break
-            if chunk.status != ChunkStatus.WRITTEN or not chunk.wav_path:
-                break
-            wav_paths.append(chunk.wav_path)
-        return wav_paths
-
     def sanitize_download_name(value: str | None) -> str:
         raw = (value or "readflow-job").strip().lower()
         sanitized = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
@@ -299,37 +289,29 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         except KeyError:
             raise HTTPException(status_code=404, detail="Job not found") from None
 
-        # Check if chunk exists
-        chunk = None
-        for c in job.chunks:
-            if c.index == chunk_index:
-                chunk = c
-                break
+        # Reprocess the *live* take, not the first record for this index: after
+        # an earlier reprocess the original text/char range is stale, and using
+        # it silently reverted the user's edit.
+        chunk = job.active_chunk(chunk_index)
         if chunk is None:
             raise HTTPException(status_code=404, detail="Chunk not found") from None
 
-        # Revive completed/failed jobs
-        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
-            app_services.job_manager.reactivate_job(job_id)
-
         # Check retry limit (max 3 total attempts including original = versions 0,1,2,3)
-        latest_version = job.get_latest_chunk_version(chunk_index)
-        if latest_version >= 3:
+        if job.get_latest_chunk_version(chunk_index) >= 3:
             raise HTTPException(status_code=409, detail="Maximum retry attempts exceeded")
 
-        # Determine text and voice for the new version
         text = request.new_text if request.new_text is not None else chunk.text
         voice = request.new_voice_id if request.new_voice_id is not None else job.voice_id
 
+        # `add_versioned_chunk` also revives a completed/failed job: a reprocess
+        # is real work the reader has to be told about.
         job = app_services.job_manager.add_versioned_chunk(
             job_id,
             text=text,
             char_start=chunk.char_start,
             char_end=chunk.char_end,
-            plan_version=job.plan_version,
             voice_id=voice,
             parent_index=chunk_index,
-            retries=latest_version,
         )
 
         detail = job_to_detail(job)
@@ -354,9 +336,16 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         except KeyError:
             raise HTTPException(status_code=404, detail="Job not found") from None
 
-        job = app_services.job_manager.set_active_chunk_version(
-            job_id, chunk_index, request.version
-        )
+        try:
+            job = app_services.job_manager.set_active_chunk_version(
+                job_id, chunk_index, request.version
+            )
+        except KeyError:
+            # The manager refuses a version it does not have; that used to be
+            # stored as-is and left the reader on the wrong take.
+            raise HTTPException(
+                status_code=404, detail=f"No version {request.version} for chunk {chunk_index}"
+            ) from None
 
         detail = job_to_detail(job)
         await app_services.hub.broadcast(
@@ -375,18 +364,31 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
     @router.get("/jobs/{job_id}/chunks/{chunk_index}")
     async def get_chunk(
-        job_id: str, chunk_index: int, app_services: AppServices = Depends(services)
+        job_id: str,
+        chunk_index: int,
+        v: int = Query(default=0, ge=0),
+        app_services: AppServices = Depends(services),
     ) -> FileResponse:
-        path = app_services.media_store.segment_path(job_id, chunk_index)
+        """Serve one chunk take.
+
+        `v` is the take's version, which `chunk_to_response` embeds in the
+        segment URL. It must be honoured: each version has its own file, and
+        switching the active take has to serve that take's audio (ignoring the
+        parameter served whichever file happened to share the index).
+        """
+        path = app_services.media_store.segment_path(job_id, chunk_index, v)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Chunk not ready")
         return FileResponse(path, media_type=app_services.settings.chunk_mime_type)
 
     @router.get("/jobs/{job_id}/chunks/{chunk_index}/peaks")
     async def get_chunk_peaks(
-        job_id: str, chunk_index: int, app_services: AppServices = Depends(services)
+        job_id: str,
+        chunk_index: int,
+        v: int = Query(default=0, ge=0),
+        app_services: AppServices = Depends(services),
     ) -> FileResponse:
-        path = app_services.media_store.peaks_path(job_id, chunk_index)
+        path = app_services.media_store.peaks_path(job_id, chunk_index, v)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Chunk peaks not ready")
         return FileResponse(path, media_type="application/json")
@@ -400,7 +402,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        wav_paths = contiguous_export_wav_paths(job)
+        wav_paths = app_services.job_manager.exportable_wav_paths(job)
         if not wav_paths:
             raise HTTPException(status_code=409, detail="No contiguous rendered audio is ready")
 
@@ -409,7 +411,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         export_path = await asyncio.to_thread(
             app_services.media_store.build_export_file, job_id, wav_paths
         )
-        is_full_export = job.status == JobStatus.COMPLETED and len(wav_paths) == len(job.chunks)
+        is_full_export = (
+            job.status == JobStatus.COMPLETED and len(wav_paths) == job.total_chunks_emitted
+        )
         filename = sanitize_download_name(job.title)
         if not is_full_export:
             filename = f"{filename}-partial"

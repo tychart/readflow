@@ -1,6 +1,7 @@
 import asyncio
 from time import monotonic, time
 
+from app.chunking.planner import ChunkPlan
 from app.jobs.models import JobStatus, ModelState
 from app.synthesis.worker import RenderedChunkResult
 from app.telemetry.memory import MemoryStats
@@ -93,9 +94,7 @@ def test_scheduler_batches_one_voice_at_a_time(services):
         captured_batches.append([chunk.voice_id for chunk in chunks])
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
-                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
                 wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
@@ -150,18 +149,11 @@ def _mark_model_resident(services, model_id: str, *, batches: int, voice_id: str
     services.scheduler._batches_on_voice = batches
 
 
-def _add_chunk(services, job, text: str, *, index_plan_version: int | None = None):
-    if index_plan_version is None:
-        plan_version = services.job_manager.get_job(job.id).plan_version
-    else:
-        plan_version = index_plan_version
+def _add_chunk(services, job, text: str):
+    """Append one hand-made chunk (its span is irrelevant to these tests)."""
     return services.job_manager.add_planned_chunk(
         job.id,
-        text=text,
-        char_start=0,
-        char_end=len(text),
-        plan_version=plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text=text, char_start=0, char_end=len(text)),
     )
 
 
@@ -309,7 +301,8 @@ def test_pending_chunks_for_inspection_filters_unschedulable(services):
     stale = _add_chunk(services, job, "stale")
     failed = _add_chunk(services, job, "failed")
     deprecated = _add_chunk(services, job, "deprecated")
-    old_plan = _add_chunk(services, job, "old plan", index_plan_version=0)
+    old_plan = _add_chunk(services, job, "old plan")
+    old_plan.plan_version = 0  # left behind by an earlier voice change
 
     queued.status = ChunkStatus.QUEUED
     rendering.status = ChunkStatus.RENDERING
@@ -411,7 +404,6 @@ def test_queue_snapshot_lists_version_history(services):
         text="revised text",
         char_start=0,
         char_end=12,
-        plan_version=job.plan_version,
         voice_id="suzy",
         parent_index=0,
     )
@@ -463,9 +455,7 @@ def test_scheduler_broadcasts_active_batch_at_batch_start(services):
     async def noop_render(model_id, chunks):
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
-                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
                 wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
@@ -507,9 +497,7 @@ def test_scheduler_requeues_chunks_dropped_by_partial_batch(services):
         del model_id
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
-                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
                 wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
@@ -780,13 +768,16 @@ def test_playback_report_reactivates_an_expired_listener(services):
 
 def test_buffer_seconds_use_job_timeline_coordinates(services):
     """A stream-normalized position made the buffer look permanently full."""
-    from app.jobs.models import ChunkStatus
 
     job = _create_job(services, title="coordinates")
     for index in range(3):
         chunk = _add_chunk(services, job, f"chunk {index}")
-        chunk.status = ChunkStatus.WRITTEN
-        chunk.duration_seconds = 10.0
+        services.job_manager.mark_chunk_written(
+            chunk,
+            duration_seconds=10.0,
+            segment_path=f"/tmp/{index}.m4s",
+            wav_path=f"/tmp/{index}.wav",
+        )
 
     services.job_manager.update_playback(job.id, current_time_seconds=25.0, is_playing=True)
 
@@ -906,9 +897,7 @@ def test_plan_ahead_lets_one_inactive_job_fill_a_batch(services):
         rendered["count"] = len(chunks)
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
-                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
                 wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
@@ -999,9 +988,7 @@ def test_scheduler_learns_per_chunk_vram_cost(services):
     async def render(model_id, batch):
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path="s",
-                init_segment_path="i",
                 wav_path="w",
                 duration_seconds=1.0,
                 reserved_vram_mb=3500,
@@ -1125,8 +1112,7 @@ def test_oom_halves_the_batch_until_it_fits(services):
 
     asyncio.run(services.scheduler.run_once())
 
-    written = services.job_manager.get_job(job.id).written_chunks()
-    assert 0 < len(written) < 8
+    assert 0 < services.job_manager.get_job(job.id).total_chunks_completed < 8
     assert services.telemetry.snapshot()["oom_count"] >= 1
     assert services.job_manager.queue_depth() >= 1
 

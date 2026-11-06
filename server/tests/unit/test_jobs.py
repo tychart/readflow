@@ -1,3 +1,6 @@
+import pytest
+
+from app.chunking.planner import ChunkPlan
 from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 
@@ -18,27 +21,15 @@ def test_voice_switch_rebuilds_pending_chunks_in_place():
     )
     written = manager.add_planned_chunk(
         job.id,
-        text="One.",
-        char_start=0,
-        char_end=4,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="One.", char_start=0, char_end=4),
     )
     pending = manager.add_planned_chunk(
         job.id,
-        text="Two.",
-        char_start=5,
-        char_end=9,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="Two.", char_start=5, char_end=9),
     )
     failed = manager.add_planned_chunk(
         job.id,
-        text="Three.",
-        char_start=10,
-        char_end=16,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="Three.", char_start=10, char_end=16),
     )
 
     manager.mark_chunk_written(
@@ -108,11 +99,7 @@ def test_voice_switch_lets_the_in_flight_batch_finish_in_the_old_voice():
     )
     inflight = manager.add_planned_chunk(
         job.id,
-        text="One.",
-        char_start=0,
-        char_end=4,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="One.", char_start=0, char_end=4),
     )
     manager.mark_chunk_rendering(inflight)
 
@@ -141,11 +128,7 @@ def test_full_rerender_invalidates_written_audio_and_bumps_audio_epoch():
     )
     chunk = manager.add_planned_chunk(
         job.id,
-        text="One finished chunk.",
-        char_start=0,
-        char_end=18,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="One finished chunk.", char_start=0, char_end=18),
     )
     manager.mark_chunk_written(
         chunk, duration_seconds=3.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
@@ -179,11 +162,7 @@ def test_full_rerender_requeues_an_in_flight_chunk_with_the_new_voice():
     )
     inflight = manager.add_planned_chunk(
         job.id,
-        text="One.",
-        char_start=0,
-        char_end=4,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="One.", char_start=0, char_end=4),
     )
     manager.mark_chunk_rendering(inflight)
 
@@ -207,18 +186,13 @@ def test_planned_chunk_index_ignores_versioned_records():
         text="Chunk 0.",
         char_start=0,
         char_end=1,
-        plan_version=job.plan_version,
         voice_id="suzy",
         parent_index=chunks[0].index,
     )
 
     planned = manager.add_planned_chunk(
         job.id,
-        text="Next.",
-        char_start=1,
-        char_end=2,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="Next.", char_start=1, char_end=2),
     )
 
     assert planned.index == 1
@@ -234,11 +208,7 @@ def test_completed_jobs_ignore_playback_lifecycle_mutations():
     )
     chunk = manager.add_planned_chunk(
         job.id,
-        text="One finished chunk.",
-        char_start=0,
-        char_end=18,
-        plan_version=job.plan_version,
-        voice_id="suzy",
+        ChunkPlan(text="One finished chunk.", char_start=0, char_end=18),
     )
     chunk.status = ChunkStatus.WRITTEN
     chunk.duration_seconds = 3.0
@@ -288,11 +258,7 @@ def _job_with_chunks(count: int) -> tuple[JobManager, Job, list[ChunkRecord]]:
     chunks = [
         manager.add_planned_chunk(
             job.id,
-            text=f"Chunk {index}.",
-            char_start=index,
-            char_end=index + 1,
-            plan_version=job.plan_version,
-            voice_id="suzy",
+            ChunkPlan(text=f"Chunk {index}.", char_start=index, char_end=index + 1),
         )
         for index in range(count)
     ]
@@ -375,14 +341,12 @@ def test_a_requeued_batch_does_not_leave_the_job_stuck_in_rendering():
     long job could look busy all day while nothing was rendering.
     """
     manager, job, chunks = _job_with_chunks(2)
-    manager.mark_chunk_queued(chunks[0])
     manager.mark_chunk_rendering(chunks[0])
     assert manager.get_job(job.id).status == JobStatus.RENDERING
 
     manager.mark_chunk_retry(chunks[0], "ffmpeg exploded")
     assert manager.get_job(job.id).status == JobStatus.QUEUED
 
-    manager.mark_chunk_queued(chunks[0])
     manager.mark_chunk_rendering(chunks[0])
     manager.mark_chunk_planned(chunks[0])
     assert manager.get_job(job.id).status == JobStatus.QUEUED
@@ -391,7 +355,6 @@ def test_a_requeued_batch_does_not_leave_the_job_stuck_in_rendering():
 def test_a_job_whose_last_chunk_fails_stops_reporting_rendering():
     manager, job, chunks = _job_with_chunks(1)
     job.planner_cursor.offset = -1
-    manager.mark_chunk_queued(chunks[0])
     manager.mark_chunk_rendering(chunks[0])
 
     manager.mark_chunk_failed(chunks[0], "permanent")
@@ -417,3 +380,223 @@ def test_settling_keeps_an_active_listener_playing():
     manager.mark_chunk_retry(chunks[0], "transient")
 
     assert manager.get_job(job.id).status == JobStatus.PLAYING
+
+
+# ── Live takes vs. superseded takes ────────────────────────────────────
+#
+# A reprocess appends a second record for the same index and keeps the old one
+# as history. Every derived quantity (counts, timeline, playable run, download)
+# must follow the live take; counting history records used to double-count a
+# re-rendered chunk, truncate the download at that index, and report more
+# completed chunks than the job has.
+
+
+def _job_with_three_written_chunks() -> tuple[JobManager, Job, list[ChunkRecord]]:
+    manager = JobManager()
+    job = manager.create_job(
+        source_text="One. Two. Three. Four.",
+        source_kind="text",
+        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        voice_id="suzy",
+    )
+    chunks = [
+        manager.add_planned_chunk(
+            job.id, ChunkPlan(text=f"Chunk {index}.", char_start=index, char_end=index + 1)
+        )
+        for index in range(3)
+    ]
+    for index, chunk in enumerate(chunks):
+        manager.mark_chunk_written(
+            chunk,
+            duration_seconds=10.0,
+            segment_path=f"/tmp/{index}.m4s",
+            wav_path=f"/tmp/{index}.wav",
+        )
+    return manager, job, chunks
+
+
+def test_reprocessing_a_chunk_keeps_derived_state_on_the_live_take():
+    manager, job, chunks = _job_with_three_written_chunks()
+    assert job.total_chunks_completed == 3
+    assert job.contiguous_written_seconds == 30.0
+    assert job.total_chunks_emitted == 3
+
+    manager.add_versioned_chunk(
+        job.id,
+        text="Chunk 1 again.",
+        char_start=1,
+        char_end=2,
+        voice_id="suzy",
+        parent_index=1,
+    )
+
+    # The reprocessed index is pending again, so the playable run stops at it.
+    assert job.total_chunks_emitted == 3
+    assert len(job.chunks) == 4  # the old take is kept as history
+    assert job.total_chunks_completed == 2
+    assert job.contiguous_written_seconds == 10.0
+    # Later written chunks are still placed on the timeline (zero-width gap).
+    assert chunks[2].start_seconds == 10.0
+
+    live = job.active_chunk(1)
+    assert live is not None and live.version == 1
+    manager.mark_chunk_written(
+        live, duration_seconds=12.0, segment_path="/tmp/1v1.m4s", wav_path="/tmp/1v1.wav"
+    )
+
+    assert job.total_chunks_completed == 3
+    assert job.contiguous_written_seconds == 32.0
+    assert chunks[2].start_seconds == 22.0
+
+
+def test_export_follows_the_live_take_and_is_not_truncated():
+    """A reprocess used to export the rejected audio and stop there."""
+    manager, job, _chunks = _job_with_three_written_chunks()
+
+    manager.add_versioned_chunk(
+        job.id,
+        text="Chunk 1 again.",
+        char_start=1,
+        char_end=2,
+        voice_id="suzy",
+        parent_index=1,
+    )
+    live = job.active_chunk(1)
+    assert live is not None
+    manager.mark_chunk_written(
+        live, duration_seconds=12.0, segment_path="/tmp/1v1.m4s", wav_path="/tmp/1v1.wav"
+    )
+
+    assert manager.exportable_wav_paths(job) == ["/tmp/0.wav", "/tmp/1v1.wav", "/tmp/2.wav"]
+
+
+def test_switching_the_active_take_moves_the_export_and_the_timeline():
+    manager, job, chunks = _job_with_three_written_chunks()
+    manager.add_versioned_chunk(
+        job.id,
+        text="Chunk 1 again.",
+        char_start=1,
+        char_end=2,
+        voice_id="suzy",
+        parent_index=1,
+    )
+    live = job.active_chunk(1)
+    assert live is not None
+    manager.mark_chunk_written(
+        live, duration_seconds=12.0, segment_path="/tmp/1v1.m4s", wav_path="/tmp/1v1.wav"
+    )
+
+    manager.set_active_chunk_version(job.id, 1, 0)
+
+    # Exactly one live record per index, and the older, shorter take wins:
+    # `chunks[1]` is version 0 and `live` is the re-rendered version 1.
+    assert chunks[1].deprecated is False
+    assert live.deprecated is True
+    assert job.active_chunk_version == {0: 0, 1: 0, 2: 0}
+    assert manager.exportable_wav_paths(job) == ["/tmp/0.wav", "/tmp/1.wav", "/tmp/2.wav"]
+    assert job.contiguous_written_seconds == 30.0
+    assert chunks[2].start_seconds == 20.0
+
+
+def test_unknown_chunk_version_is_rejected():
+    manager, job, _chunks = _job_with_three_written_chunks()
+
+    with pytest.raises(KeyError):
+        manager.set_active_chunk_version(job.id, 1, 99)
+
+    # The rejected call must not have changed which take is live.
+    assert job.active_chunk_version[1] == 0
+    assert [chunk.deprecated for chunk in job.chunks] == [False, False, False]
+
+
+def test_queue_depth_ignores_superseded_takes():
+    manager, job, _chunks = _job_with_three_written_chunks()
+    _pending = manager.add_planned_chunk(
+        job.id, ChunkPlan(text="Pending.", char_start=3, char_end=4)
+    )
+    assert manager.queue_depth() == 1
+
+    _marker = manager.add_versioned_chunk(
+        job.id,
+        text="Pending again.",
+        char_start=3,
+        char_end=4,
+        voice_id="suzy",
+        parent_index=3,
+    )
+    # One live pending chunk, not two records.
+    assert manager.queue_depth() == 1
+
+
+def test_buffered_seconds_use_the_playable_run_not_audio_after_a_gap():
+    """Audio beyond an unwritten chunk is rendered, but not listenable."""
+    manager = JobManager()
+    job = manager.create_job(
+        source_text="One. Two. Three.",
+        source_kind="text",
+        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        voice_id="suzy",
+    )
+    chunks = [
+        manager.add_planned_chunk(
+            job.id, ChunkPlan(text=f"Chunk {index}.", char_start=index, char_end=index + 1)
+        )
+        for index in range(3)
+    ]
+    for chunk in (chunks[0], chunks[2]):
+        manager.mark_chunk_written(
+            chunk,
+            duration_seconds=10.0,
+            segment_path=f"/tmp/{chunk.index}.m4s",
+            wav_path=f"/tmp/{chunk.index}.wav",
+        )
+
+    # 20s of audio exists, but only the first 10s play without a hole.
+    assert job.contiguous_written_seconds == 10.0
+    assert job.buffered_seconds == 10.0
+
+    manager.update_playback(job.id, current_time_seconds=4.0, is_playing=True)
+    assert job.buffered_seconds == 6.0
+
+
+def test_switching_the_active_take_invalidates_the_buffered_stream():
+    """The reader keys its media stream on `audio_epoch`.
+
+    Without a bump, a session that already buffered the old take keeps playing
+    it and the switch looks like a no-op.
+    """
+    manager, job, _chunks = _job_with_three_written_chunks()
+    manager.add_versioned_chunk(
+        job.id,
+        text="Chunk 1 again.",
+        char_start=1,
+        char_end=2,
+        voice_id="suzy",
+        parent_index=1,
+    )
+    epoch_before = job.audio_epoch
+    playhead_before = job.playback_state.current_time_seconds
+
+    manager.set_active_chunk_version(job.id, 1, 0)
+
+    assert job.audio_epoch == epoch_before + 1
+    # A take swap is not a re-render: the listener keeps their position.
+    assert job.playback_state.current_time_seconds == playhead_before
+
+
+def test_reprocessing_a_missing_chunk_is_rejected_without_leaving_a_record():
+    manager, job, _chunks = _job_with_three_written_chunks()
+    before = len(job.chunks)
+
+    with pytest.raises(KeyError):
+        manager.add_versioned_chunk(
+            job.id,
+            text="Ghost take.",
+            char_start=0,
+            char_end=1,
+            voice_id="suzy",
+            parent_index=99,
+        )
+
+    assert len(job.chunks) == before
+    assert 99 not in job.active_chunk_version

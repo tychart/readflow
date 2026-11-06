@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class RenderedChunkResult:
-    chunk_index: int
+    """A packaged chunk handed back to the scheduler."""
+
     segment_path: str
-    init_segment_path: str
     wav_path: str
     duration_seconds: float
     reserved_vram_mb: int
@@ -90,12 +90,12 @@ class SynthesisWorker:
                 self._telemetry.record_event("synthesis_truncated", {"chunk_indices": clipped})
             packaged = await asyncio.to_thread(self._package_chunks, chunks, results)
             duration = monotonic() - start
-            last = packaged[-1] if packaged else RenderedChunkResult(0, "", "", "", 0.0, 0, 0)
+            last = packaged[-1] if packaged else None
             self._telemetry.record_batch(
                 batch_size=len(packaged),
                 duration_seconds=duration,
-                reserved_vram_mb=last.reserved_vram_mb,
-                allocated_vram_mb=last.allocated_vram_mb,
+                reserved_vram_mb=last.reserved_vram_mb if last else 0,
+                allocated_vram_mb=last.allocated_vram_mb if last else 0,
             )
             return packaged
         finally:
@@ -115,14 +115,15 @@ class SynthesisWorker:
         """
         packaged: list[RenderedChunkResult] = []
         for chunk, result in zip(chunks, results, strict=True):
+            # The chunk's version is part of its filenames. Without it a
+            # reprocessed take overwrote the take it was meant to replace, so
+            # switching back to the old version served the new audio.
             stored = self._media_store.package_wav_chunk(
-                chunk.job_id, chunk.index, result.wav_bytes
+                chunk.job_id, chunk.index, result.wav_bytes, version=chunk.version
             )
             packaged.append(
                 RenderedChunkResult(
-                    chunk_index=chunk.index,
                     segment_path=stored.segment_path,
-                    init_segment_path=stored.init_segment_path,
                     wav_path=stored.wav_path,
                     duration_seconds=stored.duration_seconds,
                     reserved_vram_mb=result.reserved_vram_mb,

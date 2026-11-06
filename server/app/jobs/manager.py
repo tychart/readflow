@@ -5,7 +5,14 @@ from time import time
 from uuid import uuid4
 
 from app.chunking.normalize import normalize_source_text
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
+from app.chunking.planner import ChunkPlan
+from app.jobs.models import (
+    PENDING_CHUNK_STATUSES,
+    ChunkRecord,
+    ChunkStatus,
+    Job,
+    JobStatus,
+)
 
 # Chunk states a partial voice change can re-point at the new voice. `WRITTEN`
 # keeps its rendered audio and `RENDERING` is reconciled when the batch returns.
@@ -111,9 +118,9 @@ class JobManager:
         job.playback_state.is_playing = is_playing
         job.playback_state.last_event_at = time()
         job.completed_seconds = max(job.completed_seconds, current_time_seconds)
-        job.buffered_seconds = max(
-            0.0, self._contiguous_written_seconds(job) - current_time_seconds
-        )
+        # The playable run is the cached contiguous duration, so this stays O(1)
+        # on a path the reader hits ~20x/s during playback.
+        job.buffered_seconds = max(0.0, job.contiguous_written_seconds - current_time_seconds)
         if is_playing and job.status != JobStatus.PAUSED:
             # A position report while playing is proof of an active listener, so
             # the flag does not depend on the reader hitting /activate after a
@@ -208,18 +215,16 @@ class JobManager:
         if rerender_written:
             job.audio_epoch += 1
             job.completed_seconds = 0.0
-            job.buffered_seconds = 0.0
-            job.total_chunks_completed = 0
-            job.total_versioned_completed = 0
             job.playback_state.current_time_seconds = 0.0
             job.playback_state.is_playing = False
+        self._refresh_derived(job)
+        if requeued or rerender_written:
+            # A finished job with work to redo must leave the terminal state or
+            # the reader treats it as local and stops watching for the
+            # replacement chunks.
             if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
                 job.status = JobStatus.QUEUED
-        elif requeued and job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
-            # A finished job with a failed gap can still have work to redo, so
-            # it must leave the terminal state or the reader treats it as local
-            # and stops watching for the replacement chunks.
-            job.status = JobStatus.QUEUED
+            self._settle_status(job)
         job.updated_at = now
         return job
 
@@ -252,43 +257,40 @@ class JobManager:
         self._apply_voice(job, chunk, time())
         return True
 
-    def add_planned_chunk(
-        self,
-        job_id: str,
-        *,
-        text: str,
-        char_start: int,
-        char_end: int,
-        plan_version: int,
-        voice_id: str,
-    ) -> ChunkRecord:
+    def add_planned_chunk(self, job_id: str, plan: ChunkPlan) -> ChunkRecord:
+        """Store one planned chunk and advance the planner cursor.
+
+        The manager owns every mutation of the job: the planner only proposes a
+        `ChunkPlan`. That keeps "planning advanced" and "chunk exists" atomic.
+        """
         job = self.get_job(job_id)
         chunk = ChunkRecord(
             job_id=job_id,
-            # Derive the index from the highest existing index rather than
-            # `len(job.chunks)`: reprocessing appends a second record for an
-            # existing index, which made `len` outrun the real index and made
-            # the planner skip numbers (leaving a phantom gap).
-            index=max((c.index for c in job.chunks), default=-1) + 1,
-            text=text,
-            voice_id=voice_id,
+            index=job.next_chunk_index,
+            text=plan.text,
+            voice_id=job.voice_id,
             language=job.language,
-            plan_version=plan_version,
-            char_start=char_start,
-            char_end=char_end,
+            plan_version=job.plan_version,
+            char_start=plan.char_start,
+            char_end=plan.char_end,
         )
         job.chunks.append(chunk)
-        job.total_chunks_emitted = len(job.chunks)
+        job.next_chunk_index += 1
+        job.active_chunk_version[chunk.index] = chunk.version
+        # Planning resumes where this span ended; reaching the end of the
+        # source text exhausts it (`plan_next` would return None anyway).
+        job.planner_cursor.offset = -1 if plan.char_end >= len(job.source_text) else plan.char_end
+        job.planner_cursor.chunks_emitted += 1
         job.updated_at = time()
         return chunk
 
-    def mark_chunk_queued(self, chunk: ChunkRecord) -> None:
-        chunk.status = ChunkStatus.QUEUED
-        chunk.updated_at = time()
-        job = self.get_job(chunk.job_id)
-        if job.status not in {JobStatus.PAUSED, JobStatus.COMPLETED}:
-            job.status = JobStatus.RENDERING
+    def finish_planning(self, job_id: str) -> Job:
+        """Mark the planner as having reached the end of the source text."""
+        job = self.get_job(job_id)
+        job.planner_cursor.offset = -1
         job.updated_at = time()
+        self._settle_status(job)
+        return job
 
     def mark_chunk_rendering(self, chunk: ChunkRecord) -> None:
         chunk.status = ChunkStatus.RENDERING
@@ -298,19 +300,15 @@ class JobManager:
             job.status = JobStatus.RENDERING
         job.updated_at = time()
 
-    def mark_chunk_planned(self, chunk: ChunkRecord) -> None:
-        """Return a chunk to the queue.
+    def mark_chunk_planned(self, chunk: ChunkRecord) -> Job:
+        """Return a chunk to the queue untouched.
 
         Used when a batch is only partially rendered (the worker retries an OOM
-        with fewer chunks), so the dropped chunks are retried on a later tick
-        instead of being left stuck in `RENDERING`.
+        with fewer chunks) or could not even load the model, so the dropped
+        chunks are retried on a later tick instead of being left stuck in
+        `RENDERING`.
         """
-        chunk.status = ChunkStatus.PLANNED
-        chunk.updated_at = time()
-        job = self.get_job(chunk.job_id)
-        self._requeue_superseded_chunk(job, chunk)
-        self._settle_status(job)
-        job.updated_at = time()
+        return self._requeue_chunk(chunk)
 
     def mark_chunk_retry(self, chunk: ChunkRecord, error: str) -> Job:
         """Requeue a chunk after a failed attempt, counting the attempt.
@@ -320,6 +318,9 @@ class JobManager:
         """
         chunk.attempts += 1
         chunk.error = error
+        return self._requeue_chunk(chunk)
+
+    def _requeue_chunk(self, chunk: ChunkRecord) -> Job:
         chunk.status = ChunkStatus.PLANNED
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
@@ -349,12 +350,7 @@ class JobManager:
         chunk.wav_path = wav_path
         chunk.error = None
         chunk.updated_at = time()
-        job.total_chunks_completed = len(job.written_chunks())
-        job.total_versioned_completed = len(job.versioned_written_chunks())
-        self._recalculate_timeline(job)
-        # Complete only when the planner has nothing left to emit and no chunk
-        # is still queued/rendering. `has_unfinished_chunks` (not the versioned
-        # helper) is what makes this correct for ordinary, non-reprocessed jobs.
+        self._refresh_derived(job)
         self._settle_status(job)
         job.updated_at = time()
         return job
@@ -372,6 +368,7 @@ class JobManager:
         chunk.updated_at = time()
         job = self.get_job(chunk.job_id)
         self._requeue_superseded_chunk(job, chunk)
+        self._refresh_derived(job)
         self._settle_status(job)
         job.updated_at = time()
         return job
@@ -398,6 +395,52 @@ class JobManager:
         else:
             job.status = JobStatus.QUEUED
 
+    def _refresh_derived(self, job: Job) -> None:
+        """Recompute everything derived from the chunk list, in one pass.
+
+        Counts, timeline positions, the playable-run duration and
+        `buffered_seconds` all describe the **live** takes. Superseded versions
+        stay in `job.chunks` as history, and including them used to double-count
+        a reprocessed chunk, inflate `buffered_seconds` with audio nobody will
+        hear, and skew `total_chunks_completed` past `total_chunks_emitted`.
+        """
+        running_start = 0.0
+        contiguous = 0.0
+        contiguous_open = True
+        completed = 0
+        for chunk in job.active_chunks():
+            if chunk.status != ChunkStatus.WRITTEN:
+                # Start times place later written chunks as if the gap were
+                # zero-length (the gap-aware timeline), but the *playable* run
+                # stops at the first hole.
+                contiguous_open = False
+                continue
+            completed += 1
+            chunk.start_seconds = running_start
+            running_start += chunk.duration_seconds
+            if contiguous_open:
+                contiguous += chunk.duration_seconds
+        job.total_chunks_completed = completed
+        job.contiguous_written_seconds = contiguous
+        job.buffered_seconds = max(0.0, contiguous - job.playback_state.current_time_seconds)
+        job.completed_seconds = max(job.completed_seconds, job.playback_state.current_time_seconds)
+
+    def exportable_wav_paths(self, job: Job) -> list[str]:
+        """WAV paths of the downloadable run: live takes, written, from index 0.
+
+        The export must follow the *active* take of each index. Walking every
+        record (including superseded ones) exported the rejected audio and, once
+        an index had two written versions, stopped the download at that index.
+        """
+        paths: list[str] = []
+        for expected_index, chunk in enumerate(job.active_chunks()):
+            if chunk.index != expected_index:
+                break
+            if chunk.status != ChunkStatus.WRITTEN or not chunk.wav_path:
+                break
+            paths.append(chunk.wav_path)
+        return paths
+
     def renderable_chunks(self) -> Iterable[ChunkRecord]:
         """Planned chunks the scheduler may dispatch.
 
@@ -422,21 +465,13 @@ class JobManager:
         return any(True for _ in self.renderable_chunks())
 
     def queue_depth(self) -> int:
+        """Chunks the scheduler can still act on (superseded takes excluded)."""
         return sum(
             1
             for job in self._jobs.values()
             for chunk in job.chunks
-            if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}
+            if chunk.status in PENDING_CHUNK_STATUSES and not chunk.deprecated
         )
-
-    def _recalculate_timeline(self, job: Job) -> None:
-        running_start = 0.0
-        for chunk in sorted(job.chunks, key=lambda item: item.index):
-            if chunk.status == ChunkStatus.WRITTEN:
-                chunk.start_seconds = running_start
-                running_start += chunk.duration_seconds
-        job.buffered_seconds = max(0.0, running_start - job.playback_state.current_time_seconds)
-        job.completed_seconds = max(job.completed_seconds, job.playback_state.current_time_seconds)
 
     def add_versioned_chunk(
         self,
@@ -445,54 +480,61 @@ class JobManager:
         text: str,
         char_start: int,
         char_end: int,
-        plan_version: int,
         voice_id: str,
         parent_index: int,
-        retries: int = 0,
     ) -> Job:
-        """Add a new version of a chunk. Marks lower versions as deprecated."""
+        """Add a new take for `parent_index` and make it the live version.
+
+        A reprocess is real work, so a finished job leaves the terminal state
+        here rather than relying on the caller to remember: the reader stops
+        polling a completed job, so it would never see the replacement chunk.
+        """
+        existing = self.get_job(job_id).active_chunk(parent_index)
+        if existing is None:
+            # Validate before appending: a rejected parent index used to leave
+            # an orphan record behind when activation failed.
+            raise KeyError(f"Chunk {parent_index} does not exist")
+        self.reactivate_job(job_id)
         job = self.get_job(job_id)
-        latest_version = job.get_latest_chunk_version(parent_index)
-        new_version = latest_version + 1
-
-        # Mark all existing versions of this chunk as deprecated
-        job.mark_all_chunk_versions_deprecated(parent_index)
-
-        # Create the new versioned chunk
+        version = job.get_latest_chunk_version(parent_index) + 1
         chunk = ChunkRecord(
             job_id=job_id,
             index=parent_index,
             text=text,
             voice_id=voice_id,
             language=job.language,
-            plan_version=plan_version,
+            plan_version=job.plan_version,
             char_start=char_start,
             char_end=char_end,
-            version=new_version,
+            version=version,
             parent_chunk_index=parent_index,
             status=ChunkStatus.PLANNED,
             reprocessing=True,
         )
         job.chunks.append(chunk)
-        job.total_chunks_emitted = len(job.chunks)
-
-        # Set as active version
-        job.set_active_chunk_version(parent_index, new_version)
-        job.total_versioned_chunks = len({c.index for c in job.chunks})
+        job.activate_chunk_version(parent_index, version)
+        self._refresh_derived(job)
+        self._settle_status(job)
         job.updated_at = time()
         return job
 
     def set_active_chunk_version(self, job_id: str, chunk_index: int, version: int) -> Job:
-        """Set the active version for a chunk index."""
+        """Make an already-rendered take the live one for `chunk_index`.
+
+        Switching takes changes what the reader plays and what the download
+        exports, so the derived state is recomputed. An unknown version is a
+        client error, not a silent no-op: `Job.activate_chunk_version` raises.
+
+        `audio_epoch` is bumped because the audible take changed: the reader
+        keys its media stream on the epoch, and without the bump a session that
+        already buffered the old take would keep playing it. Positions are left
+        alone — this is a take swap, not a re-render of the whole job.
+        """
         job = self.get_job(job_id)
-        job.set_active_chunk_version(chunk_index, version)
-
-        # Ensure the active version is not deprecated
-        for chunk in job.chunks:
-            if chunk.index == chunk_index and chunk.version == version:
-                chunk.deprecated = False
-                break
-
+        job.activate_chunk_version(chunk_index, version)
+        job.audio_epoch += 1
+        self._refresh_derived(job)
+        self._settle_status(job)
         job.updated_at = time()
         return job
 
@@ -506,14 +548,6 @@ class JobManager:
         job.playback_state.is_playing = False
         job.updated_at = time()
         return job
-
-    def _contiguous_written_seconds(self, job: Job) -> float:
-        running = 0.0
-        for chunk in sorted(job.chunks, key=lambda item: item.index):
-            if chunk.status != ChunkStatus.WRITTEN:
-                break
-            running += chunk.duration_seconds
-        return running
 
     def _derive_title(self, source_text: str) -> str:
         first_line = source_text.strip().splitlines()[0] if source_text.strip() else "Untitled Job"

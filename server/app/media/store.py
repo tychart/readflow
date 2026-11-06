@@ -24,9 +24,9 @@ EXPORT_TIMEOUT_SECONDS = 1800
 
 @dataclass(slots=True)
 class PackagedChunk:
-    init_segment_path: str
+    """On-disk artefacts for one rendered chunk (init segment is job-level)."""
+
     segment_path: str
-    peaks_path: str
     wav_path: str
     duration_seconds: float
 
@@ -36,32 +36,45 @@ class MediaStore:
         self._root = Path(tempfile.gettempdir()) / settings.temp_dir_name / "jobs"
         self._root.mkdir(parents=True, exist_ok=True)
 
+    def _chunk_dir(self, job_id: str) -> Path:
+        """Path of a job's chunk directory without creating it.
+
+        Read paths (manifest, segment, peaks) must not mkdir: every manifest
+        request used to create directories under /tmp just to look at them.
+        """
+        return self._root / job_id / "chunks"
+
     def job_dir(self, job_id: str) -> Path:
-        path = self._root / job_id / "chunks"
+        """Chunk directory, created if needed (write paths only)."""
+        path = self._chunk_dir(job_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @staticmethod
+    def _chunk_stem(chunk_index: int, version: int) -> str:
+        """Filename stem shared by a chunk's segment, peaks and WAV files."""
+        suffix = f"_v{version}" if version > 0 else ""
+        return f"{chunk_index:05d}{suffix}"
+
     def init_segment_path(self, job_id: str) -> Path:
-        return self.job_dir(job_id) / "init.mp4"
+        return self._chunk_dir(job_id) / "init.mp4"
 
     def segment_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
-        suffix = f"_v{version}" if version > 0 else ""
-        return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.m4s"
+        return self._chunk_dir(job_id) / f"{self._chunk_stem(chunk_index, version)}.m4s"
 
     def peaks_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
-        suffix = f"_v{version}" if version > 0 else ""
-        return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.peaks.json"
+        return self._chunk_dir(job_id) / f"{self._chunk_stem(chunk_index, version)}.peaks.json"
 
     def wav_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
-        suffix = f"_v{version}" if version > 0 else ""
-        return self.job_dir(job_id) / f"{chunk_index:05d}{suffix}.wav"
+        return self._chunk_dir(job_id) / f"{self._chunk_stem(chunk_index, version)}.wav"
 
     def package_wav_chunk(
         self, job_id: str, chunk_index: int, wav_bytes: bytes, version: int = 0
     ) -> PackagedChunk:
+        """Store one rendered chunk as a WAV, waveform peaks and an MSE segment."""
         job_dir = self.job_dir(job_id)
         wav_path = self.wav_path(job_id, chunk_index, version)
-        mp4_path = job_dir / f"{chunk_index:05d}_v{version}.mp4"
+        mp4_path = job_dir / f"{self._chunk_stem(chunk_index, version)}.mp4"
         wav_path.write_bytes(wav_bytes)
         peaks_path = self.peaks_path(job_id, chunk_index, version)
         peaks = compute_peaks(wav_bytes)
@@ -69,8 +82,7 @@ class MediaStore:
             json.dumps({"bins": len(peaks), "peaks": peaks}, separators=(",", ":"))
         )
         self._run_ffmpeg(wav_path, mp4_path)
-        payload = mp4_path.read_bytes()
-        segments = split_fragmented_mp4(payload)
+        segments = split_fragmented_mp4(mp4_path.read_bytes())
         init_path = self.init_segment_path(job_id)
         if not init_path.exists():
             init_path.write_bytes(segments.init_segment)
@@ -79,9 +91,7 @@ class MediaStore:
         duration = self._wav_duration_seconds(wav_path)
         mp4_path.unlink(missing_ok=True)
         return PackagedChunk(
-            init_segment_path=str(init_path),
             segment_path=str(segment_path),
-            peaks_path=str(peaks_path),
             wav_path=str(wav_path),
             duration_seconds=duration,
         )

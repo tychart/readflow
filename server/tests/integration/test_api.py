@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from app.chunking.planner import ChunkPlan
 from app.jobs.models import ChunkStatus
 from app.synthesis.worker import RenderedChunkResult
 
@@ -36,11 +37,7 @@ def _build_wav_bytes(duration_frames: int = 2400, sample_rate: int = 24_000) -> 
 def _seed_written_chunk(services, job, index: int):
     chunk = services.job_manager.add_planned_chunk(
         job.id,
-        text=f"Chunk {index}",
-        char_start=index * 10,
-        char_end=index * 10 + 7,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text=f"Chunk {index}", char_start=index * 10, char_end=index * 10 + 7),
     )
     stored = services.media_store.package_wav_chunk(job.id, chunk.index, _build_wav_bytes())
     services.job_manager.mark_chunk_written(
@@ -427,7 +424,8 @@ async def test_download_job_audio_returns_partial_contiguous_audio_for_in_progre
     client, services
 ):
     job = services.job_manager.create_job(
-        source_text="Partial download.",
+        # Longer than the two seeded chunks, so the job is genuinely in progress.
+        source_text="Partial download. " * 5,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
@@ -456,20 +454,12 @@ async def test_download_job_audio_ignores_written_chunks_after_the_first_gap(cli
     _seed_written_chunk(services, job, 2)
     gap_chunk = services.job_manager.add_planned_chunk(
         job.id,
-        text="Gap chunk",
-        char_start=30,
-        char_end=39,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text="Gap chunk", char_start=30, char_end=39),
     )
     assert gap_chunk.index == 3
     services.job_manager.add_planned_chunk(
         job.id,
-        text="Still missing",
-        char_start=40,
-        char_end=53,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text="Still missing", char_start=40, char_end=53),
     )
     _seed_written_chunk(services, job, 5)
 
@@ -492,11 +482,7 @@ async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_
     )
     services.job_manager.add_planned_chunk(
         job.id,
-        text="Chunk 0",
-        char_start=0,
-        char_end=7,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text="Chunk 0", char_start=0, char_end=7),
     )
 
     response = await client.get(f"/api/jobs/{job.id}/download")
@@ -513,10 +499,10 @@ async def test_update_voice_requeues_pending_chunks_instead_of_discarding_them(c
         voice_id="suzy",
     )
     written = services.job_manager.add_planned_chunk(
-        job.id, text="One.", char_start=0, char_end=4, plan_version=1, voice_id="suzy"
+        job.id, ChunkPlan(text="One.", char_start=0, char_end=4)
     )
     pending = services.job_manager.add_planned_chunk(
-        job.id, text="Two.", char_start=5, char_end=9, plan_version=1, voice_id="suzy"
+        job.id, ChunkPlan(text="Two.", char_start=5, char_end=9)
     )
     services.job_manager.mark_chunk_written(
         written, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
@@ -546,11 +532,7 @@ async def test_update_voice_can_rerender_written_audio_for_one_consistent_take(c
     )
     chunk = services.job_manager.add_planned_chunk(
         job.id,
-        text="One finished chunk.",
-        char_start=0,
-        char_end=18,
-        plan_version=1,
-        voice_id="suzy",
+        ChunkPlan(text="One finished chunk.", char_start=0, char_end=18),
     )
     services.job_manager.mark_chunk_written(
         chunk, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
@@ -891,14 +873,9 @@ async def test_admin_queue_marks_paused_job_chunks(client, services):
         "/api/jobs", data={"text": "Paused text. " * 20, "voice_id": "suzy", "title": "Paused"}
     )
     job_id = created.json()["job"]["id"]
-    job = services.job_manager.get_job(job_id)
     services.job_manager.add_planned_chunk(
         job_id,
-        text="A planned chunk on a paused job.",
-        char_start=0,
-        char_end=31,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text="A planned chunk on a paused job.", char_start=0, char_end=31),
     )
     await client.post(f"/api/jobs/{job_id}/pause")
 
@@ -928,9 +905,7 @@ async def test_admin_queue_reports_active_batch_while_rendering(client, services
         await release.wait()
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
-                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
                 wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
@@ -976,9 +951,7 @@ async def test_scheduler_state_broadcast_carries_active_batch(client, services):
         await release.wait()
         return [
             RenderedChunkResult(
-                chunk_index=chunk.index,
                 segment_path=f"/tmp/{chunk.job_id}-{chunk.index}.m4s",
-                init_segment_path=f"/tmp/{chunk.job_id}-init.mp4",
                 wav_path=f"/tmp/{chunk.job_id}-{chunk.index}.wav",
                 duration_seconds=1.0,
                 reserved_vram_mb=0,
@@ -1009,14 +982,9 @@ async def test_admin_queue_reflects_reprocessed_chunk(client, services):
         "/api/jobs", data={"text": "Reprocess me. " * 20, "voice_id": "suzy", "title": "Repro"}
     )
     job_id = created.json()["job"]["id"]
-    job = services.job_manager.get_job(job_id)
     services.job_manager.add_planned_chunk(
         job_id,
-        text="Original chunk text.",
-        char_start=0,
-        char_end=21,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text="Original chunk text.", char_start=0, char_end=21),
     )
 
     reprocess = await client.post(f"/api/jobs/{job_id}/chunks/0/reprocess", json={})
@@ -1048,14 +1016,9 @@ async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, serv
         "/api/jobs", data={"text": "Queue must answer. " * 20, "voice_id": "suzy"}
     )
     job_id = created.json()["job"]["id"]
-    job = services.job_manager.get_job(job_id)
     services.job_manager.add_planned_chunk(
         job_id,
-        text="A pending chunk while the model is busy.",
-        char_start=0,
-        char_end=40,
-        plan_version=job.plan_version,
-        voice_id=job.voice_id,
+        ChunkPlan(text="A pending chunk while the model is busy.", char_start=0, char_end=40),
     )
 
     response = await client.get("/api/admin/queue")
@@ -1204,3 +1167,133 @@ async def test_memory_failures_clear_readings_in_http_and_live_events(
 
     await services.scheduler._memory_broadcast_loop()
     assert messages == [{"type": "memory_stats", "payload": {"memory": None}}]
+
+
+# ── Chunk versioning over HTTP ─────────────────────────────
+
+
+async def _job_with_one_chunk(services, *, text: str = "Original chunk text.") -> tuple[Any, Any]:
+    job = services.job_manager.create_job(
+        source_text=f"{text} And more text after it.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Versioning",
+    )
+    chunk = services.job_manager.add_planned_chunk(
+        job.id,
+        ChunkPlan(text=text, char_start=0, char_end=len(text)),
+    )
+    services.job_manager.mark_chunk_written(
+        chunk, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
+    )
+    return job, chunk
+
+
+async def test_job_detail_exposes_the_active_chunk_version(client, services):
+    """The reader picks its take from this map; it used to live only server-side.
+
+    Without it the reader always fell back to the newest take, so
+    `set-active-version` had no observable effect at all.
+    """
+    job, _chunk = await _job_with_one_chunk(services)
+
+    detail = (await client.get(f"/api/jobs/{job.id}")).json()
+    assert detail["active_chunk_version"] == {"0": 0}
+
+    reprocessed = await client.post(f"/api/jobs/{job.id}/chunks/0/reprocess", json={})
+    assert reprocessed.status_code == 200
+    body = reprocessed.json()
+    assert body["active_chunk_version"] == {"0": 1}
+    # Exactly one live take per index; the superseded one is flagged.
+    assert [chunk["deprecated"] for chunk in body["chunks"]] == [True, False]
+
+
+async def test_reprocess_reuses_the_live_take_text(client, services):
+    """Reprocessing an edited take must start from the edit, not version 0."""
+    job, _chunk = await _job_with_one_chunk(services, text="Original chunk text.")
+
+    first = await client.post(
+        f"/api/jobs/{job.id}/chunks/0/reprocess", json={"new_text": "Edited take text."}
+    )
+    assert first.status_code == 200
+    second = await client.post(f"/api/jobs/{job.id}/chunks/0/reprocess", json={})
+    assert second.status_code == 200
+
+    live = services.job_manager.get_job(job.id).active_chunk(0)
+    assert live is not None
+    assert live.version == 2
+    assert live.text == "Edited take text."
+
+
+async def test_set_active_version_switch_is_visible_to_the_client(client, services):
+    job, _chunk = await _job_with_one_chunk(services)
+    await client.post(f"/api/jobs/{job.id}/chunks/0/reprocess", json={})
+
+    response = await client.post(
+        f"/api/jobs/{job.id}/chunks/0/set-active-version", json={"version": 0}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_chunk_version"] == {"0": 0}
+    assert [chunk["deprecated"] for chunk in body["chunks"]] == [False, True]
+    # The audible take changed, so the reader's buffered stream must be rebuilt.
+    assert body["audio_epoch"] == 1
+
+
+async def test_set_active_version_rejects_a_version_that_does_not_exist(client, services):
+    job, _chunk = await _job_with_one_chunk(services)
+
+    response = await client.post(
+        f"/api/jobs/{job.id}/chunks/0/set-active-version", json={"version": 9}
+    )
+
+    assert response.status_code == 404
+    # The rejected request must not have moved the live take.
+    assert services.job_manager.get_job(job.id).active_chunk_version == {0: 0}
+
+
+async def test_each_chunk_version_is_served_from_its_own_files(client, services):
+    """A take switch must serve the audio that belongs to that take.
+
+    Every version used to be packaged under the versionless filename, so
+    `?v=` selected nothing: after a reprocess, switching back to the original
+    take still played the re-rendered audio.
+    """
+    created = await client.post("/api/jobs", data={"text": "One. Two. Three.", "voice_id": "suzy"})
+    job_id = created.json()["job"]["id"]
+    await services.scheduler.run_once()
+
+    original = services.job_manager.get_job(job_id).active_chunk(0)
+    assert original is not None and original.version == 0
+    original_bytes = (await client.get(f"/api/jobs/{job_id}/chunks/0?v=0")).content
+    assert original_bytes
+
+    reprocess = await client.post(
+        f"/api/jobs/{job_id}/chunks/0/reprocess",
+        json={"new_text": "A noticeably different take, with more words in it."},
+    )
+    assert reprocess.status_code == 200
+    await services.scheduler.run_once()
+
+    job = services.job_manager.get_job(job_id)
+    live = job.active_chunk(0)
+    assert live is not None and live.version == 1
+    new_bytes = (await client.get(f"/api/jobs/{job_id}/chunks/0?v=1")).content
+    assert new_bytes and new_bytes != original_bytes
+
+    # Each version keeps its own files: the superseded take is still intact.
+    assert (await client.get(f"/api/jobs/{job_id}/chunks/0?v=0")).content == original_bytes
+    assert (await client.get(f"/api/jobs/{job_id}/chunks/0/peaks?v=0")).status_code == 200
+    assert (await client.get(f"/api/jobs/{job_id}/chunks/0/peaks?v=1")).status_code == 200
+    assert (await client.get(f"/api/jobs/{job_id}/chunks/0?v=9")).status_code == 404
+
+    # The manifest points at the live take.
+    manifest = (await client.get(f"/api/jobs/{job_id}/manifest")).json()
+    active = next(
+        item for item in manifest["chunks"] if item["index"] == 0 and not item["deprecated"]
+    )
+    assert active["segment_url"] is not None
+    assert "v=1" in active["segment_url"]
+    assert (await client.get(active["segment_url"])).content == new_bytes

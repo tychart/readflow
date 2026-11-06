@@ -4,13 +4,21 @@ import asyncio
 import logging
 from collections import defaultdict
 from time import monotonic, time
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
+from app.chunking.estimate import estimated_speech_seconds
 from app.chunking.planner import ChunkPlanner
 from app.core.config import RuntimeConfig
 from app.core.hub import WebSocketHub
 from app.jobs.manager import JobManager
-from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, ModelState
+from app.jobs.models import (
+    PENDING_CHUNK_STATUSES,
+    ChunkRecord,
+    ChunkStatus,
+    Job,
+    JobStatus,
+    ModelState,
+)
 from app.scheduler.recovery import DispatchBlock, RecoveryAction, plan_recovery
 from app.schemas.api import (
     AdminQueueResponse,
@@ -30,9 +38,20 @@ from app.telemetry.service import TelemetryService
 
 logger = logging.getLogger(__name__)
 
-# Chunks the scheduler can still act on. Shared so priority ranking and the
-# admin queue read-model cannot disagree about what "pending" means.
-_PENDING_STATUSES = frozenset({ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING})
+
+class BatchGroup(NamedTuple):
+    """The key one synthesis batch is drawn from.
+
+    A batch cannot mix models (different weights), languages, or voices (the
+    provider builds one prompt shape per batch), so this triple is the unit the
+    scheduler groups, orders and rotates over. It used to travel as a bare
+    `tuple[str, str, str]` that every call site unpacked positionally.
+    """
+
+    model_id: str
+    language: str
+    voice_id: str
+
 
 # Upper bound on rows returned per job by `queue_snapshot`; pending chunks are
 # always kept and the rest of the budget goes to the most recent history.
@@ -374,27 +393,26 @@ class SchedulerService:
 
     def _ensure_planned_chunks(self) -> None:
         for job in self._job_manager.list_jobs():
-            if job.status == JobStatus.PAUSED or job.status == JobStatus.COMPLETED:
+            if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED}:
+                continue
+            if job.planner_cursor.exhausted:
                 continue
             while self._needs_more_planning(job):
-                planned = self._planner.plan_next(job)
-                if planned is None:
+                plan = self._planner.plan_next(job.source_text, job.planner_cursor.offset)
+                if plan is None:
+                    # Nothing left to cut: record it so completion can settle
+                    # and nobody asks this job for more work again.
+                    self._job_manager.finish_planning(job.id)
                     break
-                self._job_manager.add_planned_chunk(
-                    job.id,
-                    text=planned.text,
-                    char_start=planned.char_start,
-                    char_end=planned.char_end,
-                    plan_version=job.plan_version,
-                    voice_id=job.voice_id,
-                )
+                self._job_manager.add_planned_chunk(job.id, plan)
 
     def _needs_more_planning(self, job: Job) -> bool:
         active_planned = sum(
             1
             for chunk in job.chunks
-            if chunk.status in {ChunkStatus.PLANNED, ChunkStatus.QUEUED, ChunkStatus.RENDERING}
+            if chunk.status in PENDING_CHUNK_STATUSES
             and chunk.plan_version == job.plan_version
+            and not chunk.deprecated
         )
         if active_planned >= self._config.plan_ahead_chunks:
             return False
@@ -472,13 +490,12 @@ class SchedulerService:
                 chunk.index,
             )
 
-        groups: dict[tuple[str, str, str], list[ChunkRecord]] = defaultdict(list)
+        groups: dict[BatchGroup, list[ChunkRecord]] = defaultdict(list)
         for chunk in chunks:
-            job = self._job_manager.get_job(chunk.job_id)
-            groups[(job.model_id, job.language, chunk.voice_id)].append(chunk)
+            groups[self._group_key(chunk)].append(chunk)
 
         def group_priority(
-            item: tuple[tuple[str, str, str], list[ChunkRecord]],
+            item: tuple[BatchGroup, list[ChunkRecord]],
         ) -> tuple[int, float, str]:
             # Ignore ordinals here: a group is drained before the next one starts.
             _key, group = item
@@ -556,18 +573,20 @@ class SchedulerService:
             )
         return band, "Background", "Queued job with no active listener."
 
-    def _group_chunks(
-        self, chunks: list[ChunkRecord]
-    ) -> dict[tuple[str, str, str], list[ChunkRecord]]:
+    def _group_key(self, chunk: ChunkRecord) -> BatchGroup:
+        """The (model, language, voice) a chunk must be batched under."""
+        job = self._job_manager.get_job(chunk.job_id)
+        return BatchGroup(job.model_id, job.language, chunk.voice_id)
+
+    def _group_chunks(self, chunks: list[ChunkRecord]) -> dict[BatchGroup, list[ChunkRecord]]:
         """Group chunks by the scheduler's batch key: model, language, voice.
 
         One batch is always drawn from a single group, so preserving insertion
         order here is what makes the highest-priority group win.
         """
-        grouped: dict[tuple[str, str, str], list[ChunkRecord]] = defaultdict(list)
+        grouped: dict[BatchGroup, list[ChunkRecord]] = defaultdict(list)
         for chunk in chunks:
-            job = self._job_manager.get_job(chunk.job_id)
-            grouped[(job.model_id, job.language, chunk.voice_id)].append(chunk)
+            grouped[self._group_key(chunk)].append(chunk)
         return dict(grouped)
 
     def _sync_residency(self) -> None:
@@ -590,9 +609,9 @@ class SchedulerService:
 
     def _choose_group_key(
         self,
-        keys: list[tuple[str, str, str]],
-        groups: dict[tuple[str, str, str], list[ChunkRecord]],
-    ) -> tuple[str, str, str]:
+        keys: list[BatchGroup],
+        groups: dict[BatchGroup, list[ChunkRecord]],
+    ) -> BatchGroup:
         """Pick which (model, language, voice) group gets the next batch.
 
         Model residency is the expensive axis: swapping unloads and reloads the
@@ -603,12 +622,12 @@ class SchedulerService:
         model in priority order gets a turn so nobody starves.
         """
         self._sync_residency()
-        by_model: dict[str, list[tuple[str, str, str]]] = {}
+        by_model: dict[str, list[BatchGroup]] = {}
         for key in keys:
-            by_model.setdefault(key[0], []).append(key)
+            by_model.setdefault(key.model_id, []).append(key)
         model_order = list(by_model)
         urgent_models = {
-            key[0]
+            key.model_id
             for key, chunks in groups.items()
             if any(
                 self._priority_band(self._job_manager.get_job(chunk.job_id)) == 0
@@ -642,10 +661,10 @@ class SchedulerService:
             self._resident_voice_id is not None
             and self._batches_on_voice < self._config.voice_residency_batches
         ):
-            same_voice = [key for key in model_keys if key[2] == self._resident_voice_id]
+            same_voice = [key for key in model_keys if key.voice_id == self._resident_voice_id]
             if same_voice:
                 return same_voice[0]
-        other_voices = [key for key in model_keys if key[2] != self._resident_voice_id]
+        other_voices = [key for key in model_keys if key.voice_id != self._resident_voice_id]
         return (other_voices or model_keys)[0]
 
     def _note_batch_affinity(self, model_id: str, voice_id: str) -> None:
@@ -670,7 +689,7 @@ class SchedulerService:
         vram_total_mb: int,
         *,
         vram_headroom_mb: int | None = None,
-    ) -> tuple[tuple[str, str, str] | None, list[ChunkRecord]]:
+    ) -> tuple[BatchGroup | None, list[ChunkRecord]]:
         """Pick the next batch exactly as the scheduler would dispatch it.
 
         Shared by `_render_next_batch` and `queue_snapshot` so the admin queue
@@ -734,10 +753,11 @@ class SchedulerService:
         if group_key is None or not batch:
             return None
         self._clear_warning()
-        self._note_batch_affinity(group_key[0], group_key[2])
-        model_id = group_key[0]
+        self._note_batch_affinity(group_key.model_id, group_key.voice_id)
+        model_id = group_key.model_id
+        # Straight to RENDERING: a QUEUED stopover was never observable (no
+        # await between the two transitions, so nothing could see it).
         for chunk in batch:
-            self._job_manager.mark_chunk_queued(chunk)
             self._job_manager.mark_chunk_rendering(chunk)
         # Broadcast once the batch is marked rendering so the admin queue view
         # can show it in flight; the end-of-tick broadcast sees it completed.
@@ -958,7 +978,7 @@ class SchedulerService:
             for chunk in job.chunks
             if chunk.plan_version == job.plan_version
             and not chunk.deprecated
-            and chunk.status in _PENDING_STATUSES
+            and chunk.status in PENDING_CHUNK_STATUSES
         ]
         return self._ordered_for_dispatch(chunks)
 
@@ -982,12 +1002,12 @@ class SchedulerService:
         if not rendering:
             return None
         grouped = self._group_chunks(rendering)
-        (model_id, language, voice_id), chunks = next(iter(grouped.items()))
+        group, chunks = next(iter(grouped.items()))
         return QueueBatch(
             chunk_count=len(chunks),
-            model_id=model_id,
-            language=language,
-            voice_id=voice_id,
+            model_id=group.model_id,
+            language=group.language,
+            voice_id=group.voice_id,
             started_at=min(chunk.updated_at for chunk in chunks),
         )
 
@@ -995,20 +1015,13 @@ class SchedulerService:
         """Summarize an already-selected batch (no start time)."""
         if not batch:
             return None
-        job = self._job_manager.get_job(batch[0].job_id)
+        group = self._group_key(batch[0])
         return QueueBatch(
             chunk_count=len(batch),
-            model_id=job.model_id,
-            language=job.language,
-            voice_id=batch[0].voice_id,
+            model_id=group.model_id,
+            language=group.language,
+            voice_id=group.voice_id,
             started_at=None,
-        )
-
-    def _active_chunks(self, job: Job) -> list[ChunkRecord]:
-        """Non-deprecated chunks of a job (one per index), in index order."""
-        return sorted(
-            (chunk for chunk in job.chunks if not chunk.deprecated),
-            key=lambda chunk: chunk.index,
         )
 
     def _unplanned_chars(self, job: Job) -> int:
@@ -1066,8 +1079,8 @@ class SchedulerService:
             char_start=chunk.char_start,
             char_end=chunk.char_end,
             char_count=len(chunk.text),
-            estimated_duration_seconds=max(
-                1.0, len(chunk.text) / self._config.estimated_chars_per_second
+            estimated_duration_seconds=estimated_speech_seconds(
+                len(chunk.text), chars_per_second=self._config.estimated_chars_per_second
             ),
             duration_seconds=chunk.duration_seconds,
             start_seconds=chunk.start_seconds,
@@ -1075,7 +1088,7 @@ class SchedulerService:
             priority_label=label,
             priority_reason=reason,
             rank=rank,
-            is_pending=chunk.status in _PENDING_STATUSES,
+            is_pending=chunk.status in PENDING_CHUNK_STATUSES,
             is_rendering=chunk.status == ChunkStatus.RENDERING,
             in_next_batch=(chunk.job_id, chunk.index, chunk.version) in next_batch_ids,
             created_at=chunk.created_at,
@@ -1097,8 +1110,8 @@ class SchedulerService:
         pending_ranks: dict[tuple[str, int, int], int],
         next_batch_ids: set[tuple[str, int, int]],
     ) -> QueueJobGroup:
-        active = self._active_chunks(job)
-        pending = [chunk for chunk in active if chunk.status in _PENDING_STATUSES]
+        active = job.active_chunks()
+        pending = [chunk for chunk in active if chunk.status in PENDING_CHUNK_STATUSES]
         chosen, truncated = self._limit_chunks(active, pending)
         return QueueJobGroup(
             job_id=job.id,

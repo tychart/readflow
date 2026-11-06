@@ -1332,7 +1332,64 @@ Normalizing per chunk (or per render) makes long documents quadratic: a 3 MiB
 book re-filtered the whole text on every `plan_next` (~500 s of pure regex work)
 and on every reader render. Do not add a second normalization call site.
 `server/tests/unit/test_normalize.py`, the planner coverage test, and
-`web/src/features/reader/versioning.test.ts` pin this split.
+`web/src/features/reader/reader-model.test.ts` pin this split.
+
+`ChunkPlanner.plan_next(text, offset)` is also **window-bounded**: it inspects
+only ~1.2 targets past the cursor instead of slicing and scanning the whole
+remainder, which would copy every remaining character once per chunk.
+
+### Chunk lifecycle: who owns what
+
+The chunk pipeline has exactly one owner per concern, and it is worth knowing
+before touching any of it.
+
+- **`ChunkPlanner` is pure.** `plan_next(text, offset) -> ChunkPlan | None` never
+touches the job. `JobManager.add_planned_chunk` stores the chunk *and* advances
+`job.planner_cursor` atomically, so a plan that is computed but never stored (an
+aborted tick, a raised error) cannot silently skip a slice of the document — the
+earlier version advanced the cursor before the chunk existed.
+- **`ChunkStatus` sets live in `app/jobs/models.py`.** `PENDING_CHUNK_STATUSES`
+and `UNFINISHED_CHUNK_STATUSES` are the only definitions; `queue_depth`,
+`renderable_chunks`, the scheduler's approval loop and the admin snapshot all
+import them. Do not re-list statuses at a call site (that is how five copies
+drifted apart).
+- **`Job` owns the live take.** `Job.chunks` keeps every record ever created
+(history the queue inspector shows); `Job.active_chunks()` / `active_chunk(i)`
+return the live take of each index and `Job.activate_chunk_version` is the only
+writer of `deprecated`/`active_chunk_version`, so the two can never disagree.
+Activating an older take without deprecating the newer one used to leave two
+live records for one index — which duplicated timeline seconds, kept the
+rejected take in the download, and let the reader pick the wrong one.
+- **`JobManager._refresh_derived`** recomputes counts, `start_seconds`, the
+playable run and `buffered_seconds` in one pass over the live takes. Every
+mutation that can change them (write, failure, reprocess, take switch, voice
+change) ends there, and derived values are **stored**, not recomputed per read:
+`update_playback` runs ~20×/s and used to re-sort every chunk each time.
+`buffered_seconds` is always `contiguous_written_seconds - playhead` (what the
+listener can actually hear); the write path used to count written audio *after*
+a gap, so a gap job's buffer read fuller than it really was.
+- **`Job.total_chunks_emitted` is the number of distinct chunks**, derived from
+`next_chunk_index`. It used to be `len(job.chunks)`, so one reprocess made a
+25-chunk book report 26 chunks (the reader uses it as the document's size).
+- **`JobManager.exportable_wav_paths`** is the download range: live takes,
+written, contiguous from index 0. Walking all records exported the rejected
+audio and stopped the download at the first reprocessed index.
+- **Each take has its own files.** The worker passes `chunk.version` to
+`MediaStore.package_wav_chunk`, so a reprocess writes `00001_v1.{wav,m4s,peaks}`
+and leaves `00001.*` alone, and the chunk/peaks routes honour `?v=` (the version
+`chunk_to_response` embeds in the URL). The worker used to package every take
+under the versionless name: versions were decorative on disk, so switching back
+to the old take played the new audio.
+- **`set_active_chunk_version` bumps `audio_epoch`.** The reader keys its media
+stream on the epoch; without the bump a session that already buffered the old
+take keeps playing it and the switch looks like a no-op. It does not reset the
+playhead — a take swap is not a full re-render.
+
+Coverage: `tests/unit/test_planner.py` (purity, window bound, exact tiling),
+`tests/unit/test_jobs.py` (live vs superseded takes, counts, export, take
+switch), `tests/unit/test_media.py` (per-version files), and
+`tests/integration/test_api.py` (versioned segment serving, `active_chunk_version`
+in the payload, reprocess inheriting the edited text, unknown version → 404).
 
 ### 2. Size limits live in one setting
 
@@ -1620,8 +1677,11 @@ Important files:
 - `server/tests/unit/test_jobs.py`
 - `server/tests/unit/test_planner.py`
 
-Note: `server/app/jobs/test_manager.py` and `server/app/jobs/test_models.py` are in-app test
-modules (not in the pytest directory) — they test versioning and reprocessing logic.
+Note: `server/app/jobs/test_manager.py` and `server/app/jobs/test_models.py` used to be
+in-app test modules that pytest never collected (`testpaths = ["tests"]`), so they
+reported 0% coverage while looking like protection. They were deleted; the behavior
+they described now lives in `tests/unit/test_jobs.py` with the real suite. Do not put
+tests back under `server/app/`.
 
 Important testing decisions:
 
@@ -2687,6 +2747,43 @@ Scheduler deadlock round (the "frozen all day with a full GPU" outage):
    `scheduler_warning` telemetry event per tick and flushed the event log.
 8. `dispatch_stall_seconds` is an Admin knob (Overview) and part of
    `AdminConfigResponse`/`AdminConfigUpdateRequest`.
+
+Chunk-pipeline round (simplify + fix the take bugs):
+
+1. **One status vocabulary.** `PENDING_CHUNK_STATUSES` /
+   `UNFINISHED_CHUNK_STATUSES` live in `app/jobs/models.py`; the five copies in
+   `Job`, `queue_depth`, `renderable_chunks` and the scheduler are gone.
+2. **The planner is pure and window-bounded.** `plan_next(text, offset)` returns
+   a frozen `ChunkPlan`; `JobManager.add_planned_chunk` owns the cursor, so
+   planning and storing are atomic. It no longer slices/scans the whole
+   remainder per chunk (quadratic on a book) and its dead
+   `estimated_duration_seconds` field is replaced by
+   `app/chunking/estimate.py::estimated_speech_seconds`, shared with the
+   provider's token budget.
+3. **Live takes vs. superseded takes.** `Job.active_chunks()`,
+   `Job.activate_chunk_version` (validates first, then flips `deprecated`),
+   `JobManager._refresh_derived` (one pass for counts, timeline, playable run,
+   `buffered_seconds`), `exportable_wav_paths`, and `total_chunks_emitted` as a
+   derived property. Reprocess/take-switch state used to double-count,
+   over-report `buffered_seconds`, and truncate the download.
+4. **Every take has its own media files** and `?v=` is honoured by the segment
+   and peaks routes. This was a real, reproducible bug: a reprocess overwrote
+   the take it replaced, so switching back played the new audio.
+5. **`active_chunk_version` is in `JobDetailResponse`.** The reader already
+   treated it as authoritative; the server never sent it, so
+   `set-active-version` was a no-op client-side. Switching a take also bumps
+   `audio_epoch` so the player rebuilds its stream.
+6. **Reprocess acts on the live take** (not the first record for the index, which
+   reverted an earlier text edit) and revives a completed job itself instead of
+   relying on the route to remember.
+7. **Duplication removed:** `BatchGroup` NamedTuple instead of bare
+   `(model, language, voice)` tuples, `MediaStore._chunk_stem` instead of three
+   copies of the version-suffix logic, pure path accessors (reads no longer
+   `mkdir` under /tmp), slimmed `PackagedChunk`/`RenderedChunkResult`, one
+   `_requeue_chunk` behind `mark_chunk_planned`/`mark_chunk_retry`, and the
+   unobservable `Queued` chunk transition removed.
+8. **The never-collected `server/app/jobs/test_*.py` modules were deleted** and
+   their intent moved into `tests/unit/test_jobs.py`.
 
 ## Agent Workflow Checklist
 

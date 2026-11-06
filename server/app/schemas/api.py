@@ -45,6 +45,11 @@ class JobDetailResponse(JobSummaryResponse):
     plan_version: int
     chunks: list[ChunkResponse]
     failed_reason: str | None
+    # index -> live version. Authoritative for the reader: it is what decides
+    # which take of a reprocessed chunk plays. It used to live only in server
+    # memory, so the reader always fell back to the newest take and the
+    # set-active-version endpoint had no observable effect.
+    active_chunk_version: dict[int, int] = Field(default_factory=dict)
     # Increments when already-rendered audio is invalidated (full re-render) so
     # the reader can drop its buffered media stream instead of replaying it.
     audio_epoch: int = 0
@@ -355,6 +360,7 @@ def job_to_detail(job: Job) -> JobDetailResponse:
             chunk_to_response(job, chunk)
             for chunk in sorted(job.chunks, key=lambda item: item.index)
         ],
+        active_chunk_version=dict(job.active_chunk_version),
         failed_reason=job.failed_reason,
         audio_epoch=job.audio_epoch,
     )

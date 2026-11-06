@@ -2,6 +2,7 @@ import io
 import json
 import struct
 import wave
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -31,7 +32,8 @@ def test_package_wav_chunk_writes_peaks_file(settings: Settings) -> None:
     try:
         stored = store.package_wav_chunk("job-1", 0, _build_wav_bytes())
         peaks_path = store.peaks_path("job-1", 0)
-        assert str(peaks_path) == stored.peaks_path
+        assert stored.segment_path == str(store.segment_path("job-1", 0))
+        assert stored.wav_path == str(store.wav_path("job-1", 0))
         assert peaks_path.exists()
         payload = json.loads(peaks_path.read_text())
         assert payload["bins"] == len(payload["peaks"]) > 0
@@ -85,6 +87,33 @@ def test_a_wedged_ffmpeg_times_out_instead_of_freezing_the_scheduler(
             store.package_wav_chunk("job-timeout", 0, _build_wav_bytes())
         assert calls[0]["timeout"] == CHUNK_ENCODE_TIMEOUT_SECONDS
         # The truncated encode must not be left behind as if it were real.
-        assert not (store.job_dir("job-timeout") / "00000_v0.mp4").exists()
+        assert not list(store.job_dir("job-timeout").glob("*.mp4"))
     finally:
         store.remove_job("job-timeout")
+
+
+def test_each_take_gets_its_own_files(settings: Settings) -> None:
+    """A reprocessed take must not overwrite the take it replaces.
+
+    The worker used to package every take under the versionless filename, so
+    `version` was decorative: switching back to the old take served the new
+    audio, and the version in the segment URL selected nothing.
+    """
+    store = MediaStore(settings)
+    try:
+        first = store.package_wav_chunk("job-1", 0, _build_wav_bytes())
+        first_wav = Path(first.wav_path).read_bytes()
+
+        second = store.package_wav_chunk("job-1", 0, _build_wav_bytes(4800), version=1)
+
+        assert first.wav_path != second.wav_path
+        assert first.segment_path != second.segment_path
+        assert Path(second.wav_path).name == "00000_v1.wav"
+        assert Path(second.segment_path).name == "00000_v1.m4s"
+        assert store.peaks_path("job-1", 0, version=1).name == "00000_v1.peaks.json"
+        # The superseded take is untouched and still served under version 0.
+        assert Path(first.wav_path).read_bytes() == first_wav
+        assert store.peaks_path("job-1", 0).exists()
+        assert store.peaks_path("job-1", 0, version=1).exists()
+    finally:
+        store.remove_job("job-1")

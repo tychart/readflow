@@ -4,19 +4,31 @@ import re
 from dataclasses import dataclass
 
 from app.core.config import RuntimeConfig
-from app.jobs.models import Job
 
 
-@dataclass(slots=True)
-class PlannedChunk:
+@dataclass(frozen=True, slots=True)
+class ChunkPlan:
+    """One chunk cut out of the canonical source text.
+
+    `char_start`/`char_end` are absolute offsets into `Job.source_text` and
+    cover the separator whitespace up to the next chunk, so consecutive plans
+    tile the document with no gaps and no overlap. `char_end` doubles as the
+    offset planning continues from — a separate field for that was always the
+    same value, and a default for it silently stopped planning.
+    """
+
     text: str
     char_start: int
     char_end: int
-    estimated_duration_seconds: float
 
 
 class ChunkPlanner:
     """Splits a job's canonical source text into renderable chunks.
+
+    A pure function of (text, offset): it never touches the job. `JobManager`
+    owns the cursor and the chunk list, so a plan that is computed but never
+    appended (a cancelled tick, a raised error) cannot silently skip text —
+    the old version advanced the cursor before the chunk was stored.
 
     `Job.source_text` is already normalized (see
     `app.chunking.normalize.normalize_source_text`), so this planner only reads
@@ -26,71 +38,60 @@ class ChunkPlanner:
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
 
-    def plan_next(self, job: Job) -> PlannedChunk | None:
-        if job.planner_cursor.exhausted:
+    def plan_next(self, text: str, offset: int) -> ChunkPlan | None:
+        """Cut the next chunk out of `text` at `offset`, or None when done.
+
+        Only a bounded window past `offset` is inspected. Slicing the whole
+        remainder (the old implementation did `text[offset:]` and then scanned
+        it) copied every remaining character once per chunk, which is quadratic
+        work on a book even though each chunk only looks ~1.2 targets ahead.
+        """
+        if offset < 0 or offset >= len(text):
             return None
-        text = job.source_text
-        start = job.planner_cursor.offset
-        if start >= len(text):
-            job.planner_cursor.offset = -1
+        target_chars = self._config.chunk_target_chars
+        window_end = min(len(text), offset + int(target_chars * 1.2) + 1)
+        window = text[offset:window_end]
+        if not window.strip():
             return None
 
-        target_chars = self._target_chars(job)
-        remaining = text[start:]
-        if not remaining.strip():
-            job.planner_cursor.offset = -1
-            return None
-
-        char_end = self._find_boundary(remaining, target_chars)
-        chunk_text = remaining[:char_end].strip()
+        char_end = self._find_boundary(window, target_chars)
+        chunk_text = window[:char_end].strip()
         if not chunk_text:
-            job.planner_cursor.offset = -1
             return None
 
-        absolute_end = start + char_end
+        absolute_end = offset + char_end
         while absolute_end < len(text) and text[absolute_end].isspace():
             absolute_end += 1
 
-        if absolute_end >= len(text):
-            job.planner_cursor.offset = -1
-        else:
-            job.planner_cursor.offset = absolute_end
-        job.planner_cursor.chunks_emitted += 1
+        return ChunkPlan(text=chunk_text, char_start=offset, char_end=absolute_end)
 
-        return PlannedChunk(
-            text=chunk_text,
-            char_start=start,
-            char_end=absolute_end,
-            estimated_duration_seconds=max(
-                1.0, len(chunk_text) / self._config.estimated_chars_per_second
-            ),
-        )
+    def _find_boundary(self, window: str, target_chars: int) -> int:
+        """Index to cut `window` at, preferring a natural break near the target.
 
-    def _target_chars(self, job: Job) -> int:
-        return self._config.chunk_target_chars
-
-    def _find_boundary(self, text: str, target_chars: int) -> int:
-        if len(text) <= target_chars:
-            return len(text)
+        `window` is already bounded by the caller (`plan_next`); this only looks
+        inside it.
+        """
+        if len(window) <= target_chars:
+            return len(window)
 
         candidates = [
-            self._last_boundary(text, target_chars, r"\n\n+"),
-            self._last_boundary(text, target_chars, r"(?<=[.!?])\s+"),
-            self._last_boundary(text, target_chars, r"(?<=[,;:])\s+"),
+            self._last_boundary(window, target_chars, r"\n\n+"),
+            self._last_boundary(window, target_chars, r"(?<=[.!?])\s+"),
+            self._last_boundary(window, target_chars, r"(?<=[,;:])\s+"),
         ]
         minimum_boundary = max(40, int(target_chars * 0.45))
         for candidate in candidates:
             if candidate is not None and candidate >= minimum_boundary:
                 return candidate
 
-        hard_limit = min(len(text), int(target_chars * 1.2))
-        space_index = text.rfind(" ", 0, hard_limit)
+        hard_limit = min(len(window), int(target_chars * 1.2))
+        space_index = window.rfind(" ", 0, hard_limit)
         if space_index > 0:
             return space_index
         return hard_limit
 
-    def _last_boundary(self, text: str, target_chars: int, pattern: str) -> int | None:
+    def _last_boundary(self, window: str, target_chars: int, pattern: str) -> int | None:
         last_match: int | None = None
-        for match in re.finditer(pattern, text[: int(target_chars * 1.2)]):
+        for match in re.finditer(pattern, window[: int(target_chars * 1.2)]):
             last_match = match.end()
         return last_match
