@@ -6,6 +6,8 @@ from pathlib import Path
 from app.chunking.planner import ChunkPlanner
 from app.core.config import Settings
 from app.core.hub import WebSocketHub
+from app.db.memory import MemoryDatabase
+from app.db.protocols import Database
 from app.jobs.manager import JobManager
 from app.media.store import MediaStore
 from app.scheduler.service import SchedulerService
@@ -19,6 +21,9 @@ from app.voices.registry import VoiceRegistry
 @dataclass(slots=True)
 class AppServices:
     settings: Settings
+    # Storage seam. Services depend on the protocol, never on the in-memory
+    # implementation, so a SQL adapter is a one-line construction change here.
+    database: Database
     job_manager: JobManager
     planner: ChunkPlanner
     media_store: MediaStore
@@ -32,7 +37,8 @@ class AppServices:
 
 
 def build_services(settings: Settings, base_dir: Path) -> AppServices:
-    job_manager = JobManager()
+    database: Database = MemoryDatabase()
+    job_manager = JobManager(database)
     planner = ChunkPlanner(settings.runtime)
     media_store = MediaStore(settings)
     telemetry = TelemetryService(settings.runtime.recent_events_limit)
@@ -72,6 +78,7 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
     )
     return AppServices(
         settings=settings,
+        database=database,
         job_manager=job_manager,
         planner=planner,
         media_store=media_store,

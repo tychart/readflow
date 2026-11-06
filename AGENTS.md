@@ -270,8 +270,11 @@ Key files:
 
 - `server/app/core/app.py`
 - `server/app/core/services.py`
+- `server/app/core/identity.py` (seeded default user id; auth seam)
 - `server/app/core/hub.py` (WebSocketHub)
 - `server/app/api/router.py`
+- `server/app/db/protocols.py` (Database / UnitOfWork / repository protocols)
+- `server/app/db/memory.py` (the in-memory adapter)
 - `server/app/scheduler/service.py`
 - `server/app/scheduler/recovery.py` (pure stall-recovery policy)
 - `server/app/synthesis/provider.py`
@@ -292,6 +295,47 @@ Core services:
 - `MediaStore`
 - `TelemetryService`
 - `WebSocketHub`
+
+### Storage layer (`server/app/db`) — the database seam
+
+Everything that will eventually live in PostgreSQL is reached through one
+boundary, and nothing above it imports a concrete adapter:
+
+- **`app/db/protocols.py`** — the `Database` / `UnitOfWork` protocols and one
+  repository protocol per entity (`users`, `jobs`, …).
+- **`app/db/memory.py`** — `MemoryDatabase`, the only adapter today. It is a
+  small database, not a dict wrapper: a users table, a user-scoped job table,
+  explicit `add`/`save`/`delete`, and transactions that journal structural
+  writes so an exception undoes them. Reads are identity-mapped, which is what
+  lets a service load a job, mutate it, and save it.
+- **`app/core/services.py`** constructs the adapter once and injects it. Swapping
+  in a SQL adapter is a change in that function plus a new module.
+
+Rules that are load-bearing:
+
+- **`JobManager` is the only code that touches job storage.** Every public
+  method opens one `with self._db.transaction() as uow:`, loads the aggregate
+  with `uow.jobs.get(user_id, job_id)`, applies the rule, and calls
+  `uow.jobs.save(job)` after any mutation. Tests that "just mutate the object"
+  work because reads are identity-mapped, but the `save()` is what makes the
+  same code correct against a real database — do not drop it when adding a
+  method.
+- **Ownership is enforced at the repository boundary.** Lookups are
+  `(user_id, job_id)`; another user's job is indistinguishable from a missing
+  one. `Job.user_id` is populated from the seeded local user
+  (`app/core/identity.py`) until authentication exists, and `JobManager` takes a
+  `user_id` so call sites already speak per-user.
+- **A `Job` is one aggregate**: the job row and its `ChunkRecord` list are loaded
+  and saved together. The adapter decides how that is stored (one table now, a
+  child table with diffed writes later); call sites do not change.
+- **Explicit writes.** The in-memory adapter shares instances, so an unsaved
+  edit is visible in memory and would be lost in Postgres. `tests/unit/test_db.py`
+  pins the contract (user scoping, identity per transaction, structural
+  rollback, `save`-on-mutation) and is the definition a SQL adapter must
+  satisfy — add the new adapter to its `ADAPTER_FACTORIES` list.
+- **Validate before mutating.** In-memory rollback covers structural writes
+  (`add`/`delete`), not half-applied attribute edits. The existing services
+  follow this pattern already.
 
 ## Frontend architecture
 

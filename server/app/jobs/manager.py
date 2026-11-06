@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from app.chunking.normalize import normalize_source_text
 from app.chunking.planner import ChunkPlan
+from app.core.identity import DEFAULT_USER_ID
+from app.db.protocols import Database, UnitOfWork
 from app.jobs.models import (
     PENDING_CHUNK_STATUSES,
     ChunkRecord,
@@ -29,8 +31,55 @@ _REVOICEABLE_STATUSES = frozenset(
 
 
 class JobManager:
-    def __init__(self) -> None:
-        self._jobs: dict[str, Job] = {}
+    """Command service for jobs and chunks.
+
+    Every public method is one database transaction: it loads the job aggregate
+    through a unit of work, applies the domain rule, and saves. Nothing above
+    this class touches storage, and nothing in this class touches a concrete
+    database — see `app.db.protocols`.
+
+    The manager is user-scoped (`user_id`). There is one seeded local user until
+    authentication exists, so the default argument keeps call sites honest while
+    the queries are already per-user.
+    """
+
+    def __init__(self, database: Database, *, user_id: str = DEFAULT_USER_ID) -> None:
+        self._db = database
+        self._user_id = user_id
+
+    # ── reads ───────────────────────────────────────────────────────────────
+
+    def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
+        job = uow.jobs.get(self._user_id, job_id)
+        if job is None:
+            raise KeyError(f"Unknown job '{job_id}'")
+        return job
+
+    @staticmethod
+    def _resolve_chunk(job: Job, chunk: ChunkRecord) -> ChunkRecord:
+        """Return the aggregate's own instance for `chunk`.
+
+        Callers legitimately hold a chunk reference across a synthesis await. A
+        real database returns a fresh aggregate, so the mutation must be applied
+        to the instance that belongs to the loaded job, not to the caller's
+        detached one. In memory these are the same object; this keeps the code
+        correct for both adapters.
+        """
+        for candidate in job.chunks:
+            if candidate.index == chunk.index and candidate.version == chunk.version:
+                return candidate
+        raise KeyError(f"Job '{job.id}' has no chunk {chunk.index} v{chunk.version}")
+
+    def list_jobs(self) -> list[Job]:
+        with self._db.transaction() as uow:
+            jobs = uow.jobs.list(self._user_id)
+        return sorted(jobs, key=lambda job: job.submitted_at, reverse=True)
+
+    def get_job(self, job_id: str) -> Job:
+        with self._db.transaction() as uow:
+            return self._require_job(uow, job_id)
+
+    # ── lifecycle ───────────────────────────────────────────────────────────
 
     def create_job(
         self,
@@ -42,8 +91,8 @@ class JobManager:
         language: str = "English",
         title: str | None = None,
     ) -> Job:
-        now = time()
         normalized_text = normalize_source_text(source_text)
+        now = time()
         job = Job(
             id=str(uuid4()),
             title=title or self._derive_title(normalized_text),
@@ -52,54 +101,54 @@ class JobManager:
             model_id=model_id,
             voice_id=voice_id,
             language=language,
+            user_id=self._user_id,
             submitted_at=now,
             updated_at=now,
         )
-        self._jobs[job.id] = job
+        with self._db.transaction() as uow:
+            uow.jobs.add(job)
         return job
-
-    def list_jobs(self) -> list[Job]:
-        return sorted(self._jobs.values(), key=lambda job: job.submitted_at, reverse=True)
-
-    def get_job(self, job_id: str) -> Job:
-        try:
-            return self._jobs[job_id]
-        except KeyError as exc:
-            raise KeyError(f"Unknown job '{job_id}'") from exc
 
     def delete_job(self, job_id: str) -> None:
-        self._jobs.pop(job_id, None)
+        with self._db.transaction() as uow:
+            uow.jobs.delete(self._user_id, job_id)
 
     def activate_job(self, job_id: str) -> Job:
-        job = self.get_job(job_id)
-        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                return job
+            job.is_active_listening = True
+            job.playback_state.is_playing = True
+            job.playback_state.last_event_at = time()
+            if job.status != JobStatus.COMPLETED:
+                job.status = JobStatus.PLAYING
+            job.updated_at = time()
+            uow.jobs.save(job)
             return job
-        job.is_active_listening = True
-        job.playback_state.is_playing = True
-        job.playback_state.last_event_at = time()
-        if job.status != JobStatus.COMPLETED:
-            job.status = JobStatus.PLAYING
-        job.updated_at = time()
-        return job
 
     def pause_job(self, job_id: str) -> Job:
-        job = self.get_job(job_id)
-        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                return job
+            job.is_active_listening = False
+            job.playback_state.is_playing = False
+            job.playback_state.last_event_at = time()
+            job.status = JobStatus.PAUSED
+            job.updated_at = time()
+            uow.jobs.save(job)
             return job
-        job.is_active_listening = False
-        job.playback_state.is_playing = False
-        job.playback_state.last_event_at = time()
-        job.status = JobStatus.PAUSED
-        job.updated_at = time()
-        return job
 
     def resume_job(self, job_id: str) -> Job:
-        job = self.get_job(job_id)
-        if job.status == JobStatus.COMPLETED:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            if job.status == JobStatus.COMPLETED:
+                return job
+            job.status = JobStatus.QUEUED
+            job.updated_at = time()
+            uow.jobs.save(job)
             return job
-        job.status = JobStatus.QUEUED
-        job.updated_at = time()
-        return job
 
     def update_playback(self, job_id: str, current_time_seconds: float, is_playing: bool) -> Job:
         """Record the listener's position.
@@ -111,24 +160,27 @@ class JobManager:
         full (it is what kept a lookahead cap from ever being released), so the
         reader adds its anchor offset before reporting.
         """
-        job = self.get_job(job_id)
-        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                return job
+            job.playback_state.current_time_seconds = current_time_seconds
+            job.playback_state.is_playing = is_playing
+            job.playback_state.last_event_at = time()
+            job.completed_seconds = max(job.completed_seconds, current_time_seconds)
+            # The playable run is the cached contiguous duration, so this stays
+            # O(1) on a path the reader hits ~20x/s during playback.
+            job.buffered_seconds = max(0.0, job.contiguous_written_seconds - current_time_seconds)
+            if is_playing and job.status != JobStatus.PAUSED:
+                # A position report while playing is proof of an active
+                # listener, so the flag does not depend on the reader hitting
+                # /activate after a reload. Explicit pause still wins: that path
+                # sets PAUSED first.
+                job.is_active_listening = True
+                job.status = JobStatus.PLAYING
+            job.updated_at = time()
+            uow.jobs.save(job)
             return job
-        job.playback_state.current_time_seconds = current_time_seconds
-        job.playback_state.is_playing = is_playing
-        job.playback_state.last_event_at = time()
-        job.completed_seconds = max(job.completed_seconds, current_time_seconds)
-        # The playable run is the cached contiguous duration, so this stays O(1)
-        # on a path the reader hits ~20x/s during playback.
-        job.buffered_seconds = max(0.0, job.contiguous_written_seconds - current_time_seconds)
-        if is_playing and job.status != JobStatus.PAUSED:
-            # A position report while playing is proof of an active listener, so
-            # the flag does not depend on the reader hitting /activate after a
-            # reload. Explicit pause still wins: that path sets PAUSED first.
-            job.is_active_listening = True
-            job.status = JobStatus.PLAYING
-        job.updated_at = time()
-        return job
 
     def set_render_to_end(self, job_id: str, enabled: bool = True) -> Job:
         """Opt this job out of (or back into) the scheduler's lookahead cap.
@@ -137,10 +189,12 @@ class JobManager:
         `render_ahead_seconds`. A paused job still does not render, because pause
         is the one intentional stop.
         """
-        job = self.get_job(job_id)
-        job.render_to_end = enabled
-        job.updated_at = time()
-        return job
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            job.render_to_end = enabled
+            job.updated_at = time()
+            uow.jobs.save(job)
+            return job
 
     def expire_stale_listeners(self, timeout_seconds: float) -> list[Job]:
         """Forget listeners that stopped reporting playback positions.
@@ -154,18 +208,20 @@ class JobManager:
             return []
         now = time()
         expired: list[Job] = []
-        for job in self._jobs.values():
-            if not job.is_active_listening:
-                continue
-            if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED, JobStatus.FAILED}:
-                continue
-            if now - job.playback_state.last_event_at <= timeout_seconds:
-                continue
-            job.is_active_listening = False
-            if job.status == JobStatus.PLAYING:
-                job.status = JobStatus.QUEUED
-            job.updated_at = now
-            expired.append(job)
+        with self._db.transaction() as uow:
+            for job in uow.jobs.list(self._user_id):
+                if not job.is_active_listening:
+                    continue
+                if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED, JobStatus.FAILED}:
+                    continue
+                if now - job.playback_state.last_event_at <= timeout_seconds:
+                    continue
+                job.is_active_listening = False
+                if job.status == JobStatus.PLAYING:
+                    job.status = JobStatus.QUEUED
+                job.updated_at = now
+                uow.jobs.save(job)
+                expired.append(job)
         return expired
 
     def set_voice(self, job_id: str, voice_id: str, *, rerender_written: bool = False) -> Job:
@@ -189,44 +245,47 @@ class JobManager:
         generation and written as the old voice, and for a full re-render it is
         requeued with the new voice (see `_requeue_superseded_chunk`).
         """
-        job = self.get_job(job_id)
-        if job.voice_id == voice_id and not rerender_written:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            if job.voice_id == voice_id and not rerender_written:
+                return job
+            job.voice_id = voice_id
+            job.plan_version += 1
+            now = time()
+            requeued = False
+            for chunk in job.chunks:
+                if chunk.deprecated:
+                    continue
+                if chunk.status == ChunkStatus.RENDERING:
+                    if not rerender_written:
+                        # The worker already fetched the old voice prompt for
+                        # this batch; pin the chunk to the current generation so
+                        # it is written as-is instead of being requeued.
+                        chunk.plan_version = job.plan_version
+                        chunk.updated_at = now
+                    # A full re-render leaves the old plan version in place; the
+                    # chunk is requeued with the new voice once the batch
+                    # returns.
+                    continue
+                if rerender_written or chunk.status in _REVOICEABLE_STATUSES:
+                    self._apply_voice(job, chunk, now)
+                    requeued = True
+            if rerender_written:
+                job.audio_epoch += 1
+                job.completed_seconds = 0.0
+                job.playback_state.current_time_seconds = 0.0
+                job.playback_state.is_playing = False
+            self._refresh_derived(job)
+            if requeued or rerender_written:
+                # A finished job with work to redo must leave the terminal state
+                # or the reader treats it as local and stops watching for the
+                # replacement chunks.
+                if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                    job.status = JobStatus.QUEUED
+                self._settle_status(job)
+            job.updated_at = now
+            uow.jobs.save(job)
             return job
-        job.voice_id = voice_id
-        job.plan_version += 1
-        now = time()
-        requeued = False
-        for chunk in job.chunks:
-            if chunk.deprecated:
-                continue
-            if chunk.status == ChunkStatus.RENDERING:
-                if not rerender_written:
-                    # The worker already fetched the old voice prompt for this
-                    # batch; pin the chunk to the current generation so it is
-                    # written as-is instead of being requeued.
-                    chunk.plan_version = job.plan_version
-                    chunk.updated_at = now
-                # A full re-render leaves the old plan version in place; the
-                # chunk is requeued with the new voice once the batch returns.
-                continue
-            if rerender_written or chunk.status in _REVOICEABLE_STATUSES:
-                self._apply_voice(job, chunk, now)
-                requeued = True
-        if rerender_written:
-            job.audio_epoch += 1
-            job.completed_seconds = 0.0
-            job.playback_state.current_time_seconds = 0.0
-            job.playback_state.is_playing = False
-        self._refresh_derived(job)
-        if requeued or rerender_written:
-            # A finished job with work to redo must leave the terminal state or
-            # the reader treats it as local and stops watching for the
-            # replacement chunks.
-            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
-                job.status = JobStatus.QUEUED
-            self._settle_status(job)
-        job.updated_at = now
-        return job
 
     def _apply_voice(self, job: Job, chunk: ChunkRecord, now: float) -> None:
         """Re-point one queued chunk at a voice and return it to the queue."""
@@ -263,42 +322,51 @@ class JobManager:
         The manager owns every mutation of the job: the planner only proposes a
         `ChunkPlan`. That keeps "planning advanced" and "chunk exists" atomic.
         """
-        job = self.get_job(job_id)
-        chunk = ChunkRecord(
-            job_id=job_id,
-            index=job.next_chunk_index,
-            text=plan.text,
-            voice_id=job.voice_id,
-            language=job.language,
-            plan_version=job.plan_version,
-            char_start=plan.char_start,
-            char_end=plan.char_end,
-        )
-        job.chunks.append(chunk)
-        job.next_chunk_index += 1
-        job.active_chunk_version[chunk.index] = chunk.version
-        # Planning resumes where this span ended; reaching the end of the
-        # source text exhausts it (`plan_next` would return None anyway).
-        job.planner_cursor.offset = -1 if plan.char_end >= len(job.source_text) else plan.char_end
-        job.planner_cursor.chunks_emitted += 1
-        job.updated_at = time()
-        return chunk
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            chunk = ChunkRecord(
+                job_id=job_id,
+                index=job.next_chunk_index,
+                text=plan.text,
+                voice_id=job.voice_id,
+                language=job.language,
+                plan_version=job.plan_version,
+                char_start=plan.char_start,
+                char_end=plan.char_end,
+            )
+            job.chunks.append(chunk)
+            job.next_chunk_index += 1
+            job.active_chunk_version[chunk.index] = chunk.version
+            # Planning resumes where this span ended; reaching the end of the
+            # source text exhausts it (`plan_next` would return None anyway).
+            job.planner_cursor.offset = (
+                -1 if plan.char_end >= len(job.source_text) else plan.char_end
+            )
+            job.planner_cursor.chunks_emitted += 1
+            job.updated_at = time()
+            uow.jobs.save(job)
+            return chunk
 
     def finish_planning(self, job_id: str) -> Job:
         """Mark the planner as having reached the end of the source text."""
-        job = self.get_job(job_id)
-        job.planner_cursor.offset = -1
-        job.updated_at = time()
-        self._settle_status(job)
-        return job
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            job.planner_cursor.offset = -1
+            job.updated_at = time()
+            self._settle_status(job)
+            uow.jobs.save(job)
+            return job
 
     def mark_chunk_rendering(self, chunk: ChunkRecord) -> None:
-        chunk.status = ChunkStatus.RENDERING
-        chunk.updated_at = time()
-        job = self.get_job(chunk.job_id)
-        if job.status != JobStatus.PAUSED:
-            job.status = JobStatus.RENDERING
-        job.updated_at = time()
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, chunk.job_id)
+            stored = self._resolve_chunk(job, chunk)
+            stored.status = ChunkStatus.RENDERING
+            stored.updated_at = time()
+            if job.status != JobStatus.PAUSED:
+                job.status = JobStatus.RENDERING
+            job.updated_at = time()
+            uow.jobs.save(job)
 
     def mark_chunk_planned(self, chunk: ChunkRecord) -> Job:
         """Return a chunk to the queue untouched.
@@ -316,17 +384,26 @@ class JobManager:
         Keeps the job alive: only the chunk is requeued, and the job continues
         rendering its other chunks until the attempt budget is spent.
         """
-        chunk.attempts += 1
-        chunk.error = error
-        return self._requeue_chunk(chunk)
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, chunk.job_id)
+            stored = self._resolve_chunk(job, chunk)
+            stored.attempts += 1
+            stored.error = error
+            return self._requeue_chunk_locked(uow, job, stored)
 
     def _requeue_chunk(self, chunk: ChunkRecord) -> Job:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, chunk.job_id)
+            stored = self._resolve_chunk(job, chunk)
+            return self._requeue_chunk_locked(uow, job, stored)
+
+    def _requeue_chunk_locked(self, uow: UnitOfWork, job: Job, chunk: ChunkRecord) -> Job:
         chunk.status = ChunkStatus.PLANNED
         chunk.updated_at = time()
-        job = self.get_job(chunk.job_id)
         self._requeue_superseded_chunk(job, chunk)
         self._settle_status(job)
         job.updated_at = time()
+        uow.jobs.save(job)
         return job
 
     def mark_chunk_written(
@@ -337,23 +414,27 @@ class JobManager:
         segment_path: str,
         wav_path: str,
     ) -> Job:
-        job = self.get_job(chunk.job_id)
-        # A chunk that came back after its plan generation was superseded is
-        # requeued with the job's current voice rather than written as stale
-        # audio (see `_requeue_superseded_chunk`).
-        if self._requeue_superseded_chunk(job, chunk):
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, chunk.job_id)
+            stored = self._resolve_chunk(job, chunk)
+            # A chunk that came back after its plan generation was superseded is
+            # requeued with the job's current voice rather than written as stale
+            # audio (see `_requeue_superseded_chunk`).
+            if self._requeue_superseded_chunk(job, stored):
+                job.updated_at = time()
+                uow.jobs.save(job)
+                return job
+            stored.status = ChunkStatus.WRITTEN
+            stored.duration_seconds = duration_seconds
+            stored.segment_path = segment_path
+            stored.wav_path = wav_path
+            stored.error = None
+            stored.updated_at = time()
+            self._refresh_derived(job)
+            self._settle_status(job)
             job.updated_at = time()
+            uow.jobs.save(job)
             return job
-        chunk.status = ChunkStatus.WRITTEN
-        chunk.duration_seconds = duration_seconds
-        chunk.segment_path = segment_path
-        chunk.wav_path = wav_path
-        chunk.error = None
-        chunk.updated_at = time()
-        self._refresh_derived(job)
-        self._settle_status(job)
-        job.updated_at = time()
-        return job
 
     def mark_chunk_failed(self, chunk: ChunkRecord, error: str) -> Job:
         """Mark a single chunk failed after its attempt budget is spent.
@@ -363,15 +444,18 @@ class JobManager:
         the rest of the job keeps rendering, rather than turning the job
         terminal and stopping all work on it.
         """
-        chunk.status = ChunkStatus.FAILED
-        chunk.error = error
-        chunk.updated_at = time()
-        job = self.get_job(chunk.job_id)
-        self._requeue_superseded_chunk(job, chunk)
-        self._refresh_derived(job)
-        self._settle_status(job)
-        job.updated_at = time()
-        return job
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, chunk.job_id)
+            stored = self._resolve_chunk(job, chunk)
+            stored.status = ChunkStatus.FAILED
+            stored.error = error
+            stored.updated_at = time()
+            self._requeue_superseded_chunk(job, stored)
+            self._refresh_derived(job)
+            self._settle_status(job)
+            job.updated_at = time()
+            uow.jobs.save(job)
+            return job
 
     def _settle_status(self, job: Job) -> None:
         """Recompute a job's coarse status from its chunks.
@@ -449,7 +533,9 @@ class JobManager:
         those to the GPU silently undid the pause (finishing the batch then
         rewrote the job status). Pause is the one intentional stop.
         """
-        for job in self.list_jobs():
+        with self._db.transaction() as uow:
+            jobs = uow.jobs.list(self._user_id)
+        for job in jobs:
             if job.status == JobStatus.PAUSED:
                 continue
             for chunk in job.chunks:
@@ -466,9 +552,11 @@ class JobManager:
 
     def queue_depth(self) -> int:
         """Chunks the scheduler can still act on (superseded takes excluded)."""
+        with self._db.transaction() as uow:
+            jobs = uow.jobs.list(self._user_id)
         return sum(
             1
-            for job in self._jobs.values()
+            for job in jobs
             for chunk in job.chunks
             if chunk.status in PENDING_CHUNK_STATUSES and not chunk.deprecated
         )
@@ -489,34 +577,36 @@ class JobManager:
         here rather than relying on the caller to remember: the reader stops
         polling a completed job, so it would never see the replacement chunk.
         """
-        existing = self.get_job(job_id).active_chunk(parent_index)
-        if existing is None:
-            # Validate before appending: a rejected parent index used to leave
-            # an orphan record behind when activation failed.
-            raise KeyError(f"Chunk {parent_index} does not exist")
-        self.reactivate_job(job_id)
-        job = self.get_job(job_id)
-        version = job.get_latest_chunk_version(parent_index) + 1
-        chunk = ChunkRecord(
-            job_id=job_id,
-            index=parent_index,
-            text=text,
-            voice_id=voice_id,
-            language=job.language,
-            plan_version=job.plan_version,
-            char_start=char_start,
-            char_end=char_end,
-            version=version,
-            parent_chunk_index=parent_index,
-            status=ChunkStatus.PLANNED,
-            reprocessing=True,
-        )
-        job.chunks.append(chunk)
-        job.activate_chunk_version(parent_index, version)
-        self._refresh_derived(job)
-        self._settle_status(job)
-        job.updated_at = time()
-        return job
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            existing = job.active_chunk(parent_index)
+            if existing is None:
+                # Validate before appending: a rejected parent index used to
+                # leave an orphan record behind when activation failed.
+                raise KeyError(f"Chunk {parent_index} does not exist")
+            self._reactivate_locked(job)
+            version = job.get_latest_chunk_version(parent_index) + 1
+            chunk = ChunkRecord(
+                job_id=job_id,
+                index=parent_index,
+                text=text,
+                voice_id=voice_id,
+                language=job.language,
+                plan_version=job.plan_version,
+                char_start=char_start,
+                char_end=char_end,
+                version=version,
+                parent_chunk_index=parent_index,
+                status=ChunkStatus.PLANNED,
+                reprocessing=True,
+            )
+            job.chunks.append(chunk)
+            job.activate_chunk_version(parent_index, version)
+            self._refresh_derived(job)
+            self._settle_status(job)
+            job.updated_at = time()
+            uow.jobs.save(job)
+            return job
 
     def set_active_chunk_version(self, job_id: str, chunk_index: int, version: int) -> Job:
         """Make an already-rendered take the live one for `chunk_index`.
@@ -530,24 +620,31 @@ class JobManager:
         already buffered the old take would keep playing it. Positions are left
         alone — this is a take swap, not a re-render of the whole job.
         """
-        job = self.get_job(job_id)
-        job.activate_chunk_version(chunk_index, version)
-        job.audio_epoch += 1
-        self._refresh_derived(job)
-        self._settle_status(job)
-        job.updated_at = time()
-        return job
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            job.activate_chunk_version(chunk_index, version)
+            job.audio_epoch += 1
+            self._refresh_derived(job)
+            self._settle_status(job)
+            job.updated_at = time()
+            uow.jobs.save(job)
+            return job
 
     def reactivate_job(self, job_id: str) -> Job:
         """Reactivate a completed or failed job so it can be reprocessed."""
-        job = self.get_job(job_id)
-        if job.status not in {JobStatus.COMPLETED, JobStatus.FAILED}:
+        with self._db.transaction() as uow:
+            job = self._require_job(uow, job_id)
+            self._reactivate_locked(job)
+            uow.jobs.save(job)
             return job
+
+    def _reactivate_locked(self, job: Job) -> None:
+        if job.status not in {JobStatus.COMPLETED, JobStatus.FAILED}:
+            return
         job.status = JobStatus.QUEUED
         job.is_active_listening = False
         job.playback_state.is_playing = False
         job.updated_at = time()
-        return job
 
     def _derive_title(self, source_text: str) -> str:
         first_line = source_text.strip().splitlines()[0] if source_text.strip() else "Untitled Job"

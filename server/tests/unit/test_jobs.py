@@ -1,6 +1,7 @@
 import pytest
 
 from app.chunking.planner import ChunkPlan
+from app.db.memory import MemoryDatabase
 from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 
@@ -12,7 +13,7 @@ def test_voice_switch_rebuilds_pending_chunks_in_place():
     re-planned them (the planner cursor only moves forward), so their text was
     silently dropped.
     """
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One. Two. Three.",
         source_kind="text",
@@ -90,7 +91,7 @@ def test_voice_switch_leaves_a_job_with_nothing_to_rebuild_alone():
 
 
 def test_voice_switch_lets_the_in_flight_batch_finish_in_the_old_voice():
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One. Two.",
         source_kind="text",
@@ -119,7 +120,7 @@ def test_voice_switch_lets_the_in_flight_batch_finish_in_the_old_voice():
 
 
 def test_full_rerender_invalidates_written_audio_and_bumps_audio_epoch():
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One finished chunk.",
         source_kind="text",
@@ -153,7 +154,7 @@ def test_full_rerender_invalidates_written_audio_and_bumps_audio_epoch():
 
 
 def test_full_rerender_requeues_an_in_flight_chunk_with_the_new_voice():
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One. Two.",
         source_kind="text",
@@ -199,7 +200,7 @@ def test_planned_chunk_index_ignores_versioned_records():
 
 
 def test_completed_jobs_ignore_playback_lifecycle_mutations():
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One finished chunk.",
         source_kind="text",
@@ -235,7 +236,7 @@ def test_completed_jobs_ignore_playback_lifecycle_mutations():
 
 
 def test_create_job_stores_canonical_source_text():
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
 
     job = manager.create_job(
         source_text="  First  line.\r\n\r\n\r\n\r\nSecond\tline.  ",
@@ -248,7 +249,7 @@ def test_create_job_stores_canonical_source_text():
 
 
 def _job_with_chunks(count: int) -> tuple[JobManager, Job, list[ChunkRecord]]:
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One. Two. Three.",
         source_kind="text",
@@ -392,7 +393,7 @@ def test_settling_keeps_an_active_listener_playing():
 
 
 def _job_with_three_written_chunks() -> tuple[JobManager, Job, list[ChunkRecord]]:
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One. Two. Three. Four.",
         source_kind="text",
@@ -530,7 +531,7 @@ def test_queue_depth_ignores_superseded_takes():
 
 def test_buffered_seconds_use_the_playable_run_not_audio_after_a_gap():
     """Audio beyond an unwritten chunk is rendered, but not listenable."""
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="One. Two. Three.",
         source_kind="text",

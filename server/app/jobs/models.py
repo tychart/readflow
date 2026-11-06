@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from time import time
 
+from app.core.identity import DEFAULT_USER_ID
+
 
 class JobStatus(StrEnum):
     QUEUED = "queued"
@@ -121,6 +123,12 @@ class Job:
     model_id: str
     voice_id: str
     language: str = "English"
+    # Owner. Every stored row is user-scoped from day one, so adding accounts is
+    # an auth change rather than a schema migration. See `app.db.protocols`.
+    user_id: str = DEFAULT_USER_ID
+    # Parent folder, or None for the root library. Grouping is a library
+    # concern; the scheduler never reads this.
+    folder_id: str | None = None
     plan_version: int = 1
     # Bumped when already-rendered audio is invalidated (a full voice
     # re-render). It is surfaced in the media/peaks URLs and in the reader's

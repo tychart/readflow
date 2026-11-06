@@ -3,6 +3,7 @@ from itertools import pairwise
 from app.chunking.normalize import normalize_source_text
 from app.chunking.planner import ChunkPlan, ChunkPlanner
 from app.core.config import RuntimeConfig
+from app.db.memory import MemoryDatabase
 from app.jobs.manager import JobManager
 
 
@@ -98,7 +99,7 @@ def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
     a plan that was never appended (an aborted tick, an exception in the
     manager) silently dropped that slice of the document.
     """
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="First sentence here. Second sentence follows. " * 8,
         source_kind="text",
@@ -123,7 +124,7 @@ def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
 
 
 def test_finish_planning_marks_the_cursor_exhausted():
-    manager = JobManager()
+    manager = JobManager(MemoryDatabase())
     job = manager.create_job(
         source_text="Only text.",
         source_kind="text",
