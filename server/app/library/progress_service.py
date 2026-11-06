@@ -95,10 +95,14 @@ class ProgressService:
             return job, progress
 
     def mark_many(self, job_ids: Iterable[str], *, read: bool) -> None:
-        """Bulk mark (selection mode) in one transaction."""
+        """Bulk mark (selection mode) in one transaction.
+
+        Validates every id before changing anything: a stale selection must not
+        half-apply (the in-memory adapter does not roll back attribute edits).
+        """
         with self._db.transaction() as uow:
-            for job_id in dict.fromkeys(job_ids):
-                job = self._require_job(uow, job_id)
+            jobs = [self._require_job(uow, job_id) for job_id in dict.fromkeys(job_ids)]
+            for job in jobs:
                 self._apply_mark(uow, job, read=read, from_chunk=None)
 
     def _apply_mark(

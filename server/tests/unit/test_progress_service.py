@@ -181,3 +181,15 @@ def test_unknown_job_is_rejected():
     _, _, progress = _setup()
     with pytest.raises(KeyError):
         progress.record("missing", position_seconds=1.0)
+
+
+def test_mark_many_validates_every_job_before_marking(services=None):
+    database, manager, progress = _setup()
+    job = _written_job(manager)
+
+    with pytest.raises(KeyError):
+        progress.mark_many([job.id, "missing"], read=True)
+
+    with database.transaction() as uow:
+        row = uow.progress.get("local", job.id)
+    assert row is None or row.heard == {}

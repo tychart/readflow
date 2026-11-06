@@ -265,3 +265,48 @@ def test_library_is_user_scoped():
     assert other_library.snapshot().jobs == []
     with pytest.raises(KeyError):
         other_library.rename_job(job.id, "Mine now")
+
+
+def test_delete_folder_only_preserves_the_children_order():
+    _, _, library = _setup()
+    container = library.create_folder("Container")
+    holder = library.create_folder("Holder", container.id)
+    first = library.create_folder("First", holder.id)
+    second = library.create_folder("Second", holder.id)
+    library.reorder(holder.id, [second.id, first.id], [])
+
+    library.delete_folder_only(holder.id)
+
+    snapshot = library.snapshot()
+    by_folder = {folder.id: folder for folder in snapshot.folders}
+    assert by_folder[second.id].parent_id == container.id
+    assert by_folder[first.id].parent_id == container.id
+    assert by_folder[second.id].position == 0
+    assert by_folder[first.id].position == 1
+
+
+def test_move_drops_selected_children_covered_by_a_selected_folder():
+    """Search selection is flat: a folder and its child can both be selected."""
+    _, manager, library = _setup()
+    destination = library.create_folder("Destination")
+    parent = library.create_folder("Parent")
+    child = library.create_folder("Child", parent.id)
+    job = _job(manager, "Inside", folder_id=parent.id)
+
+    library.move(
+        [
+            LibraryItem(kind="folder", id=parent.id),
+            LibraryItem(kind="folder", id=child.id),
+            LibraryItem(kind="job", id=job.id),
+        ],
+        destination.id,
+    )
+
+    snapshot = library.snapshot()
+    by_folder = {folder.id: folder for folder in snapshot.folders}
+    by_job = {item.id: item for item in snapshot.jobs}
+    assert by_folder[parent.id].parent_id == destination.id
+    # The child and the job traveled with their parent instead of being
+    # flattened into the destination.
+    assert by_folder[child.id].parent_id == parent.id
+    assert by_job[job.id].folder_id == parent.id

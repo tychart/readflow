@@ -47,6 +47,7 @@ export function LibraryPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
   const lastEvent = useAppStore((state) => state.lastEvent);
   const isPhone = useMediaQuery(
     "(max-width: 767px)",
@@ -102,13 +103,22 @@ export function LibraryPage() {
       refreshTimerRef.current = null;
       void refresh();
     }, 250);
-    return () => {
+  }, [lastEvent, refresh]);
+
+  // Clear any pending refresh/notice timer on unmount. Deliberately not tied to
+  // `lastEvent`: clearing there would let a steady stream of chunk events
+  // postpone the refresh indefinitely.
+  useEffect(
+    () => () => {
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
       }
-    };
-  }, [lastEvent, refresh]);
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    },
+    [],
+  );
 
   // Keep the tree path to the open folder expanded when the route changes or
   // the snapshot first arrives.
@@ -133,8 +143,12 @@ export function LibraryPage() {
   }, [organize]);
 
   const flushNotice = useCallback((message: string) => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
     setNotice(message);
-    window.setTimeout(() => {
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
       setNotice((current) => (current === message ? null : current));
     }, 3000);
   }, []);

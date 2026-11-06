@@ -145,6 +145,10 @@ class LibraryService:
         Both the destination and every source parent are re-indexed afterwards,
         so moving an item out cannot leave a gap behind and moving within one
         folder cannot exceed its sibling count.
+
+        A selection can contain a folder and something inside it (search results
+        are flat). The child travels with its ancestor; moving it separately
+        would flatten the tree, so nested items are dropped from the move.
         """
         if not items:
             return
@@ -168,22 +172,37 @@ class LibraryService:
                     raise KeyError(f"Unknown job '{item_id}'")
             assert_move_is_acyclic(folders, folder_items, folder_id)
 
+            selected_folders = set(folder_items)
+            moved_folder_ids = [
+                item_id
+                for item_id in folder_items
+                if not self._has_selected_ancestor(folder_by_id, item_id, selected_folders)
+            ]
+            covered_folder_ids: set[str] = set()
+            for item_id in moved_folder_ids:
+                covered_folder_ids |= descendant_folder_ids(folders, item_id)
+            moved_job_ids = [
+                item_id
+                for item_id in job_items
+                if (job_by_id[item_id].folder_id or None) not in covered_folder_ids
+            ]
+
             affected_folders: set[str | None] = {folder_id}
             affected_jobs: set[str | None] = {folder_id}
-            for item_id in folder_items:
+            for item_id in moved_folder_ids:
                 affected_folders.add(folder_by_id[item_id].parent_id)
-            for item_id in job_items:
+            for item_id in moved_job_ids:
                 affected_jobs.add(job_by_id[item_id].folder_id)
 
             folder_position = uow.folders.next_position(self._user_id, folder_id)
-            for offset, item_id in enumerate(folder_items):
+            for offset, item_id in enumerate(moved_folder_ids):
                 folder = folder_by_id[item_id]
                 folder.parent_id = folder_id
                 folder.position = folder_position + offset
                 uow.folders.save(folder)
 
             job_position = uow.jobs.next_position(self._user_id, folder_id)
-            for offset, item_id in enumerate(job_items):
+            for offset, item_id in enumerate(moved_job_ids):
                 job = job_by_id[item_id]
                 job.folder_id = folder_id
                 job.position = job_position + offset
@@ -327,7 +346,10 @@ class LibraryService:
             folders = uow.folders.list(self._user_id)
             jobs = uow.jobs.list(self._user_id)
 
-            child_folders = [item for item in folders if item.parent_id == folder_id]
+            child_folders = sorted(
+                (item for item in folders if item.parent_id == folder_id),
+                key=lambda item: (item.position, item.name, item.id),
+            )
             folder_position = uow.folders.next_position(self._user_id, parent_id)
             for offset, child in enumerate(child_folders):
                 child.parent_id = parent_id
@@ -335,7 +357,10 @@ class LibraryService:
                 child.updated_at = now
                 uow.folders.save(child)
 
-            child_jobs = [item for item in jobs if item.folder_id == folder_id]
+            child_jobs = sorted(
+                (item for item in jobs if item.folder_id == folder_id),
+                key=lambda item: (item.position, item.submitted_at, item.id),
+            )
             job_position = uow.jobs.next_position(self._user_id, parent_id)
             for offset, job in enumerate(child_jobs):
                 job.folder_id = parent_id
@@ -356,6 +381,10 @@ class LibraryService:
             folder.deleted_at = now
             folder.trash_entry_id = entry.id
             folder.updated_at = now
+            # Dense order at the destination, computed after the folder stops
+            # counting as a sibling.
+            self._reindex_folders(uow, parent_id)
+            self._reindex_jobs(uow, parent_id)
             uow.folders.save(folder)
             uow.trash.add(entry)
             return entry
