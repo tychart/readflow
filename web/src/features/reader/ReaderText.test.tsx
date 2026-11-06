@@ -28,12 +28,15 @@ interface BodyOverrides {
   activeChunkIndex?: number | null;
   playedIndexes?: Set<number>;
   showJumpButtons?: boolean;
+  heardIndexes?: ReadonlySet<number>;
   onJumpToChunk?: (chunkIndex: number) => void;
   onRegisterChunkRef?: (
     chunkIndex: number,
     element: HTMLDivElement | null,
   ) => void;
 }
+
+const NOOP_MARK = () => {};
 
 function renderBody(
   segments: ReturnType<typeof buildReaderTextSegments>,
@@ -42,7 +45,10 @@ function renderBody(
   return render(
     <ReaderTextBody
       activeChunkIndex={overrides.activeChunkIndex ?? null}
+      heardIndexes={overrides.heardIndexes ?? new Set()}
       onJumpToChunk={overrides.onJumpToChunk ?? NOOP_JUMP}
+      onMarkChunk={NOOP_MARK}
+      onMarkFrom={NOOP_MARK}
       onRegisterChunkRef={overrides.onRegisterChunkRef ?? NOOP_REF}
       playedIndexes={overrides.playedIndexes ?? new Set()}
       segments={segments}
@@ -247,7 +253,10 @@ describe("ReaderChunkBlock", () => {
         chunkIndex={3}
         isActive={false}
         isPlayed={false}
+        isHeard={false}
         onJump={NOOP_JUMP}
+        onMarkChunk={NOOP_MARK}
+        onMarkFrom={NOOP_MARK}
         onRegisterRef={NOOP_REF}
         showJumpButton
         text="some chunk text"
@@ -260,7 +269,10 @@ describe("ReaderChunkBlock", () => {
         chunkIndex={3}
         isActive={false}
         isPlayed={false}
+        isHeard={false}
         onJump={NOOP_JUMP}
+        onMarkChunk={NOOP_MARK}
+        onMarkFrom={NOOP_MARK}
         onRegisterRef={NOOP_REF}
         showJumpButton
         text="some chunk text"
@@ -274,7 +286,10 @@ describe("ReaderChunkBlock", () => {
     const props = {
       chunkIndex: 1,
       isPlayed: false,
+      isHeard: false,
       onJump: NOOP_JUMP,
+      onMarkChunk: NOOP_MARK,
+      onMarkFrom: NOOP_MARK,
       onRegisterRef: NOOP_REF,
       showJumpButton: true,
       text: "text",
@@ -294,7 +309,10 @@ describe("ReaderChunkBlock", () => {
         chunkIndex={0}
         isActive={false}
         isPlayed={false}
+        isHeard={false}
         onJump={NOOP_JUMP}
+        onMarkChunk={NOOP_MARK}
+        onMarkFrom={NOOP_MARK}
         onRegisterRef={NOOP_REF}
         showJumpButton={false}
         text="   "

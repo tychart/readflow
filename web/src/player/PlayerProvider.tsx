@@ -5,13 +5,16 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
-
 import { ShadowAudio } from "../components/ShadowAudio";
 import { api } from "../lib/api";
 import { liveClient } from "../lib/live-client";
 import { useMediaSourcePlayer } from "../lib/media-source";
+import { getReaderSettings } from "../state/reader-settings";
+import { resolveAutoAdvance } from "./auto-advance";
+import { collectHeardChunkIndexes } from "./heard";
 import {
   getPlayerControls,
+  playerNavigate,
   registerPlayerControls,
   usePlayerStore,
 } from "./player-store";
@@ -138,6 +141,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   };
 
   const lastSyncAtRef = useRef(0);
+  const lastHttpSyncAtRef = useRef(0);
+  // Chunk indexes played past 90% since the last report. Additive on the
+  // server, so a dropped report can never lose listening history.
+  const pendingHeardRef = useRef<Set<number>>(new Set());
+
+  // A chunk becomes heard only through real playback. The mirrored store lags
+  // the element by a commit, so this is evaluated from the values that just
+  // rendered (each playback tick), and never while a seek is pending.
+  useEffect(() => {
+    const state = usePlayerStore.getState();
+    if (!state.manifest || !state.isActuallyPlaying) return;
+    if (state.isWaitingForData || state.pendingSeekJobSeconds !== null) return;
+    collectHeardChunkIndexes(
+      state.manifest.chunks,
+      state.currentTimeSeconds + state.anchorOffsetSeconds,
+      pendingHeardRef.current,
+    );
+  }, [
+    anchorOffsetSeconds,
+    currentTimeSeconds,
+    isActuallyPlaying,
+    isWaitingForData,
+    manifest,
+  ]);
 
   const syncPlayback = useCallback(
     (force = false, playingOverride?: boolean) => {
@@ -145,6 +172,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const current = state.job;
       if (!current) return;
       const now = Date.now();
+      const heard = [...pendingHeardRef.current];
+      const httpDue =
+        force ||
+        heard.length > 0 ||
+        now - lastHttpSyncAtRef.current >= PLAYBACK_SYNC_INTERVAL_MS;
       if (!force && now - lastSyncAtRef.current < PLAYBACK_SYNC_INTERVAL_MS) {
         return;
       }
@@ -156,19 +188,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         playingOverride ??
         (state.playIntent &&
           (state.isActuallyPlaying || state.isWaitingForData));
-      // The socket ping is the scheduler's buffer hint. It is meaningless for a
-      // completed job (which is local-only), but the position still has to be
-      // persisted as listening progress.
-      if (
-        !current.isTerminal &&
-        liveClient.sendPlaybackSync(current.id, position, isPlaying)
-      ) {
-        state.setLastSyncError(null);
-        return;
+      // The socket ping is a latency hint for the scheduler; it is meaningless
+      // for a completed job (local-only). Listening progress still goes over
+      // HTTP because it carries the heard chunks.
+      if (!current.isTerminal) {
+        liveClient.sendPlaybackSync(current.id, position, isPlaying);
       }
+      if (!httpDue) return;
+      lastHttpSyncAtRef.current = now;
       void api
-        .updateProgress(current.id, position, isPlaying)
-        .then(() => state.setLastSyncError(null))
+        .updateProgress(current.id, position, isPlaying, heard)
+        .then(() => {
+          for (const index of heard) pendingHeardRef.current.delete(index);
+          state.setLastSyncError(null);
+        })
         .catch((syncError: unknown) => {
           state.setLastSyncError(
             syncError instanceof Error
@@ -179,6 +212,54 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  // A seek is a deliberate position change, so report it as soon as the player
+  // applies it instead of waiting for the next interval.
+  const previousPendingSeekRef = useRef(pendingSeekJobSeconds);
+  useEffect(() => {
+    if (
+      previousPendingSeekRef.current !== null &&
+      pendingSeekJobSeconds === null
+    ) {
+      syncPlayback(true);
+    }
+    previousPendingSeekRef.current = pendingSeekJobSeconds;
+  }, [pendingSeekJobSeconds, syncPlayback]);
+
+  // Persist progress when the tab goes away. Pausing/seek events already
+  // flush; this covers a closed tab or a phone switching apps.
+  useEffect(() => {
+    const flush = () => syncPlayback(true);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [syncPlayback]);
+
+  // Auto-advance is a property of the end of a job, not of the reader page:
+  // the provider already owns end detection, and navigating updates the reader
+  // route while this provider (and the audio element) stays mounted.
+  const autoAdvancedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    autoAdvancedForRef.current = null;
+  }, [job?.id]);
+  const maybeAutoAdvance = useCallback(() => {
+    const state = usePlayerStore.getState();
+    const nextJobId = resolveAutoAdvance({
+      job: state.job,
+      currentTimeSeconds: state.currentTimeSeconds,
+      renderedDurationSeconds: state.renderedDurationSeconds,
+      continuousPlay: getReaderSettings().continuousPlay,
+    });
+    if (!nextJobId || autoAdvancedForRef.current === state.job?.id) return;
+    autoAdvancedForRef.current = state.job?.id ?? null;
+    playerNavigate(`/jobs/${nextJobId}?play=1`);
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -220,6 +301,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       state.setPlayIntent(false);
       syncPlayback(true, false);
+      if (state.job?.isTerminal) maybeAutoAdvance();
     };
     const handleError = () => syncPlayback(true, false);
     audio.addEventListener("play", handlePlay);
@@ -239,7 +321,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("error", handleError);
       window.clearInterval(interval);
     };
-  }, [audioRef, syncPlayback]);
+  }, [audioRef, maybeAutoAdvance, syncPlayback]);
 
   // A terminal job whose playhead sits at the end of a fully buffered stream
   // has finished, even when the browser never fires `ended` (MSE often does
@@ -257,10 +339,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     usePlayerStore.getState().setPlayIntent(false);
+    maybeAutoAdvance();
   }, [
     currentTimeSeconds,
     isActuallyPlaying,
     job?.isTerminal,
+    maybeAutoAdvance,
     playIntent,
     renderedDurationSeconds,
   ]);

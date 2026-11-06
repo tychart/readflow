@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  Navigate,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 
 import { ChunkConveyor } from "../../components/ChunkConveyor";
@@ -33,9 +38,17 @@ import {
 } from "../../state/reader-settings";
 import { setReaderTitle } from "../../state/reader-title";
 import { useAppStore } from "../../state/store";
-import type { Chunk, JobDetail, JobManifest } from "../../types/api";
+import type {
+  Chunk,
+  JobDetail,
+  JobManifest,
+  JobProgress,
+} from "../../types/api";
 import type { TimelineSlotData } from "../../types/timeline";
 import { getChunkText, isTerminalStatus } from "./chunk-utils";
+import { JobStepper } from "./JobStepper";
+import { ReaderEndCard } from "./ReaderEndCard";
+import { ReaderReadMenu } from "./ReaderReadMenu";
 import { ReaderSidebar } from "./ReaderSidebar";
 import { ReaderContent, ReaderTextBody } from "./ReaderText";
 import { RenderingStallBanner } from "./RenderingStallBanner";
@@ -58,6 +71,7 @@ import {
 } from "./reader-model";
 import { buildReaderTextSegments } from "./reader-text";
 import { isRenderingStalled } from "./transport";
+import { UpNextChip } from "./UpNextChip";
 
 /* ── Constants ────────────────────────────────────────────── */
 
@@ -67,6 +81,8 @@ const READER_POLL_INTERVAL_MS = 2_000;
 const INITIAL_LOAD_MAX_RETRIES = 5;
 /** How often the reader re-checks whether rendering has stalled. */
 const RENDER_STALL_POLL_MS = 5_000;
+/** How close to the end of the rendered audio counts as "finished". */
+const END_EPSILON_SECONDS = 0.5;
 
 /* ── Store state type ─────────────────────────────────────── */
 
@@ -274,6 +290,84 @@ export function ReaderPage() {
       durationSeconds: knownDurationSeconds,
     });
   }, [streamManifest, playbackAnchorIndex, anchorOffset, knownDurationSeconds]);
+
+  // Restore the saved position once per job, after the first chunks are known.
+  // The anchor and the pending seek are set together; the player applies the
+  // seek once the rebuilt stream covers it.
+  const restoredPositionForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!job || activeChunks.length === 0) return;
+    if (restoredPositionForRef.current === job.id) return;
+    restoredPositionForRef.current = job.id;
+    const savedPosition = job.progress?.position_seconds ?? 0;
+    if (savedPosition <= 1) return;
+    const index = chunkIndexAtSeconds(activeChunks, savedPosition);
+    if (index === null) return;
+    setPlaybackAnchorIndex(index);
+    setSeekOverride(savedPosition);
+  }, [activeChunks, job, setPlaybackAnchorIndex, setSeekOverride]);
+
+  // Listening state is server-derived; the reader only mirrors what came back.
+  const heardList = job?.progress?.heard_chunks;
+  const heardIndexes = useMemo(() => new Set(heardList ?? []), [heardList]);
+
+  const applyProgress = useCallback((progress: JobProgress) => {
+    setJob((previous) => (previous ? { ...previous, progress } : previous));
+  }, []);
+
+  const handleMarkAll = useCallback(
+    async (read: boolean) => {
+      if (!job) return;
+      try {
+        const response = await api.markJobRead(job.id, read);
+        applyProgress(response.progress);
+        setError(null);
+      } catch (markError) {
+        setError(
+          markError instanceof Error
+            ? markError.message
+            : "Unable to update listening state",
+        );
+      }
+    },
+    [applyProgress, job],
+  );
+
+  const handleMarkChunk = useCallback(
+    async (chunkIndex: number, heard: boolean) => {
+      if (!job) return;
+      try {
+        const response = await api.setChunkHeard(job.id, chunkIndex, heard);
+        applyProgress(response.progress);
+        setError(null);
+      } catch (markError) {
+        setError(
+          markError instanceof Error
+            ? markError.message
+            : "Unable to update chunk listening state",
+        );
+      }
+    },
+    [applyProgress, job],
+  );
+
+  const handleMarkFrom = useCallback(
+    async (chunkIndex: number, read: boolean) => {
+      if (!job) return;
+      try {
+        const response = await api.markJobRead(job.id, read, chunkIndex);
+        applyProgress(response.progress);
+        setError(null);
+      } catch (markError) {
+        setError(
+          markError instanceof Error
+            ? markError.message
+            : "Unable to update listening state",
+        );
+      }
+    },
+    [applyProgress, job],
+  );
 
   const canDownloadRenderedAudio = downloadableChunks.length > 0;
   const isDownloadComplete =
@@ -556,6 +650,49 @@ export function ReaderPage() {
   // playhead maximum.
   const displayRenderedDurationSeconds = anchorOffset + renderedDurationSeconds;
 
+  const navigate = useNavigate();
+  const openJobById = useCallback(
+    (nextJobId: string) => {
+      const shouldPlay = playIntent || isActuallyPlaying;
+      navigate(`/jobs/${nextJobId}${shouldPlay ? "?play=1" : ""}`);
+    },
+    [isActuallyPlaying, navigate, playIntent],
+  );
+
+  const jobStepperSlot = job ? (
+    <JobStepper
+      count={job.folder_count ?? null}
+      index={job.folder_index ?? null}
+      nextId={job.next_job_id ?? null}
+      nextTitle={job.next_job_title ?? null}
+      onOpenJob={openJobById}
+      previousId={job.previous_job_id ?? null}
+      previousTitle={job.previous_job_title ?? null}
+    />
+  ) : null;
+
+  const upNextSlot = job?.next_job_id ? (
+    <UpNextChip
+      continuousPlay={settings.continuousPlay}
+      nextTitle={job.next_job_title ?? null}
+    />
+  ) : null;
+
+  const atEnd =
+    isJobTerminal &&
+    !isActuallyPlaying &&
+    renderedDurationSeconds > 0 &&
+    displayTimeSeconds >= displayRenderedDurationSeconds - END_EPSILON_SECONDS;
+
+  const handleReplay = useCallback(() => {
+    const first = activeChunks[0];
+    if (!first) return;
+    setPlaybackAnchorIndex(first.index);
+    setSeekOverride(first.start_seconds);
+    setPlayIntent(true);
+    void playerRequestGesture();
+  }, [activeChunks, setPlaybackAnchorIndex, setPlayIntent, setSeekOverride]);
+
   // ── Handlers ─────────────────────────────────────────────
 
   const handlePlay = useCallback(async () => {
@@ -721,7 +858,14 @@ export function ReaderPage() {
   // Page-wide playback keys: the reader should not require clicking the
   // controls first. Handlers are read from a ref inside the hook, so this does
   // not resubscribe on every playback tick.
-  usePlaybackShortcuts({ togglePlay: handleTogglePlay, skipBy: handleSkip });
+  const previousJobId = job?.previous_job_id ?? null;
+  const nextJobId = job?.next_job_id ?? null;
+  usePlaybackShortcuts({
+    togglePlay: handleTogglePlay,
+    skipBy: handleSkip,
+    previousJob: previousJobId ? () => openJobById(previousJobId) : undefined,
+    nextJob: nextJobId ? () => openJobById(nextJobId) : undefined,
+  });
 
   /**
    * Jump to a chunk from its block in the reader text. Stable identity matters:
@@ -1018,7 +1162,10 @@ export function ReaderPage() {
     const readerLines: React.ReactNode = (
       <ReaderTextBody
         activeChunkIndex={activeProgress.activeChunkIndex}
+        heardIndexes={heardIndexes}
         onJumpToChunk={handleJumpToChunk}
+        onMarkChunk={handleMarkChunk}
+        onMarkFrom={handleMarkFrom}
         onRegisterChunkRef={handleRegisterChunkRef}
         playedIndexes={playedIndexes}
         segments={textSegments}
@@ -1069,7 +1216,9 @@ export function ReaderPage() {
               isLoadingAudio={isLoadingAudio}
               isPlaying={isActuallyPlaying}
               isWaitingForData={isWaitingForData}
+              jobStepperSlot={jobStepperSlot}
               playIntent={playIntent}
+              upNextSlot={upNextSlot}
               onDownload={handleDownload}
               onPause={handlePause}
               onPlay={handlePlay}
@@ -1183,6 +1332,14 @@ export function ReaderPage() {
           </div>
         ) : null}
 
+        {atEnd ? (
+          <ReaderEndCard
+            folderName={job.folder_path?.at(-1)?.name ?? null}
+            onBackToLibrary={() => navigate("/")}
+            onReplay={handleReplay}
+          />
+        ) : null}
+
         {/* Main content area — reader text + sidebar. The extra bottom padding
           keeps the phone dock from covering the last block. */}
         <div
@@ -1195,6 +1352,15 @@ export function ReaderPage() {
             <div className="mx-auto flex w-full max-w-4xl flex-col">
               <ReaderContent
                 contentRef={contentRef}
+                headerActions={
+                  <ReaderReadMenu
+                    activeChunkIndex={activeProgress.activeChunkIndex}
+                    onMarkAll={(read) => void handleMarkAll(read)}
+                    onMarkFrom={(index, read) =>
+                      void handleMarkFrom(index, read)
+                    }
+                  />
+                }
                 title={job.title ?? "Untitled job"}
                 status={job.status}
                 lines={readerLines}
@@ -1211,6 +1377,15 @@ export function ReaderPage() {
               <div className="min-w-0 flex-1">
                 <ReaderContent
                   contentRef={contentRef}
+                  headerActions={
+                    <ReaderReadMenu
+                      activeChunkIndex={activeProgress.activeChunkIndex}
+                      onMarkAll={(read) => void handleMarkAll(read)}
+                      onMarkFrom={(index, read) =>
+                        void handleMarkFrom(index, read)
+                      }
+                    />
+                  }
                   title={job.title ?? "Untitled job"}
                   status={job.status}
                   lines={readerLines}

@@ -2508,3 +2508,235 @@ test("keeps the reader's audio element out of page-wide media queries", async ()
   // look broken. The element must stay invisible to that scan (see ShadowAudio).
   expect(document.querySelectorAll("audio")).toHaveLength(0);
 });
+
+/* ── Listening state (M5) ─────────────────────────────────── */
+
+function listeningChunks(): Chunk[] {
+  return [0, 1, 2].map((index) => ({
+    index,
+    status: "written" as const,
+    duration_seconds: 4,
+    start_seconds: index * 4,
+    plan_version: 1,
+    version: 0,
+    voice_id: "suzy",
+    segment_url: `/api/jobs/job-1/chunks/${index}`,
+    peaks_url: null,
+    deprecated: false,
+    reprocessing: false,
+    char_start: index * 4,
+    char_end: index * 4 + 4,
+  }));
+}
+
+function mockListeningJob(
+  progress: JobDetail["progress"],
+  overrides: Partial<JobDetail> = {},
+) {
+  const chunks = listeningChunks();
+  const job = {
+    ...buildReaderJobWithChunks(chunks, "completed"),
+    progress,
+    ...overrides,
+  };
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => job };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifestFromChunks(chunks) };
+    }
+    if (url.endsWith("/peaks")) {
+      return { ok: true, json: async () => ({ bins: 2, peaks: [0.5, 0.5] }) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+  return job;
+}
+
+test("restores the saved listening position on open", async () => {
+  seedStore();
+  mockListeningJob({
+    fraction: 0.5,
+    read_status: "in_progress",
+    heard_chunks: [0],
+    remaining_seconds: 8,
+    position_seconds: 8,
+  });
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  // The clock is rendered from the pending seek target while the stream
+  // rebuilds, so the restored position is visible immediately.
+  expect((await screen.findAllByText("0:08")).length).toBeGreaterThan(0);
+});
+
+test("does not restore a zero position as a seek", async () => {
+  seedStore();
+  mockListeningJob({
+    fraction: 0,
+    read_status: "unread",
+    heard_chunks: [],
+    remaining_seconds: 12,
+    position_seconds: 0,
+  });
+
+  const { container } = renderReader();
+  await screen.findByText("Reader job");
+  expect(readerAudio(container).currentTime).toBe(0);
+});
+
+test("shows the server's heard check on a chunk", async () => {
+  seedStore();
+  mockListeningJob({
+    fraction: 0.4,
+    read_status: "in_progress",
+    heard_chunks: [0],
+    remaining_seconds: 8,
+    position_seconds: 4,
+  });
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  const block = document.querySelector('[data-chunk-block="0"]');
+  expect(block).not.toBeNull();
+  expect(
+    within(block as HTMLElement).getByLabelText("Heard"),
+  ).toBeInTheDocument();
+  const second = document.querySelector('[data-chunk-block="1"]');
+  expect(within(second as HTMLElement).queryByLabelText("Heard")).toBeNull();
+});
+
+test("marks a chunk heard from its actions menu", async () => {
+  seedStore();
+  const user = userEvent.setup();
+  const job = mockListeningJob({
+    fraction: 0,
+    read_status: "unread",
+    heard_chunks: [],
+    remaining_seconds: 12,
+    position_seconds: 0,
+  });
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/heard")) {
+        calls.push({
+          url,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return {
+          ok: true,
+          json: async () => ({
+            job_id: "job-1",
+            position_seconds: 0,
+            progress: {
+              ...(job.progress as NonNullable<JobDetail["progress"]>),
+              fraction: 0.1,
+              heard_chunks: [0],
+            },
+          }),
+        };
+      }
+      return baseFetch(input, init);
+    },
+  ) as unknown as typeof fetch;
+
+  renderReader();
+  await screen.findByText("Reader job");
+  await user.click(screen.getByRole("button", { name: "Chunk 1 actions" }));
+  await user.click(screen.getByRole("button", { name: "Mark heard" }));
+
+  await waitFor(() => expect(calls.length).toBe(1));
+  expect(calls[0]?.url).toContain("/chunks/0/heard");
+  expect(calls[0]?.body).toEqual({ heard: true });
+  const block = document.querySelector('[data-chunk-block="0"]');
+  expect(
+    await within(block as HTMLElement).findByLabelText("Heard"),
+  ).toBeInTheDocument();
+});
+
+test("bulk-marks the document read from the header menu", async () => {
+  seedStore();
+  const user = userEvent.setup();
+  const job = mockListeningJob({
+    fraction: 0.4,
+    read_status: "in_progress",
+    heard_chunks: [0],
+    remaining_seconds: 8,
+    position_seconds: 4,
+  });
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/read")) {
+        calls.push({ url, body: JSON.parse(String(init?.body)) });
+        return {
+          ok: true,
+          json: async () => ({
+            job_id: "job-1",
+            position_seconds: 12,
+            progress: {
+              ...(job.progress as NonNullable<JobDetail["progress"]>),
+              fraction: 1,
+              read_status: "read",
+              heard_chunks: [0, 1, 2],
+              position_seconds: 12,
+            },
+          }),
+        };
+      }
+      return baseFetch(input, init);
+    },
+  ) as unknown as typeof fetch;
+
+  renderReader();
+  await screen.findByText("Reader job");
+  await user.click(
+    screen.getByRole("button", { name: "Listening state actions" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+
+  await waitFor(() => expect(calls.length).toBe(1));
+  expect(calls[0]?.body).toMatchObject({ read: true, from_chunk: null });
+  await waitFor(() =>
+    expect(screen.getAllByLabelText("Heard")).toHaveLength(3),
+  );
+});
+
+test("shows the folder job stepper and the up-next chip", async () => {
+  seedStore();
+  mockListeningJob(
+    {
+      fraction: 0.4,
+      read_status: "in_progress",
+      heard_chunks: [0],
+      remaining_seconds: 8,
+      position_seconds: 4,
+    },
+    {
+      folder_path: [
+        { id: "books", name: "Books" },
+        { id: "scifi", name: "Sci-fi" },
+      ],
+      folder_index: 1,
+      folder_count: 3,
+      next_job_id: "job-2",
+      next_job_title: "Next book",
+      previous_job_id: null,
+    },
+  );
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  expect(screen.getByTestId("job-stepper")).toHaveTextContent("Job 1 of 3");
+  expect(screen.getByTestId("up-next-chip")).toHaveTextContent("Next book");
+});

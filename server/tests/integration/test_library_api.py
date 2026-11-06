@@ -254,10 +254,16 @@ async def test_job_detail_carries_folder_path_and_neighbours(client):
     assert [item["name"] for item in detail["folder_path"]] == ["Books", "Sci-fi"]
     assert detail["previous_job_id"] is None
     assert detail["next_job_id"] == second["id"]
+    assert detail["folder_index"] == 1
+    assert detail["folder_count"] == 2
+    assert detail["next_job_title"] == "Two"
+    assert detail["previous_job_title"] is None
 
     detail = (await client.get(f"/api/jobs/{second['id']}")).json()
     assert detail["previous_job_id"] == first["id"]
     assert detail["next_job_id"] is None
+    assert detail["folder_index"] == 2
+    assert detail["previous_job_title"] == "One"
 
 
 @pytest.mark.asyncio

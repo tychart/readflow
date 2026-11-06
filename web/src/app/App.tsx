@@ -7,6 +7,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 import readflowIcon from "../assets/brand/readflow-icon.svg";
@@ -24,7 +25,7 @@ import { useScrollProgressVar } from "../hooks/useScrollProgress";
 import { useTheme } from "../hooks/useTheme";
 import { MiniPlayer } from "../player/MiniPlayer";
 import { PlayerProvider } from "../player/PlayerProvider";
-import { usePlayerStore } from "../player/player-store";
+import { registerPlayerNavigate, usePlayerStore } from "../player/player-store";
 import { useAppStore } from "../state/store";
 import type { WebSocketStatus } from "../types/events";
 
@@ -283,12 +284,23 @@ function Shell() {
   );
 }
 
+/** Gives the app-level player SPA navigation without coupling it to the router. */
+function PlayerNavigationBridge() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    registerPlayerNavigate((path) => navigate(path));
+    return () => registerPlayerNavigate(null);
+  }, [navigate]);
+  return null;
+}
+
 /* ── App ──────────────────────────────────────────────────── */
 
 export function App() {
   return (
     <BrowserRouter>
       <PlayerProvider>
+        <PlayerNavigationBridge />
         <Shell />
       </PlayerProvider>
     </BrowserRouter>

@@ -11,7 +11,11 @@ from collections.abc import Iterable
 
 from app.core.services import AppServices
 from app.jobs.models import Job
-from app.library.playback import next_job_in_folder, previous_job_in_folder
+from app.library.playback import (
+    next_job_in_folder,
+    ordered_folder_jobs,
+    previous_job_in_folder,
+)
 from app.library.progress import ProgressView, aggregate_fraction
 from app.library.tree import descendant_folder_ids, subtree_counts
 from app.schemas.api import (
@@ -43,12 +47,21 @@ def job_detail_response(services: AppServices, job: Job) -> JobDetailResponse:
     path = services.library.folder_path(job.folder_id)
     previous = previous_job_in_folder(all_jobs, job)
     following = next_job_in_folder(all_jobs, job)
+    siblings = ordered_folder_jobs(all_jobs, job.folder_id) if job.folder_id else []
+    index = next(
+        (position + 1 for position, item in enumerate(siblings) if item.id == job.id),
+        None,
+    )
     return job_to_detail(
         job,
         progress=services.progress.view(job),
         folder_path=[FolderBriefResponse(id=folder.id, name=folder.name) for folder in path],
         previous_job_id=previous.id if previous is not None else None,
         next_job_id=following.id if following is not None else None,
+        folder_index=index,
+        folder_count=len(siblings) if siblings else None,
+        previous_job_title=previous.title if previous is not None else None,
+        next_job_title=following.title if following is not None else None,
     )
 
 

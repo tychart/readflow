@@ -46,6 +46,7 @@ describe("sanitizeReaderSettings", () => {
         showConveyor: false,
         showChunkJumpButtons: true,
         conveyorWindowSize: 5,
+        continuousPlay: false,
         playbackRate: 1.5,
       }),
     ).toEqual({
@@ -53,6 +54,7 @@ describe("sanitizeReaderSettings", () => {
       showConveyor: false,
       showChunkJumpButtons: true,
       conveyorWindowSize: 5,
+      continuousPlay: false,
       playbackRate: 1.5,
     });
     expect(

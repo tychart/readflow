@@ -1,6 +1,6 @@
 # Library: folders, playlists, read progress, and a persistent player
 
-Status: **M1–M4 implemented**, M5+ pending
+Status: **M1–M5 implemented**, M6 pending
 Date: 2026-11-06
 
 ## Context
@@ -397,10 +397,21 @@ start the reader playing. The old `JobsPage` was deleted.
 
 Verification: 581 web tests, 24 Playwright tests, lint/typecheck clean.
 
-**M5 — Reader read state + auto-advance.**
-Progress reporting (heard detection, flush points), heard ✓ + chunk ⋮ + header
-bulk actions, folder breadcrumb, job stepper, up-next chip + continuous toggle,
-end-of-folder card. Player/advance tests + e2e smoke.
+**M5 — Reader read state + auto-advance. DONE.**
+- Provider-side heard detection (90% of real playback, no seeks) and additive
+  reporting with flush on pause/seek/ended/hidden/pagehide; position restore on
+  open (anchor + pending seek), with the restore effect ordered after
+  `openJob`/`setSource`.
+- ReaderText: heard ✓, per-chunk ⋮ (jump / mark heard / mark-from-here), and a
+  header ⋮ for mark-all/from-here. Progress responses patch the loaded job.
+- Playbar: `JobStepper` (`‹ Job 3 of 8 ›`) and `UpNextChip` with a persistent
+  continuous-play toggle (new reader setting, default on). `[` / `]` shortcuts.
+- Auto-advance: `web/src/player/auto-advance.ts` (pure) + provider navigation to
+  `?play=1`; `ReaderEndCard` with Replay / Back to library at the end of a
+  folder. Backend detail now carries folder index/count and neighbour titles.
+
+Verification: 593 web tests, 26 Playwright tests (incl. auto-advance and
+continuous-play-off), lint/typecheck clean.
 
 **M6 — Settings hub, docs, polish.**
 `SettingsDialog` with three sections and migrated reader settings; keyboard

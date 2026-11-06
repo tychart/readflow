@@ -551,6 +551,40 @@ Important design rules:
 - **the player lives above the router**, in `PlayerProvider` (`web/src/player/`), not inside `ReaderPage` (see “App-level player” below). The `<audio>` element is created once by `ShadowAudio` and never remounted; navigation does not stop playback.
 - the reader writes only *inputs* (job, stream manifest, anchor, seek, intent) into `usePlayerStore` and reads the hook's *outputs* back through selectors. The provider mirrors the hook into the store once per commit and registers imperative controls in a module-level registry.
 
+### Listening progress, position restore and auto-advance
+
+The **server owns** listening state (`JobProgress`, `chunk_heard`): a chunk is
+heard only through real playback past ~90% of it, and job progress/read status
+are derived server-side (see “Library domain”). The client's job is narrower:
+
+- `PlayerProvider` accumulates heard chunk indexes while audio is actually
+  playing and no seek is pending (`web/src/player/heard.ts`), then reports them
+  additively with the position. The HTTP `/progress` call is the source of truth;
+  the WebSocket ping stays a low-latency scheduler hint. Reports flush every
+  ~3 s, on pause/ended, on a seek being applied, and on `visibilitychange`/
+  `pagehide`. Pending heard marks survive a failed report.
+- `ReaderPage` restores `job.progress.position_seconds` once per job: it sets the
+  playback anchor to the chunk at that position and a pending seek, so the
+  player rebuilds the stream there. The restore effect must run **after** the
+  `openJob`/`setSource` effects; running it before them let `openJob` reset the
+  anchor/seek (this was a real bug).
+- Heard ✓ marks come from `job.progress.heard_chunks` (memoized into a Set), not
+  from playback position. The block's dimmed "played" styling still follows the
+  playhead; the ✓ is the persisted truth.
+- Read actions go through `api.markJobRead` / `api.setChunkHeard` and patch the
+  loaded job's `progress` from the response. "Mark read" moves the stored
+  position to the end; "mark unread" resets it (and a from-chunk unread rewinds
+  it to that chunk's start).
+- `continuousPlay` is a device-local reader setting (default on). Auto-advance is
+  decided by `web/src/player/auto-advance.ts`: terminal job + at the rendered
+  end + a server-provided `next_job_id` + continuous play. `PlayerProvider`
+  navigates to `/jobs/<next>?play=1`; the reader consumes `play=1` once and
+  removes it from the URL. Root jobs and the last job in a folder just stop and
+  show `ReaderEndCard`.
+- The job stepper (`JobStepper`) and up-next chip use server-provided
+  `folder_index`/`folder_count`/`previous_job_id`/`next_job_id` and titles. Do
+  not re-derive folder order in the reader.
+
 ### Playback speed (in the settings panel, not the playbar)
 
 `PlaybackSpeedControl` (one-tap presets, a 0.5–3× slider and a text input for
@@ -2383,7 +2417,16 @@ Reader page:
 - use a custom segmented timeline (the whole-document overview)
 - support gap-aware playback and manual jump-to-later-ready chunks
 - a dismissable "rendering seems stalled" banner with a one-click Retry when the producer stops
-- keyboard control anywhere on the page (see the shortcuts guide in reader settings)
+- keyboard control anywhere on the page (Space/K, arrows, J/L, and `[` / `]`
+  for previous/next job in the folder)
+- resumes at the saved listening position; heard chunks carry a small ✓ and a
+  per-chunk ⋮ for jump/mark heard/mark-from-here
+- a header ⋮ for mark-all/from-here read actions
+- a "Job 3 of 8" stepper in the playbar, and an "Up next: <title>" chip with a
+  continuous-play toggle
+- auto-advance to the next job in the folder when a job ends (strict order,
+  continuous play on by default); an "End of <folder>" card with Replay when
+  the folder is finished
 - reader settings (playback speed, motion, conveyor, jump buttons, window size) persisted per device,
   in a phone bottom sheet that closes on a downward swipe
 - a phone bottom dock with the transport and conveyor in the thumb zone

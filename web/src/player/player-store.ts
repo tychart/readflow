@@ -85,6 +85,22 @@ export interface PlayerControls {
 }
 
 let controls: PlayerControls | null = null;
+/**
+ * SPA navigation for auto-advance. Registered by the app shell so the player
+ * does not depend on a router (and can be mounted in component tests without
+ * one).
+ */
+let navigateTo: ((path: string) => void) | null = null;
+
+export function registerPlayerNavigate(
+  navigate: ((path: string) => void) | null,
+): void {
+  navigateTo = navigate;
+}
+
+export function playerNavigate(path: string): void {
+  navigateTo?.(path);
+}
 
 export function registerPlayerControls(next: PlayerControls | null): void {
   controls = next;

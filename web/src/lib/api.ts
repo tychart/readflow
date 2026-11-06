@@ -166,6 +166,23 @@ export const api = {
       }),
     }),
 
+  /** Mark a whole job read/unread, or everything from a chunk onwards. */
+  markJobRead: (jobId: string, read: boolean, fromChunk?: number | null) =>
+    request<ProgressUpdateResponse>(apiPath(`/jobs/${jobId}/read`), {
+      method: "POST",
+      body: JSON.stringify({ read, from_chunk: fromChunk ?? null }),
+    }),
+
+  /** Toggle one chunk's heard mark. */
+  setChunkHeard: (jobId: string, chunkIndex: number, heard: boolean) =>
+    request<ProgressUpdateResponse>(
+      apiPath(`/jobs/${jobId}/chunks/${chunkIndex}/heard`),
+      {
+        method: "POST",
+        body: JSON.stringify({ heard }),
+      },
+    ),
+
   /** Updates playback position. */
   updatePlayback: (
     jobId: string,

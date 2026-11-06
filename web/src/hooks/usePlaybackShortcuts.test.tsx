@@ -107,6 +107,7 @@ describe("resolvePlaybackShortcut", () => {
       "Shift + ← / →",
       "↑ / ↓",
       "J / L",
+      "[ / ]",
     ]);
     expect(
       PLAYBACK_SHORTCUT_GUIDE.some((entry) => entry.action.includes("10s")),

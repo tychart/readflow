@@ -1,5 +1,5 @@
-import type { CSSProperties, RefObject } from "react";
-import { memo } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import type { ReaderTextSegment } from "./reader-text";
 
@@ -22,6 +22,8 @@ export interface ReaderContentProps {
   isPlaying: boolean;
   /** Reader motion setting; keeps the now-playing marker static when reduced. */
   motion: "animated" | "reduced";
+  /** Listening-state bulk actions, rendered beside the title. */
+  headerActions?: ReactNode;
 }
 
 /**
@@ -43,6 +45,7 @@ export function ReaderContent({
   onToggleSidebar,
   isPlaying,
   motion,
+  headerActions,
 }: ReaderContentProps) {
   return (
     <>
@@ -63,6 +66,7 @@ export function ReaderContent({
           <span className="rounded-md border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)]">
             {status}
           </span>
+          {headerActions}
           {/* Sidebar toggle — only on large screens when sidebar is inline */}
           {isLargeScreen && (
             <button
@@ -138,12 +142,98 @@ export interface ReaderChunkBlockProps {
   text: string;
   isActive: boolean;
   isPlayed: boolean;
+  /** Server-derived heard flag (real playback past ~90% of the chunk). */
+  isHeard: boolean;
   /** Registers the block element so explicit seeks can scroll it into view. */
   onRegisterRef: (chunkIndex: number, element: HTMLDivElement | null) => void;
   /** Renders the jump control (reader setting; hiding it hides no status). */
   showJumpButton: boolean;
   /** Jumps playback to this chunk. Must be stable or memoization is defeated. */
   onJump: (chunkIndex: number) => void;
+  /** Toggles one chunk's heard mark (server round-trip). */
+  onMarkChunk: (chunkIndex: number, heard: boolean) => void;
+  /** Marks everything from this chunk onward heard/unheard. */
+  onMarkFrom: (chunkIndex: number, heard: boolean) => void;
+}
+
+/** Per-chunk listening-state actions. */
+function ChunkMenu({
+  chunkIndex,
+  isHeard,
+  onJump,
+  onMarkChunk,
+  onMarkFrom,
+}: Pick<
+  ReaderChunkBlockProps,
+  "chunkIndex" | "isHeard" | "onJump" | "onMarkChunk" | "onMarkFrom"
+>) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const item = (label: string, action: () => void) => (
+    <button
+      className="block w-full rounded px-2.5 py-1.5 text-left text-sm text-[var(--ink-primary)] transition hover:bg-[var(--hover-bg)]"
+      key={label}
+      onClick={() => {
+        setOpen(false);
+        action();
+      }}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label={`Chunk ${chunkIndex + 1} actions`}
+        className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-secondary)] opacity-60 transition hover:bg-[var(--hover-bg)] hover:text-[var(--ink-primary)] focus-visible:opacity-100"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <svg aria-hidden="true" height="14" viewBox="0 0 16 16" width="14">
+          <circle cx="8" cy="3" fill="currentColor" r="1.3" />
+          <circle cx="8" cy="8" fill="currentColor" r="1.3" />
+          <circle cx="8" cy="13" fill="currentColor" r="1.3" />
+        </svg>
+      </button>
+      {open ? (
+        <div
+          className="absolute right-0 top-6 z-30 w-56 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-1 shadow-xl"
+          role="menu"
+        >
+          {item("Jump here", () => onJump(chunkIndex))}
+          <div className="my-1 border-t border-[var(--line)]" />
+          {item(isHeard ? "Mark unheard" : "Mark heard", () =>
+            onMarkChunk(chunkIndex, !isHeard),
+          )}
+          {item("Mark from here read", () => onMarkFrom(chunkIndex, true))}
+          {item("Mark from here unread", () => onMarkFrom(chunkIndex, false))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -162,9 +252,12 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
   text,
   isActive,
   isPlayed,
+  isHeard,
   onRegisterRef,
   showJumpButton,
   onJump,
+  onMarkChunk,
+  onMarkFrom,
 }: ReaderChunkBlockProps) {
   return (
     <div
@@ -182,74 +275,93 @@ export const ReaderChunkBlock = memo(function ReaderChunkBlock({
       {/* Header row: chunk number + jump control */}
       <div className="mb-1 flex items-center justify-between gap-2">
         <div
-          className={`text-[10px] font-semibold uppercase tracking-wider ${
+          className={`flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider ${
             isActive ? "text-[var(--amber)]" : "text-[var(--ink-secondary)]"
           }`}
         >
           Chunk {chunkIndex + 1}
+          {isHeard ? (
+            <span
+              aria-label="Heard"
+              className="text-[var(--emerald)]"
+              role="img"
+              title="Heard"
+            >
+              ✓
+            </span>
+          ) : null}
         </div>
 
-        {showJumpButton ? (
-          isActive ? (
-            /* The control is a no-op on the chunk already playing, so it becomes
+        <div className="flex items-center gap-0.5">
+          {showJumpButton ? (
+            isActive ? (
+              /* The control is a no-op on the chunk already playing, so it becomes
                a status marker instead. */
-            <span
-              aria-label="Currently playing"
-              className="flex h-5 w-5 items-center justify-center text-[var(--amber)]"
-              data-testid={`chunk-${chunkIndex}-now-playing`}
-              role="img"
-              title="Currently playing"
-            >
-              {/* Equalizer bars — the standard "this is what's playing" marker.
+              <span
+                aria-label="Currently playing"
+                className="flex h-5 w-5 items-center justify-center text-[var(--amber)]"
+                data-testid={`chunk-${chunkIndex}-now-playing`}
+                role="img"
+                title="Currently playing"
+              >
+                {/* Equalizer bars — the standard "this is what's playing" marker.
                   Applied only when reader motion allows it; paused by CSS while
                   audio is not actually running. */}
-              <span
-                aria-hidden="true"
-                className="flex h-3.5 items-end justify-center gap-[1.5px]"
-              >
-                {NOW_PLAYING_BARS.map((bar, barIndex) => (
-                  <span
-                    key={bar.key}
-                    className="w-[2px] origin-bottom rounded-full bg-current"
-                    data-now-playing-bar
-                    style={
-                      {
-                        "--equalizer-delay": `${barIndex * 130}ms`,
-                        "--equalizer-duration": `${800 + barIndex * 170}ms`,
-                        height: `${bar.heightPercent}%`,
-                      } as CSSProperties
-                    }
-                  />
-                ))}
+                <span
+                  aria-hidden="true"
+                  className="flex h-3.5 items-end justify-center gap-[1.5px]"
+                >
+                  {NOW_PLAYING_BARS.map((bar, barIndex) => (
+                    <span
+                      key={bar.key}
+                      className="w-[2px] origin-bottom rounded-full bg-current"
+                      data-now-playing-bar
+                      style={
+                        {
+                          "--equalizer-delay": `${barIndex * 130}ms`,
+                          "--equalizer-duration": `${800 + barIndex * 170}ms`,
+                          height: `${bar.heightPercent}%`,
+                        } as CSSProperties
+                      }
+                    />
+                  ))}
+                </span>
               </span>
-            </span>
-          ) : (
-            <button
-              aria-label={`Jump playback to chunk ${chunkIndex + 1}`}
-              className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-secondary)] opacity-50 transition-opacity hover:text-[var(--amber)] hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--amber)] group-hover:opacity-100"
-              data-testid={`chunk-${chunkIndex}-jump`}
-              onClick={() => onJump(chunkIndex)}
-              title="Jump playback here"
-              type="button"
-            >
-              {/* Curved return arrow: "bring playback back to here". The previous
-                  arrow-down-to-a-line glyph read as a download icon. */}
-              <svg
-                aria-hidden="true"
-                className="h-3.5 w-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="2"
-                viewBox="0 0 24 24"
+            ) : (
+              <button
+                aria-label={`Jump playback to chunk ${chunkIndex + 1}`}
+                className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-secondary)] opacity-50 transition-opacity hover:text-[var(--amber)] hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--amber)] group-hover:opacity-100"
+                data-testid={`chunk-${chunkIndex}-jump`}
+                onClick={() => onJump(chunkIndex)}
+                title="Jump playback here"
+                type="button"
               >
-                <path d="M9 14 4 9l5-5" />
-                <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
-              </svg>
-            </button>
-          )
-        ) : null}
+                {/* Curved return arrow: "bring playback back to here". The previous
+                  arrow-down-to-a-line glyph read as a download icon. */}
+                <svg
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M9 14 4 9l5-5" />
+                  <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+                </svg>
+              </button>
+            )
+          ) : null}
+          <ChunkMenu
+            chunkIndex={chunkIndex}
+            isHeard={isHeard}
+            onJump={onJump}
+            onMarkChunk={onMarkChunk}
+            onMarkFrom={onMarkFrom}
+          />
+        </div>
       </div>
 
       <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--ink-primary)]">
@@ -298,6 +410,9 @@ export interface ReaderTextBodyProps {
   /** Reader setting: show the per-chunk jump control. */
   showJumpButtons: boolean;
   onJumpToChunk: (chunkIndex: number) => void;
+  heardIndexes: ReadonlySet<number>;
+  onMarkChunk: (chunkIndex: number, heard: boolean) => void;
+  onMarkFrom: (chunkIndex: number, heard: boolean) => void;
 }
 
 /**
@@ -316,6 +431,9 @@ export const ReaderTextBody = memo(function ReaderTextBody({
   onRegisterChunkRef,
   showJumpButtons,
   onJumpToChunk,
+  heardIndexes,
+  onMarkChunk,
+  onMarkFrom,
 }: ReaderTextBodyProps) {
   if (segments.length === 0) {
     return (
@@ -342,8 +460,14 @@ export const ReaderTextBody = memo(function ReaderTextBody({
               segment.chunkIndex !== null &&
               playedIndexes.has(segment.chunkIndex)
             }
+            isHeard={
+              segment.chunkIndex !== null &&
+              heardIndexes.has(segment.chunkIndex)
+            }
             key={segment.key}
             onJump={onJumpToChunk}
+            onMarkChunk={onMarkChunk}
+            onMarkFrom={onMarkFrom}
             onRegisterRef={onRegisterChunkRef}
             showJumpButton={showJumpButtons}
             text={segment.text}

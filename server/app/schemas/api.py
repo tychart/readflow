@@ -70,6 +70,12 @@ class JobDetailResponse(JobSummaryResponse):
     folder_path: list[FolderBriefResponse] = Field(default_factory=list)
     previous_job_id: str | None = None
     next_job_id: str | None = None
+    # Position within the folder (1-based) and the folder's playable job count,
+    # for the reader's "Job 3 of 8" stepper. None for root jobs.
+    folder_index: int | None = None
+    folder_count: int | None = None
+    previous_job_title: str | None = None
+    next_job_title: str | None = None
     # index -> live version. Authoritative for the reader: it is what decides
     # which take of a reprocessed chunk plays. It used to live only in server
     # memory, so the reader always fell back to the newest take and the
@@ -398,6 +404,10 @@ def job_to_detail(
     folder_path: list[FolderBriefResponse] | None = None,
     previous_job_id: str | None = None,
     next_job_id: str | None = None,
+    folder_index: int | None = None,
+    folder_count: int | None = None,
+    previous_job_title: str | None = None,
+    next_job_title: str | None = None,
 ) -> JobDetailResponse:
     return JobDetailResponse(
         **job_to_summary(job, progress=progress).model_dump(),
@@ -414,4 +424,8 @@ def job_to_detail(
         folder_path=folder_path or [],
         previous_job_id=previous_job_id,
         next_job_id=next_job_id,
+        folder_index=folder_index,
+        folder_count=folder_count,
+        previous_job_title=previous_job_title,
+        next_job_title=next_job_title,
     )

@@ -17,7 +17,8 @@ export const COARSE_SKIP_SECONDS = 30;
 
 export type PlaybackShortcut =
   | { kind: "toggle" }
-  | { kind: "skip"; deltaSeconds: number };
+  | { kind: "skip"; deltaSeconds: number }
+  | { kind: "job"; direction: -1 | 1 };
 
 /** Rows for the shortcuts guide in the reader settings panel. */
 export const PLAYBACK_SHORTCUT_GUIDE: ReadonlyArray<{
@@ -29,6 +30,7 @@ export const PLAYBACK_SHORTCUT_GUIDE: ReadonlyArray<{
   { keys: "Shift + ← / →", action: `Back or forward ${FINE_SKIP_SECONDS}s` },
   { keys: "↑ / ↓", action: `Forward or back ${COARSE_SKIP_SECONDS}s` },
   { keys: "J / L", action: `Back or forward ${SKIP_STEP_SECONDS}s` },
+  { keys: "[ / ]", action: "Previous or next job in the folder" },
 ];
 
 export interface PlaybackShortcutKeyEvent {
@@ -102,6 +104,10 @@ export function resolvePlaybackShortcut(
     case "l":
     case "L":
       return { kind: "skip", deltaSeconds: SKIP_STEP_SECONDS };
+    case "[":
+      return { kind: "job", direction: -1 };
+    case "]":
+      return { kind: "job", direction: 1 };
     default:
       return null;
   }
@@ -110,6 +116,9 @@ export function resolvePlaybackShortcut(
 export interface PlaybackShortcutHandlers {
   togglePlay: () => void;
   skipBy: (deltaSeconds: number) => void;
+  /** Folder-relative job jumps; omitted when the job has no folder. */
+  previousJob?: () => void;
+  nextJob?: () => void;
 }
 
 /**
@@ -135,6 +144,14 @@ export function usePlaybackShortcuts(handlers: PlaybackShortcutHandlers): void {
       // A held Space/K would otherwise toggle playback every repeat.
       if (shortcut.kind === "toggle") {
         if (!event.repeat) handlersRef.current.togglePlay();
+        return;
+      }
+      if (shortcut.kind === "job") {
+        const handler =
+          shortcut.direction === -1
+            ? handlersRef.current.previousJob
+            : handlersRef.current.nextJob;
+        handler?.();
         return;
       }
       handlersRef.current.skipBy(shortcut.deltaSeconds);

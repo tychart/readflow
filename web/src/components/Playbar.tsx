@@ -83,6 +83,10 @@ export interface PlaybarProps {
    * settings control, because the metadata row fades out on scroll.
    */
   renderAheadSlot?: React.ReactNode;
+  /** Folder-relative "Job 3 of 8" stepper, rendered left of the transport. */
+  jobStepperSlot?: React.ReactNode;
+  /** "Up next: <title>" + continuous-play toggle, in the metadata row. */
+  upNextSlot?: React.ReactNode;
   /**
    * Whether this bar renders the −10s / play-pause / +10s controls. Phones move
    * them into the bottom dock and keep this bar as the whole-document overview.
@@ -142,6 +146,8 @@ export function Playbar({
   settingsSlot,
   showTransport = true,
   renderAheadSlot,
+  jobStepperSlot,
+  upNextSlot,
 }: PlaybarProps) {
   // ── Player state for display ──────────────────────────────
   const playerStateLabel = useMemo(
@@ -242,6 +248,10 @@ export function Playbar({
         data-testid="playbar-top-row"
         style={{ padding: containerPad }}
       >
+        {jobStepperSlot ? (
+          <div className="shrink-0">{jobStepperSlot}</div>
+        ) : null}
+
         {/* Transport: −10s / play-pause / +10s. Phones render these in the
             bottom dock instead, so this bar stays the overview. */}
         {showTransport ? (
@@ -327,6 +337,8 @@ export function Playbar({
           {/* Playback speed — only worth surfacing when it is off the default.
                 It lives in the metadata row on purpose: that row fades away on
                 scroll, so the badge costs the compact bar no space. */}
+          {upNextSlot}
+
           {playbackRate !== 1 ? (
             <span
               className="ml-2 inline-block rounded-full bg-[var(--hover-bg)] px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--ink-secondary)]"

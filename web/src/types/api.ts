@@ -77,6 +77,11 @@ export interface JobDetail extends JobSummary {
   folder_path?: FolderBrief[];
   previous_job_id?: string | null;
   next_job_id?: string | null;
+  /** 1-based position within the folder, for the reader's job stepper. */
+  folder_index?: number | null;
+  folder_count?: number | null;
+  previous_job_title?: string | null;
+  next_job_title?: string | null;
 }
 
 export interface ProgressUpdateResponse {

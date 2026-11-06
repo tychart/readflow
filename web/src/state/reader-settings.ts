@@ -30,6 +30,11 @@ export interface ReaderSettings {
   /** Chunk slots visible in the conveyor; "auto" adapts to viewport width. */
   conveyorWindowSize: ConveyorWindowSize;
   /**
+   * Follow the folder into the next job when the current one ends. Off means a
+   * listening session stops at the end of the job you opened.
+   */
+  continuousPlay: boolean;
+  /**
    * Remembered playback speed, applied when a reader opens. The player owns the
    * live rate while the page is open; this is the value it starts from (and what
    * "Reset to defaults" returns to).
@@ -42,6 +47,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   showConveyor: true,
   showChunkJumpButtons: true,
   conveyorWindowSize: "auto",
+  continuousPlay: true,
   playbackRate: 1,
 };
 
@@ -84,6 +90,10 @@ export function sanitizeReaderSettings(raw: unknown): ReaderSettings {
     )
       ? (value.conveyorWindowSize as ConveyorWindowSize)
       : DEFAULT_READER_SETTINGS.conveyorWindowSize,
+    continuousPlay:
+      typeof value.continuousPlay === "boolean"
+        ? value.continuousPlay
+        : DEFAULT_READER_SETTINGS.continuousPlay,
     playbackRate: sanitizePlaybackRate(value.playbackRate),
   };
 }

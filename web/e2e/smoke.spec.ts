@@ -1629,3 +1629,176 @@ test("library moves a selected job into another folder", async ({ page }) => {
     folder_id: "archive",
   });
 });
+
+test("finished folder job auto-advances to the next one", async ({ page }) => {
+  const first = {
+    ...buildJob(2, "playing"),
+    status: "completed",
+    source_kind: "text",
+    source_text: "First book source.",
+    plan_version: 1,
+    chunks: [buildChunk(0), buildChunk(1, "written", { start_seconds: 4 })],
+    failed_reason: null,
+    audio_epoch: 0,
+    folder_path: [{ id: "books", name: "Books" }],
+    previous_job_id: null,
+    previous_job_title: null,
+    next_job_id: "job-2",
+    next_job_title: "Second book",
+    folder_index: 1,
+    folder_count: 2,
+    progress: {
+      fraction: 0,
+      read_status: "in_progress",
+      heard_chunks: [],
+      remaining_seconds: 8,
+      position_seconds: 0,
+    },
+  };
+  const second = {
+    ...buildJob(1, "queued"),
+    title: "Second book",
+    chunks: [buildChunk(0)],
+    source_kind: "text",
+    source_text: "Second book source.",
+    plan_version: 1,
+    failed_reason: null,
+    audio_epoch: 0,
+    folder_path: [{ id: "books", name: "Books" }],
+    previous_job_id: "job-1",
+    previous_job_title: "Playwright job",
+    next_job_id: null,
+    next_job_title: null,
+    folder_index: 2,
+    folder_count: 2,
+  };
+
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: first });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({
+      json: {
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
+        chunks: first.chunks,
+        audio_epoch: 0,
+      },
+    });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+  await page.route("**/api/jobs/job-2", async (route) => {
+    await route.fulfill({ json: second });
+  });
+  await page.route("**/api/jobs/job-2/manifest", async (route) => {
+    await route.fulfill({
+      json: {
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-2/chunks/init",
+        chunks: second.chunks,
+        audio_epoch: 0,
+      },
+    });
+  });
+  await page.route("**/api/jobs/job-2/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+
+  await page.goto("/jobs/job-1?play=1");
+  await expect(
+    page.getByRole("heading", { name: "Playwright job" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("up-next-chip")).toContainText("Second book");
+
+  // The player only auto-advances once the mirrored position reaches the end;
+  // drive a timeupdate first, exactly like a browser would.
+  await page.evaluate(async () => {
+    const host = document.querySelector<HTMLElement>(
+      '[data-testid="reader-audio-host"]',
+    );
+    const audio = host?.shadowRoot?.querySelector("audio");
+    if (!audio) throw new Error("audio element missing");
+    audio.currentTime = 8;
+    audio.dispatchEvent(new Event("timeupdate"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    audio.dispatchEvent(new Event("ended"));
+  });
+
+  await expect(page).toHaveURL(/\/jobs\/job-2$/, { timeout: 5_000 });
+  await expect(
+    page.getByRole("heading", { name: "Second book" }),
+  ).toBeVisible();
+});
+
+test("continuous play off stops at the end of the job", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "readflow.reader-settings.v1",
+      JSON.stringify({ continuousPlay: false }),
+    );
+  });
+  const first = {
+    ...buildJob(2, "playing"),
+    status: "completed",
+    source_kind: "text",
+    source_text: "First book source.",
+    plan_version: 1,
+    chunks: [buildChunk(0), buildChunk(1, "written", { start_seconds: 4 })],
+    failed_reason: null,
+    audio_epoch: 0,
+    folder_path: [{ id: "books", name: "Books" }],
+    next_job_id: "job-2",
+    next_job_title: "Second book",
+    folder_index: 1,
+    folder_count: 2,
+    progress: {
+      fraction: 0,
+      read_status: "in_progress",
+      heard_chunks: [],
+      remaining_seconds: 8,
+      position_seconds: 0,
+    },
+  };
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: first });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({
+      json: {
+        mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+        init_segment_url: "/api/jobs/job-1/chunks/init",
+        chunks: first.chunks,
+        audio_epoch: 0,
+      },
+    });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+  await page.route("**/api/jobs/job-2", async (route) => {
+    await route.fulfill({ status: 404, json: { detail: "not found" } });
+  });
+
+  await page.goto("/jobs/job-1?play=1");
+  await expect(
+    page.getByRole("heading", { name: "Playwright job" }),
+  ).toBeVisible();
+
+  await page.evaluate(async () => {
+    const host = document.querySelector<HTMLElement>(
+      '[data-testid="reader-audio-host"]',
+    );
+    const audio = host?.shadowRoot?.querySelector("audio");
+    if (!audio) throw new Error("audio element missing");
+    audio.currentTime = 8;
+    audio.dispatchEvent(new Event("timeupdate"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    audio.dispatchEvent(new Event("ended"));
+  });
+
+  await page.waitForTimeout(500);
+  await expect(page).toHaveURL(/\/jobs\/job-1$/);
+  await expect(page.getByTestId("end-of-folder")).toBeVisible();
+});

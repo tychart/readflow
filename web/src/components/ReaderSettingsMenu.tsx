@@ -230,6 +230,16 @@ export function ReaderSettingsMenu({
         />
       </section>
 
+      <section>
+        <ToggleRow
+          checked={settings.continuousPlay}
+          description="When a job in a folder ends, open and play the next job."
+          id={`${panelId}-continuous`}
+          label="Continuous play"
+          onChange={(continuousPlay) => onChange({ continuousPlay })}
+        />
+      </section>
+
       {showConveyorControls ? (
         <section className="space-y-3">
           <RadioGroup<MotionMode>
