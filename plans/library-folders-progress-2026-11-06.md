@@ -1,6 +1,6 @@
 # Library: folders, playlists, read progress, and a persistent player
 
-Status: **M1 implemented**, M2+ pending
+Status: **M1–M2 implemented**, M3+ pending
 Date: 2026-11-06
 
 ## Context
@@ -349,11 +349,23 @@ The job-level `is_active_listening` flag stays until then.
 Verification: `uv run pytest` (280 passed, 2 skipped), `ruff check`,
 `ruff format --check`, `pyright` all clean.
 
-**M2 — Library domain + API + progress.**
-`Folder`, `TrashEntry`, `JobProgress` entities; folder/order/trash services with
-pure helpers (order math, subtree delete, single-parent/cycle rules); library,
-trash, and progress endpoints; derived read fields; WS events; scheduler
-up-next warming. API + service + scheduler tests.
+**M2 — Library domain + API + progress. DONE.**
+`Folder`, `TrashEntry`, `JobProgress` entities + repositories; `app/library`
+(pure tree/progress/playback + `LibraryService` + `ProgressService`); library,
+trash and progress endpoints; derived read fields on summaries/details; WS
+`library_changed` / `job_progress`; folder-aware scheduler warming with the
+`up_next_prebuffer_seconds` knob.
+
+Deviations from the first draft:
+- **No `PlaybackRegistry`.** Up-next is derived per tick from jobs already loaded
+  by the scheduler, so there is no second source of truth for "who is playing".
+- **`DELETE /api/jobs/{id}` stays permanent** (existing tests/tooling use it);
+  trashing is `POST /api/library/delete`.
+- `JobProgress.heard` is keyed by chunk **version** and carries `audio_epoch`, so
+  reprocessing/re-rendering invalidates marks without cross-service cleanup.
+
+Verification: 353 server tests (incl. new contract, tree, progress, playback,
+library service, API and scheduler-warming suites), ruff, pyright clean.
 
 **M3 — Player lift + mini-player (behavior-preserving).**
 `PlayerProvider`, mini-player, playback across routes; reader consumes the

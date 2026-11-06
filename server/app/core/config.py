@@ -24,6 +24,10 @@ class RuntimeConfig(BaseModel):
     # audio buffered shares the lowest priority band with background work.
     max_prebuffer_seconds: int = Field(default=300, ge=0)
     target_buffer_seconds: int = Field(default=60, ge=0)
+    # While a folder is playing, the next job in that folder is warmed up to
+    # this many seconds of contiguous audio (medium priority) so advancing to it
+    # is a short gap instead of a fresh stall. 0 disables folder-aware warming.
+    up_next_prebuffer_seconds: int = Field(default=120, ge=0)
     # Opt-in lookahead cap. 0 (the default) means a job renders its whole text
     # and only an explicit pause stops it. A positive value stops *planning* new
     # chunks once the job has that many seconds of rendered audio buffered; the

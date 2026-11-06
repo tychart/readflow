@@ -10,8 +10,8 @@ the in-memory module directly.
 
 Semantics every adapter must provide
 ------------------------------------
-- **User scoping.** Every job lookup is `(user_id, job_id)`; a repository never
-  returns another user's rows.
+- **User scoping.** Every lookup is `(user_id, id)`; a repository never returns
+  another user's rows.
 - **Explicit writes.** Reading an entity never writes. Mutations are declared
   with `save()` / `add()` / `delete()`, and `commit()` is the durability point.
 - **Aggregate boundaries.** A `Job` is loaded and saved together with its
@@ -29,11 +29,13 @@ Semantics every adapter must provide
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import TracebackType
 from typing import Protocol, runtime_checkable
 
 from app.db.models import User
 from app.jobs.models import Job
+from app.library.models import Folder, JobProgress, TrashEntry
 
 
 @runtime_checkable
@@ -46,6 +48,25 @@ class UserRepository(Protocol):
 
 
 @runtime_checkable
+class FolderRepository(Protocol):
+    def add(self, folder: Folder) -> None: ...
+
+    def save(self, folder: Folder) -> None: ...
+
+    def get(
+        self, user_id: str, folder_id: str, *, include_deleted: bool = False
+    ) -> Folder | None: ...
+
+    def list(self, user_id: str, *, include_deleted: bool = False) -> list[Folder]: ...
+
+    def delete(self, user_id: str, folder_id: str) -> None: ...
+
+    def next_position(self, user_id: str, parent_id: str | None) -> int:
+        """Next append position among the folder's live children."""
+        ...
+
+
+@runtime_checkable
 class JobRepository(Protocol):
     def add(self, job: Job) -> None:
         """Insert a new job aggregate. Raises if the id already exists."""
@@ -53,11 +74,41 @@ class JobRepository(Protocol):
     def save(self, job: Job) -> None:
         """Persist the job aggregate (row + chunks) and its current fields."""
 
-    def get(self, user_id: str, job_id: str) -> Job | None: ...
+    def get(self, user_id: str, job_id: str, *, include_deleted: bool = False) -> Job | None: ...
 
-    def list(self, user_id: str) -> list[Job]: ...
+    def list(self, user_id: str, *, include_deleted: bool = False) -> list[Job]: ...
 
     def delete(self, user_id: str, job_id: str) -> None: ...
+
+    def next_position(self, user_id: str, folder_id: str | None) -> int:
+        """Next append position among the folder's live job children."""
+        ...
+
+
+@runtime_checkable
+class ProgressRepository(Protocol):
+    def add(self, progress: JobProgress) -> None: ...
+
+    def get(self, user_id: str, job_id: str) -> JobProgress | None: ...
+
+    def list(self, user_id: str) -> list[JobProgress]: ...
+
+    def save(self, progress: JobProgress) -> None: ...
+
+    def delete(self, user_id: str, job_id: str) -> None: ...
+
+    def delete_many(self, user_id: str, job_ids: Iterable[str]) -> None: ...
+
+
+@runtime_checkable
+class TrashRepository(Protocol):
+    def add(self, entry: TrashEntry) -> None: ...
+
+    def get(self, user_id: str, entry_id: str) -> TrashEntry | None: ...
+
+    def list(self, user_id: str) -> list[TrashEntry]: ...
+
+    def delete(self, user_id: str, entry_id: str) -> None: ...
 
 
 @runtime_checkable
@@ -65,7 +116,10 @@ class UnitOfWork(Protocol):
     """One transaction's view of the database."""
 
     users: UserRepository
+    folders: FolderRepository
     jobs: JobRepository
+    progress: ProgressRepository
+    trash: TrashRepository
 
     def commit(self) -> None: ...
 

@@ -6,9 +6,13 @@ from pathlib import Path
 from app.chunking.planner import ChunkPlanner
 from app.core.config import Settings
 from app.core.hub import WebSocketHub
+from app.core.identity import DEFAULT_USER_ID
 from app.db.memory import MemoryDatabase
+from app.db.models import User
 from app.db.protocols import Database
 from app.jobs.manager import JobManager
+from app.library.progress_service import ProgressService
+from app.library.service import LibraryService
 from app.media.store import MediaStore
 from app.scheduler.service import SchedulerService
 from app.synthesis.model_manager import ModelManager
@@ -24,7 +28,10 @@ class AppServices:
     # Storage seam. Services depend on the protocol, never on the in-memory
     # implementation, so a SQL adapter is a one-line construction change here.
     database: Database
+    current_user: User
     job_manager: JobManager
+    library: LibraryService
+    progress: ProgressService
     planner: ChunkPlanner
     media_store: MediaStore
     telemetry: TelemetryService
@@ -38,7 +45,15 @@ class AppServices:
 
 def build_services(settings: Settings, base_dir: Path) -> AppServices:
     database: Database = MemoryDatabase()
+    current_user = database.get_user(DEFAULT_USER_ID)
+    if current_user is None:  # pragma: no cover - the adapter seeds it
+        raise RuntimeError("The database did not seed a default user")
     job_manager = JobManager(database)
+    library = LibraryService(database)
+    progress = ProgressService(
+        database,
+        estimated_chars_per_second=settings.runtime.estimated_chars_per_second,
+    )
     planner = ChunkPlanner(settings.runtime)
     media_store = MediaStore(settings)
     telemetry = TelemetryService(settings.runtime.recent_events_limit)
@@ -79,7 +94,10 @@ def build_services(settings: Settings, base_dir: Path) -> AppServices:
     return AppServices(
         settings=settings,
         database=database,
+        current_user=current_user,
         job_manager=job_manager,
+        library=library,
+        progress=progress,
         planner=planner,
         media_store=media_store,
         telemetry=telemetry,

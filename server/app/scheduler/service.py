@@ -19,6 +19,7 @@ from app.jobs.models import (
     JobStatus,
     ModelState,
 )
+from app.library.playback import up_next_job_ids
 from app.scheduler.recovery import DispatchBlock, RecoveryAction, plan_recovery
 from app.schemas.api import (
     AdminQueueResponse,
@@ -98,6 +99,9 @@ class SchedulerService:
     ) -> None:
         self._config = config
         self._chunk_mime_type = chunk_mime_type
+        # Derived each tick from playing jobs' folder successors. Never stored:
+        # a stale hint would keep warming a job nobody is about to hear.
+        self._up_next_job_ids: set[str] = set()
         self._job_manager = job_manager
         self._planner = planner
         self._worker = worker
@@ -268,6 +272,7 @@ class SchedulerService:
     async def run_once(self) -> None:
         self._last_tick_at = time()
         await self._expire_stale_listeners()
+        self._refresh_up_next()
         self._ensure_planned_chunks()
         self._telemetry.set_queue_depth(self._job_manager.queue_depth())
         block = await self._dispatch_tick()
@@ -512,6 +517,13 @@ class SchedulerService:
             ordered.extend(sorted(group, key=chunk_key))
         return ordered
 
+    def _refresh_up_next(self) -> None:
+        """Recompute the folder successors that deserve a warmed buffer."""
+        self._up_next_job_ids = up_next_job_ids(
+            self._job_manager.list_jobs(),
+            prebuffer_seconds=self._config.up_next_prebuffer_seconds,
+        )
+
     def _priority_band(self, job: Job) -> int:
         """Return the scheduler's coarse priority band for a job.
 
@@ -540,6 +552,11 @@ class SchedulerService:
                 return 0
             if job.buffered_seconds < self._config.max_prebuffer_seconds:
                 return 1
+        if job.id in self._up_next_job_ids:
+            # Not being listened to yet, but it is the next thing in a folder
+            # someone is playing. Medium priority keeps it behind the active
+            # listener and ahead of background work.
+            return 1
         return 2
 
     def _priority_info(self, job: Job, chunk: ChunkRecord) -> tuple[int, str, str]:
@@ -555,6 +572,13 @@ class SchedulerService:
                 "Urgent",
                 f"Active listener with {job.buffered_seconds:.1f}s buffered "
                 f"(below {target}s target).",
+            )
+        if band == 1 and not job.is_active_listening:
+            return (
+                band,
+                "Up next",
+                "Next job in a folder someone is listening to; warming its buffer "
+                f"to {self._config.up_next_prebuffer_seconds}s.",
             )
         if band == 1:
             return (
@@ -1160,6 +1184,7 @@ class SchedulerService:
         same helpers the real scheduler uses, so the admin view cannot drift
         from what the scheduler will actually do.
         """
+        self._refresh_up_next()
         pending = self._pending_chunks_for_inspection()
         renderable = self._rank_renderable_chunks()
         # The next batch is a prediction. It is sized without live VRAM figures

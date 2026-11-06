@@ -90,24 +90,30 @@ class JobManager:
         voice_id: str,
         language: str = "English",
         title: str | None = None,
+        folder_id: str | None = None,
     ) -> Job:
+        """Create a job, appended to the end of its folder's manual order."""
         normalized_text = normalize_source_text(source_text)
         now = time()
-        job = Job(
-            id=str(uuid4()),
-            title=title or self._derive_title(normalized_text),
-            source_kind=source_kind,
-            source_text=normalized_text,
-            model_id=model_id,
-            voice_id=voice_id,
-            language=language,
-            user_id=self._user_id,
-            submitted_at=now,
-            updated_at=now,
-        )
         with self._db.transaction() as uow:
+            if folder_id is not None and uow.folders.get(self._user_id, folder_id) is None:
+                raise KeyError(f"Unknown folder '{folder_id}'")
+            job = Job(
+                id=str(uuid4()),
+                title=title or self._derive_title(normalized_text),
+                source_kind=source_kind,
+                source_text=normalized_text,
+                model_id=model_id,
+                voice_id=voice_id,
+                language=language,
+                user_id=self._user_id,
+                folder_id=folder_id,
+                position=uow.jobs.next_position(self._user_id, folder_id),
+                submitted_at=now,
+                updated_at=now,
+            )
             uow.jobs.add(job)
-        return job
+            return job
 
     def delete_job(self, job_id: str) -> None:
         with self._db.transaction() as uow:

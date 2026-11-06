@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.jobs.models import ChunkRecord, Job
+from app.library.progress import ProgressView
 from app.telemetry.memory import MemoryStats as AdminMemoryStats
 
 
@@ -24,6 +25,21 @@ class ChunkResponse(BaseModel):
     char_end: int = 0
 
 
+class JobProgressResponse(BaseModel):
+    """Derived listening state. The client never computes any of this."""
+
+    fraction: float
+    read_status: str
+    heard_chunks: list[int]
+    remaining_seconds: float
+    position_seconds: float
+
+
+class FolderBriefResponse(BaseModel):
+    id: str
+    name: str
+
+
 class JobSummaryResponse(BaseModel):
     id: str
     title: str | None
@@ -37,6 +53,10 @@ class JobSummaryResponse(BaseModel):
     total_chunks_completed: int
     buffered_seconds: float
     completed_seconds: float
+    # Library metadata. None for events/payloads that only need the scheduler
+    # view of a job.
+    folder_id: str | None = None
+    progress: JobProgressResponse | None = None
 
 
 class JobDetailResponse(JobSummaryResponse):
@@ -45,6 +65,11 @@ class JobDetailResponse(JobSummaryResponse):
     plan_version: int
     chunks: list[ChunkResponse]
     failed_reason: str | None
+    # Library context: where the job lives and what plays next. Computed by the
+    # server so the reader never rebuilds the folder order.
+    folder_path: list[FolderBriefResponse] = Field(default_factory=list)
+    previous_job_id: str | None = None
+    next_job_id: str | None = None
     # index -> live version. Authoritative for the reader: it is what decides
     # which take of a reprocessed chunk plays. It used to live only in server
     # memory, so the reader always fell back to the newest take and the
@@ -107,6 +132,7 @@ class AdminConfigResponse(BaseModel):
     idle_unload_seconds: int
     max_prebuffer_seconds: int
     target_buffer_seconds: int
+    up_next_prebuffer_seconds: int
     render_ahead_seconds: int
     active_listener_timeout_seconds: float
     plan_ahead_chunks: int
@@ -131,6 +157,7 @@ class AdminConfigUpdateRequest(BaseModel):
     idle_unload_seconds: int | None = None
     max_prebuffer_seconds: int | None = None
     target_buffer_seconds: int | None = None
+    up_next_prebuffer_seconds: int | None = None
     render_ahead_seconds: int | None = None
     active_listener_timeout_seconds: float | None = None
     plan_ahead_chunks: int | None = None
@@ -302,6 +329,8 @@ class WsEnvelope(BaseModel):
         "telemetry",
         "admin_config_updated",
         "memory_stats",
+        "library_changed",
+        "job_progress",
     ]
     payload: dict[str, object] = Field(default_factory=dict)
 
@@ -334,7 +363,17 @@ def chunk_to_response(job: Job, chunk: ChunkRecord) -> ChunkResponse:
     )
 
 
-def job_to_summary(job: Job) -> JobSummaryResponse:
+def progress_to_response(view: ProgressView) -> JobProgressResponse:
+    return JobProgressResponse(
+        fraction=view.fraction,
+        read_status=view.read_status,
+        heard_chunks=list(view.heard_chunks),
+        remaining_seconds=view.remaining_seconds,
+        position_seconds=view.position_seconds,
+    )
+
+
+def job_to_summary(job: Job, *, progress: ProgressView | None = None) -> JobSummaryResponse:
     return JobSummaryResponse(
         id=job.id,
         title=job.title,
@@ -347,12 +386,21 @@ def job_to_summary(job: Job) -> JobSummaryResponse:
         total_chunks_completed=job.total_chunks_completed,
         buffered_seconds=job.buffered_seconds,
         completed_seconds=job.completed_seconds,
+        folder_id=job.folder_id,
+        progress=progress_to_response(progress) if progress is not None else None,
     )
 
 
-def job_to_detail(job: Job) -> JobDetailResponse:
+def job_to_detail(
+    job: Job,
+    *,
+    progress: ProgressView | None = None,
+    folder_path: list[FolderBriefResponse] | None = None,
+    previous_job_id: str | None = None,
+    next_job_id: str | None = None,
+) -> JobDetailResponse:
     return JobDetailResponse(
-        **job_to_summary(job).model_dump(),
+        **job_to_summary(job, progress=progress).model_dump(),
         source_kind=job.source_kind,
         source_text=job.source_text,
         plan_version=job.plan_version,
@@ -363,4 +411,7 @@ def job_to_detail(job: Job) -> JobDetailResponse:
         active_chunk_version=dict(job.active_chunk_version),
         failed_reason=job.failed_reason,
         audio_epoch=job.audio_epoch,
+        folder_path=folder_path or [],
+        previous_job_id=previous_job_id,
+        next_job_id=next_job_id,
     )

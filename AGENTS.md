@@ -275,6 +275,8 @@ Key files:
 - `server/app/api/router.py`
 - `server/app/db/protocols.py` (Database / UnitOfWork / repository protocols)
 - `server/app/db/memory.py` (the in-memory adapter)
+- `server/app/library/` (folders, ordering, progress, trash, playback order)
+- `server/app/api/library.py` (library/trash/progress endpoints)
 - `server/app/scheduler/service.py`
 - `server/app/scheduler/recovery.py` (pure stall-recovery policy)
 - `server/app/synthesis/provider.py`
@@ -336,6 +338,98 @@ Rules that are load-bearing:
 - **Validate before mutating.** In-memory rollback covers structural writes
   (`add`/`delete`), not half-applied attribute edits. The existing services
   follow this pattern already.
+
+### Library domain (`server/app/library`)
+
+The library is the only grouping concept in the product: a **folder** is an
+ordered, nestable, playable container. There is no separate playlist entity.
+Folders are always listed before jobs, a job has exactly one parent
+(`Job.folder_id`, `None` = root), and playing a folder traverses only its
+**direct job children** in manual order. Sub-folders are organization and are
+played on their own.
+
+Pure modules (heavily unit-tested, no database):
+
+- `tree.py` — children ordering, root-to-folder paths, descendants, cycle
+  rejection, reorder validation and subtree counts.
+- `progress.py` — the listening-state rules. `heard` is stored per chunk index
+  **and version**, so reprocessing a chunk invalidates its mark automatically; a
+  full re-render bumps `Job.audio_epoch` and invalidates every mark without a
+  cleanup write. Job progress is `(highest heard index + 1) / emitted chunks`.
+  A job is `read` only when it is fully produced and its **last playable** chunk
+  is heard — missing/failed middle chunks never block completion. These rules are
+  derived server-side; the frontend never computes a read status.
+- `playback.py` — folder neighbours (`next_job_in_folder`) and the derived
+  `up_next_job_ids`.
+- `service.py` (`LibraryService`) — commands over the storage seam: create/
+  rename folders, rename jobs, reorder, move, trash/restore/purge. Every method
+  is one transaction and validates before mutating. A move re-indexes both the
+  destination and every source parent, so no gaps are left behind.
+- `progress_service.py` (`ProgressService`) — position reports (heard indexes are
+  additive and unioned), manual mark-read/unread (whole job or from a chunk),
+  per-chunk heard toggles, and batched views for the library payload.
+
+Trash is soft delete with **subtree** semantics: deleting a folder marks the
+folder and everything below it with one `trash_entry_id`, so Restore brings the
+whole subtree back where it was (or to the root if its old parent is gone).
+Trashed jobs are invisible to `JobManager`/the scheduler; their audio is kept
+until "delete forever" / "empty trash". `delete_folder_only` moves the children
+up to the parent first and then trashes the empty folder.
+
+`LibraryService`/`ProgressService` are constructed user-scoped in
+`app/core/services.py`; when authentication lands they become per-request
+dependencies. The default is the seeded `local` user.
+
+### API and live events for the library
+
+`server/app/api/library.py` is a separate router mounted under `/api`. It only
+translates HTTP into library calls; `app/api/mappers.py` gathers the derived
+progress view and folder context. Important shapes:
+
+- `GET /api/library` — one consistent snapshot: folders (recursive `job_count`,
+  direct `folder_count`, chunk-weighted `progress_fraction`), job summaries
+  (including `folder_id`, `position` and a derived `progress` object) and
+  `trash_count`.
+- `POST /api/folders`, `PATCH /api/folders/{id}`, `PATCH /api/jobs/{id}`,
+  `POST /api/library/reorder|move|delete|read`,
+  `POST /api/folders/{id}/delete-only`, `GET /api/trash`,
+  `POST /api/trash/restore|purge`.
+- `POST /api/jobs/{id}/progress` — `{position_seconds, is_playing,
+  heard_chunk_indexes}`; the heard list is additive. This supersedes the old
+  playback ping for progress purposes, but `/playback` still records the
+  position for compatibility and scheduler buffering.
+- `POST /api/jobs/{id}/read` (`{read, from_chunk?}`) and
+  `POST /api/jobs/{id}/chunks/{index}/heard` (`{heard}`).
+- Every library mutation broadcasts `library_changed` (an invalidation signal,
+  never a payload). Progress changes broadcast a compact `job_progress` (job id +
+  derived progress); **chunk text is never broadcast**.
+
+`JobDetailResponse` now carries `folder_path`, `previous_job_id`,
+`next_job_id`, and the derived `progress` (including `position_seconds` and
+`heard_chunks`), so the reader never rebuilds the folder order or read state.
+
+### Scheduler: folder-aware warming
+
+`up_next_job_ids()` derives, each tick, the jobs that are the folder successor of
+a job someone is actively playing. It is computed, never stored: `run_once` and
+`queue_snapshot` call `_refresh_up_next()`. Those jobs are clamped into priority
+band 1 until they have `up_next_prebuffer_seconds` of contiguous audio (Admin
+knob, default 120 s; `0` disables warming). The clamp never outranks an urgent
+active listener (band 0), and a paused job warms nothing. `_priority_info` labels
+the band "Up next" with its own reason, so the queue inspector stays honest.
+
+Rules that are easy to break:
+
+- Do not move ordering or read-state math into React. The API already ships
+  positions, `read_status`, `progress_fraction` and folder neighbours.
+- Do not re-derive `heard` validity without the version+epoch checks in
+  `valid_heard`; otherwise a reprocessed or re-rendered chunk stays "heard".
+- Keep the trash entry as the unit of restore, and keep a folder deletion to
+  exactly one entry (nested selections are deduped).
+- Re-index both sides of a move; appending without re-indexing produced gaps in
+  the manual order.
+- `DELETE /api/jobs/{id}` remains the permanent delete used by existing tooling;
+  the library's trash action is `POST /api/library/delete`.
 
 ## Frontend architecture
 

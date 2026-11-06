@@ -11,12 +11,23 @@ from __future__ import annotations
 
 from app.db.memory import MemoryDatabase
 from app.db.models import User
-from app.db.protocols import Database, JobRepository, UnitOfWork, UserRepository
+from app.db.protocols import (
+    Database,
+    FolderRepository,
+    JobRepository,
+    ProgressRepository,
+    TrashRepository,
+    UnitOfWork,
+    UserRepository,
+)
 
 __all__ = [
     "Database",
+    "FolderRepository",
     "JobRepository",
     "MemoryDatabase",
+    "ProgressRepository",
+    "TrashRepository",
     "UnitOfWork",
     "User",
     "UserRepository",

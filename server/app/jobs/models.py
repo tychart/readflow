@@ -129,6 +129,13 @@ class Job:
     # Parent folder, or None for the root library. Grouping is a library
     # concern; the scheduler never reads this.
     folder_id: str | None = None
+    # Manual order among the jobs directly inside `folder_id` (folders have
+    # their own sequence and are always rendered first).
+    position: int = 0
+    # Soft delete. A trashed job is invisible to the scheduler and the reader
+    # until it is restored or purged.
+    deleted_at: float | None = None
+    trash_entry_id: str | None = None
     plan_version: int = 1
     # Bumped when already-rendered audio is invalidated (a full voice
     # re-render). It is surfaced in the media/peaks URLs and in the reader's
