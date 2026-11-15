@@ -80,18 +80,28 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/home/readflow/.cache/huggingface
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-venv libsndfile1 ffmpeg \
+    # `pg_dump` lives in postgresql-client (admin backups); libpq is psycopg's
+    # runtime. Both are small and stay out of the builder.
+    postgresql-client libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 readflow \
     && mkdir -p /app/server /home/readflow/.cache/huggingface /tmp/readflow \
+       /app/server/.media \
     && chown -R readflow:readflow /app /home/readflow /tmp/readflow
 WORKDIR /app/server
 COPY --from=builder-cpu --chown=readflow:readflow /app/server/.venv /app/server/.venv
 COPY --chown=readflow:readflow app/ app/
 COPY --chown=readflow:readflow main.py ./
 COPY --chown=readflow:readflow pyproject.toml ./
+COPY --chown=readflow:readflow alembic.ini ./
+COPY --chown=readflow:readflow alembic/ alembic/
+COPY --chown=readflow:readflow docker-entrypoint.sh ./
 COPY --chown=readflow:readflow voices/ voices/
 USER readflow
 EXPOSE 8000
+# Migrate, then serve: the entrypoint runs `alembic upgrade head` when a
+# database is configured, and skips it entirely in memory mode.
+ENTRYPOINT ["/app/server/docker-entrypoint.sh"]
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # ── Runtime: CUDA (default target — must stay last) ───────────────────────
@@ -104,9 +114,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # libsndfile1 is the Ubuntu 24.04 package name (there is no `libsndfile1-2`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-venv libsndfile1 ffmpeg \
+    # `pg_dump` lives in postgresql-client (admin backups); libpq is psycopg's
+    # runtime. Both are small and stay out of the builder.
+    postgresql-client libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 readflow \
     && mkdir -p /app/server /home/readflow/.cache/huggingface /tmp/readflow \
+       /app/server/.media \
     && chown -R readflow:readflow /app /home/readflow /tmp/readflow
 WORKDIR /app/server
 COPY --from=builder --chown=readflow:readflow /app/server/.venv /app/server/.venv

@@ -12,9 +12,11 @@ ReadFlow is intentionally opinionated:
 - one frontend app
 - one loaded Qwen model at a time
 - one GPU synthesis loop
-- in-memory jobs and scheduler state
-- temp-file-based media output
-- no auth, no accounts, no database, no Redis, no Celery
+- Postgres for accounts, jobs, folders, listening progress and sessions
+  (an in-memory adapter remains for tests and `dev.sh --memory`)
+- username + password accounts (first-run setup creates the admin)
+- rendered audio on a volume, kept until the user purges it
+- no Redis, no Celery, no ORM, no JWT
 
 The core design goal is not “lowest single-request latency.” It is:
 
@@ -33,11 +35,13 @@ The repo currently contains:
 - a fake provider for fast deterministic local tests
 - unit, integration, browser smoke, lint, and typecheck coverage
 
-The repo does **not** yet contain every production nicety — jobs live in memory, there is no auth and no persistence — but local development is two commands:
+Local development is two commands. Postgres is started (and migrated) for you
+if `DATABASE_URL` points at loopback; use `--memory` to skip it entirely:
 
 ```bash
-make install      # one-time: uv sync (server) + bun install (web)
-scripts/dev.sh    # run the API + web dev server with hot reload
+make install            # one-time: uv sync (server) + bun install (web)
+scripts/dev.sh          # api + web, Postgres auto-started and migrated
+scripts/dev.sh --memory # api + web, nothing persisted (local account: local / readflow-local-dev)
 ```
 
 Dependencies are managed with the native toolchains: **uv** owns the backend
@@ -101,6 +105,33 @@ same-origin with no extra setup.
 - Manual warm and evict actions from the admin page
 - Temp-file fragmented MP4 media delivery for browser playback
 - Fast mocked tests and gated real-model tests
+
+## Accounts, storage and backups
+
+- **First run**: open the app and create the administrator at `/setup`. That
+  route only exists while the install has no accounts.
+- **Accounts** are admin-created (Admin → Users). There is no self-service
+  registration and no email: passwords are reset by an admin. Disabling an
+  account or resetting its password revokes its sessions and live sockets.
+- **Storage**: `DATABASE_URL` selects Postgres. Unset (or `dev.sh --memory`)
+  keeps everything in process memory, which is what the unit tests use.
+  Schema changes are Alembic migrations and run automatically in the container
+  entrypoint (`alembic upgrade head` is idempotent).
+- **Backups**:
+
+  ```bash
+  scripts/backup.sh              # pg_dump -Fc into $BACKUP_DIR (default ./backups)
+  scripts/backup.sh --compose    # dump through the running compose `pg` container
+  scripts/backup.sh --retention 7
+  ```
+
+  Files are `0600`, named `readflow-YYYYmmddTHHMMSSZ.dump`, and the newest
+  `$BACKUP_RETENTION` are kept. Restore with
+  `pg_restore --clean --if-exists -d readflow <file>.dump`. The same dump is
+  available to an admin from the UI (Admin → Users → Download backup).
+- **Containers**: `compose.yml` runs `pg` + `api` + `web` (`compose.cpu.yml` for
+  no GPU); the images publish to GHCR. See `deploy/quadlet/README.md` for a
+  systemd/Podman install without compose.
 
 ## Main Limitations
 

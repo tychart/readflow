@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     scheduler_autostart: bool = True
     voices_dir: str = "voices"
     temp_dir_name: str = "readflow"
+    # Root for rendered audio. Unset means the system temp dir, which is right
+    # for dev and tests. Containers set it to a mounted volume: `/tmp` inside a
+    # container disappears on recreate, and the audio outlives the process.
+    media_dir: str | None = None
     # Budget for the scheduler's cache of canonical job source text, in
     # characters. Reading a book-sized row on every tick is pure overhead and the
     # text never changes, so it is cached; this bounds what that costs.

@@ -14,20 +14,47 @@
 name: readflow
 
 services:
+  pg:
+    image: ${READFLOW_PG_IMAGE:-docker.io/library/postgres:18}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-readflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-readflow}
+      POSTGRES_DB: ${POSTGRES_DB:-readflow}
+      TZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-readflow} -d ${POSTGRES_DB:-readflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
   api:
     image: ${READFLOW_API_IMAGE:-ghcr.io/tychart/readflow-api:latest-cpu}
     build:
       context: server
       target: cpu
     restart: unless-stopped
+    depends_on:
+      pg:
+        condition: service_healthy
     environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://readflow:readflow@pg:5432/readflow}
+      READFLOW_COOKIE_SECURE: ${READFLOW_COOKIE_SECURE:-auto}
       READFLOW_TTS_PROVIDER: ${READFLOW_TTS_PROVIDER:-qwen}
       READFLOW_SCHEDULER_AUTOSTART: ${READFLOW_SCHEDULER_AUTOSTART:-true}
       READFLOW_TEMP_DIR_NAME: ${READFLOW_TEMP_DIR_NAME:-readflow}
+      # Rendered audio lives on a volume, not in the container's /tmp.
+      READFLOW_MEDIA_DIR: /app/server/.media
       HF_HOME: /home/readflow/.cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - hf-cache:/home/readflow/.cache/huggingface
+      # Rendered audio: kept until the user purges it, so it must
+      # outlive the container.
+      - media:/app/server/.media
     expose:
       - "8000"
     healthcheck:
@@ -62,3 +89,5 @@ services:
 
 volumes:
   hf-cache:
+  media:
+  pgdata:

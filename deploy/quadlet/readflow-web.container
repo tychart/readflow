@@ -1,0 +1,20 @@
+# ReadFlow — web (Podman quadlet): Caddy serving the SPA and proxying /api.
+[Unit]
+Description=ReadFlow web
+Wants=readflow-api.service
+After=readflow-api.service
+
+[Container]
+Image=ghcr.io/tychart/readflow-web:latest
+ContainerName=readflow-web
+Environment=READFLOW_API_UPSTREAM=host.containers.internal:8000
+PublishPort=8080:80
+HealthCmd=wget -q -O /dev/null http://127.0.0.1/healthz
+HealthInterval=30s
+HealthRetries=3
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

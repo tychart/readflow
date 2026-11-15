@@ -21,6 +21,31 @@
 name: readflow
 
 services:
+  # Postgres holds every account, job, folder, progress row and session.
+  #
+  # No published port: only the api reaches it, over the compose network. Set
+  # `POSTGRES_PORT=5432:5432` yourself if you want to run psql from the host.
+  pg:
+    image: ${READFLOW_PG_IMAGE:-docker.io/library/postgres:18}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-readflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-readflow}
+      POSTGRES_DB: ${POSTGRES_DB:-readflow}
+      # UTC at the server level: the app stores timestamptz, so the session zone
+      # decides what psql and pg_dump print.
+      TZ: UTC
+    volumes:
+      # Postgres 18 expects the mount at /var/lib/postgresql (not .../data); the
+      # image puts the data in a versioned subdirectory so pg_upgrade works.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-readflow} -d ${POSTGRES_DB:-readflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
   api:
     image: ${READFLOW_API_IMAGE:-ghcr.io/tychart/readflow-api:latest}
     build:
@@ -30,18 +55,31 @@ services:
         # 1 = bundle the prebuilt flash-attn wheel (target must be cuda).
         INSTALL_FLASH_ATTN: ${READFLOW_FLASH:-0}
     restart: unless-stopped
+    depends_on:
+      pg:
+        condition: service_healthy
     # PyTorch's shared-memory transport needs the host IPC namespace.
     ipc: host
     environment:
       READFLOW_TTS_PROVIDER: ${READFLOW_TTS_PROVIDER:-qwen}
       READFLOW_SCHEDULER_AUTOSTART: ${READFLOW_SCHEDULER_AUTOSTART:-true}
       READFLOW_TEMP_DIR_NAME: ${READFLOW_TEMP_DIR_NAME:-readflow}
+      # The one setting that selects the Postgres adapter. Comment it out (and
+      # leave the pg service unused) to run the in-memory stack instead.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://readflow:readflow@pg:5432/readflow}
+      READFLOW_COOKIE_SECURE: ${READFLOW_COOKIE_SECURE:-auto}
+      READFLOW_ALLOWED_ORIGINS: ${READFLOW_ALLOWED_ORIGINS:-}
+      # Rendered audio lives on a volume, not in the container's /tmp.
+      READFLOW_MEDIA_DIR: /app/server/.media
       HF_HOME: /home/readflow/.cache/huggingface
       # Optional: authenticated / faster Hugging Face downloads.
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       # Named volume: the model weights download once and survive image updates.
       - hf-cache:/home/readflow/.cache/huggingface
+      # Rendered audio. Kept until the user purges it, so it must outlive the
+      # container (a recreate would otherwise lose every rendered chunk).
+      - media:/app/server/.media
     expose:
       - "8000"
     # Defined here (not in the image) so it also applies to OCI-format builds,
@@ -86,3 +124,5 @@ services:
 
 volumes:
   hf-cache:
+  media:
+  pgdata:

@@ -35,7 +35,14 @@ class PackagedChunk:
 
 class MediaStore:
     def __init__(self, settings: Settings) -> None:
-        self._root = Path(tempfile.gettempdir()) / settings.temp_dir_name / "jobs"
+        # A configured directory wins (containers mount a volume there); the
+        # temp dir is the dev/test default.
+        base = (
+            Path(settings.media_dir)
+            if settings.media_dir
+            else Path(tempfile.gettempdir()) / settings.temp_dir_name
+        )
+        self._root = base / "jobs"
         self._root.mkdir(parents=True, exist_ok=True)
 
     def _chunk_dir(self, job_id: str) -> Path:

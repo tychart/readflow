@@ -1,0 +1,37 @@
+# ReadFlow — API (Podman quadlet).
+#
+# GPU variant. For a CPU host use the `-cpu` image and drop the AddDevice line.
+[Unit]
+Description=ReadFlow API
+Wants=network-online.target readflow-pg.service
+After=network-online.target readflow-pg.service
+
+[Container]
+Image=ghcr.io/tychart/readflow-api:latest
+ContainerName=readflow-api
+EnvironmentFile=%h/.config/readflow/readflow.env
+# The default image is the generic CUDA/SDPA build; the flash variant is
+# ghcr.io/tychart/readflow-api:<tag>-flash.
+Environment=DATABASE_URL=postgresql+psycopg://readflow@127.0.0.1:5432/readflow
+Environment=READFLOW_TTS_PROVIDER=qwen
+Environment=READFLOW_MEDIA_DIR=/app/server/.media
+Environment=READFLOW_COOKIE_SECURE=auto
+Environment=HF_HOME=/home/readflow/.cache/huggingface
+# PyTorch needs the host IPC namespace for its shared-memory transport.
+IPCNamespace=host
+# Model weights and rendered audio both outlive the container.
+Volume=readflow-hf-cache:/home/readflow/.cache/huggingface
+Volume=readflow-media:/app/server/.media
+PublishPort=127.0.0.1:8000:8000
+AddDevice=nvidia.com/gpu=all
+HealthCmd=python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=90s
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

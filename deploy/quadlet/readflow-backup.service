@@ -1,0 +1,10 @@
+# ReadFlow — nightly database backup (one-shot).
+[Unit]
+Description=ReadFlow database backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/readflow
+# Uses DATABASE_URL / BACKUP_* from the same env file as the containers.
+EnvironmentFile=%h/.config/readflow/readflow.env
+ExecStart=/srv/readflow/scripts/backup.sh --quiet --compose

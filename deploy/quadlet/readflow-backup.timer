@@ -1,0 +1,12 @@
+# ReadFlow — run the backup nightly at 03:30 local time.
+[Unit]
+Description=Nightly ReadFlow database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Catch up after a reboot instead of skipping the night entirely.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,40 @@
+# ReadFlow — Postgres (Podman quadlet).
+#
+# Install (rootless):
+#   mkdir -p ~/.config/containers/systemd
+#   cp deploy/quadlet/*.container deploy/quadlet/*.timer deploy/quadlet/*.service \
+#      ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now readflow-pg.service
+#
+# Secrets come from an EnvironmentFile the operator owns (mode 0600):
+#   /etc/readflow/readflow.env  (or ~/.config/readflow/readflow.env)
+#   POSTGRES_USER=readflow
+#   POSTGRES_PASSWORD=<something long>
+#   POSTGRES_DB=readflow
+[Unit]
+Description=ReadFlow Postgres
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=docker.io/library/postgres:18
+ContainerName=readflow-pg
+# Postgres 18 mounts the volume at /var/lib/postgresql (not .../data).
+Volume=readflow-pgdata:/var/lib/postgresql
+Environment=TZ=UTC
+EnvironmentFile=%h/.config/readflow/readflow.env
+# Reachable only from the host (the api container runs on the host network or
+# joins this namespace); never publish it to the LAN.
+PublishPort=127.0.0.1:5432:5432
+HealthCmd=pg_isready -U readflow -d readflow
+HealthInterval=10s
+HealthRetries=10
+HealthStartPeriod=20s
+
+[Service]
+Restart=always
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

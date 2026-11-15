@@ -9,8 +9,12 @@
 #         and on 0.0.0.0, so a phone or tablet on the same network can use it.
 #         The api itself stays loopback-only and is reached through Vite's proxy.
 #
-# ReadFlow has no database — jobs, chunks and telemetry live in memory — so there
-# is nothing to migrate, and `stop`/`down` are the same thing.
+# The api uses Postgres by default: `DATABASE_URL` from `.env` (or the default
+# localhost URL). If that URL points at loopback and nothing is listening, a
+# dev container `readflow-dev-pg` is started, migrated, and left running for the
+# next start (`stop --with-db` removes it). Pass `--memory` to run the whole
+# stack on the in-memory adapter instead: no database, nothing to migrate, and
+# every row disappears on exit.
 #
 # Configuration: `.env` in the repo root is sourced when it exists (the same file
 # compose and Vite read), so DEV_PROVIDER/DEV_WEB_HOST/HOST_URL and READFLOW_*
@@ -21,7 +25,7 @@
 #   scripts/dev.sh [start]     start api + web, then follow logs. Ctrl-C stops both.
 #   scripts/dev.sh restart     stop a running stack, then start a fresh one
 #   scripts/dev.sh stop        stop the api + web processes started here
-#   scripts/dev.sh status      show what is up (ports + how it was started)
+#   scripts/dev.sh status      show what is up (ports, database, how it was started)
 #   scripts/dev.sh logs        tail the api + web logs without starting anything
 #   scripts/dev.sh test        make test       (web: bun/vitest · server: uv/pytest)
 #   scripts/dev.sh test-e2e    make test-e2e   (Playwright)
@@ -39,6 +43,8 @@
 #   --no-server         skip the api                                   [DEV_NO_SERVER=1]
 #   --no-web            skip the frontend                              [DEV_NO_WEB=1]
 #   --access-log        show uvicorn per-request access logs           [DEV_ACCESS_LOG=1]
+#   --memory            use the in-memory adapter: no database         [DEV_MEMORY=1]
+#   --with-db           with 'stop': also remove the dev Postgres container
 #   NO_COLOR=1          plain output (also automatic when not a TTY)
 #
 # The ports are fixed at 8000 (api) and 5173 (web) because Vite's /api proxy is
@@ -63,6 +69,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVER_DIR="$ROOT/server"
 cd "$ROOT"
 
 # --- .env ----------------------------------------------------------------------
@@ -94,6 +101,8 @@ web_port=5173
 # without any extra setup. Vite proxies /api itself, so the api needs no LAN bind.
 web_host="${DEV_WEB_HOST:-0.0.0.0}"
 provider="${DEV_PROVIDER:-qwen}"
+memory_mode="${DEV_MEMORY:-0}"
+with_db=0
 no_server="${DEV_NO_SERVER:-0}"
 no_web="${DEV_NO_WEB:-0}"
 no_follow="${DEV_NO_FOLLOW:-0}"
@@ -103,6 +112,19 @@ api_foreign=0
 web_foreign=0
 api_url="http://localhost:$api_port"
 web_url="http://localhost:$web_port"
+
+# --- database ----------------------------------------------------------------
+# One URL decides the adapter. `--memory` wins, then `.env`'s DATABASE_URL, then
+# the loopback default that `make db-up` also uses.
+PG_CONTAINER="${DEV_PG_CONTAINER:-readflow-dev-pg}"
+PG_VOLUME="${DEV_PG_VOLUME:-readflow-dev-pgdata}"
+PG_IMAGE="${DEV_PG_IMAGE:-docker.io/library/postgres:18}"
+PG_USER="${POSTGRES_USER:-readflow}"
+PG_PASSWORD="${POSTGRES_PASSWORD:-readflow}"
+PG_DB="${POSTGRES_DB:-readflow}"
+database_url="${DATABASE_URL:-postgresql+psycopg://${PG_USER}:${PG_PASSWORD}@127.0.0.1:5432/${PG_DB}}"
+db_started_here=0
+db_mode=""
 
 # --- output ------------------------------------------------------------------
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
@@ -181,6 +203,17 @@ port_open() {
       return 0
     fi
   done
+  return 1
+}
+
+# Port probe for an explicit host (the database URL may name one).
+port_open_raw() {
+  local p=$1 host=${2:-127.0.0.1}
+  [[ $host == "::1" ]] && host="::1"
+  if (exec 3<>"/dev/tcp/$host/$p") 2>/dev/null; then
+    exec 3>&- 3<&- 2>/dev/null || true
+    return 0
+  fi
   return 1
 }
 
@@ -297,6 +330,8 @@ state_write() {
     printf 'web_host %s\n' "$web_host"
     printf 'api_pid %s\n' "$api_pid"
     printf 'web_pid %s\n' "$web_pid"
+    printf 'database %s\n' "$db_mode"
+    printf 'database_url %s\n' "$( ((memory_mode)) || echo "$database_url")"
   } >"$STATE_FILE"
 }
 
@@ -381,6 +416,98 @@ preflight() {
   fi
 }
 
+# --- database ----------------------------------------------------------------
+db_host_port() {
+  # Extract host:port from a SQLAlchemy URL without needing python.
+  local url=$1
+  local rest=${url#*://}
+  local authority=${rest%%/*}
+  authority=${authority##*@}
+  local host=${authority%%:*}
+  local port=${authority##*:}
+  [[ $host == "$authority" ]] && port=5432
+  printf '%s %s\n' "$host" "$port"
+}
+
+db_is_local() {
+  local parsed host port
+  parsed=$(db_host_port "$database_url")
+  host=${parsed%% *}; port=${parsed##* }
+  [[ $host == "127.0.0.1" || $host == "localhost" || $host == "::1" || $host == "postgres" ]] && return 0
+  return 1
+}
+
+db_reachable() {
+  local parsed host port
+  parsed=$(db_host_port "$database_url")
+  host=${parsed%% *}; port=${parsed##* }
+  [[ $host == "postgres" ]] && host=127.0.0.1
+  port_open_raw "$port" "$host"
+}
+
+ensure_database() {
+  if ((memory_mode)); then
+    db_mode="memory"
+    info "database: ${BOLD}in-memory${OFF} ${DIM}(--memory; every row is lost on exit)${OFF}"
+    hint "the seeded development account is local / readflow-local-dev"
+    return 0
+  fi
+
+  if ! db_is_local; then
+    db_mode="postgres"
+    info "database: ${BOLD}postgres${OFF} ${DIM}(${database_url%%\?*})${OFF}"
+    return 0
+  fi
+
+  db_mode="postgres"
+  if db_reachable; then
+    ok "database: postgres already listening"
+  else
+    have "$(container_engine)" || die "no podman or docker to start the dev database (or pass --memory)"
+    local engine; engine=$(container_engine)
+    info "starting dev postgres (${PG_CONTAINER})"
+    "$engine" volume inspect "$PG_VOLUME" >/dev/null 2>&1 || "$engine" volume create "$PG_VOLUME" >/dev/null
+    if "$engine" container inspect "$PG_CONTAINER" >/dev/null 2>&1; then
+      "$engine" start "$PG_CONTAINER" >/dev/null
+    else
+      "$engine" run -d --name "$PG_CONTAINER" \
+        -e "POSTGRES_USER=$PG_USER" -e "POSTGRES_PASSWORD=$PG_PASSWORD" \
+        -e "POSTGRES_DB=$PG_DB" -e TZ=UTC \
+        -v "$PG_VOLUME:/var/lib/postgresql" \
+        -p "127.0.0.1:5432:5432" "$PG_IMAGE" >/dev/null
+    fi
+    db_started_here=1
+    local waited=0
+    until "$engine" exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; do
+      sleep 0.5
+      waited=$((waited + 1))
+      ((waited > 120)) && die "postgres did not become ready (see '$engine logs $PG_CONTAINER')"
+    done
+    ok "dev postgres is ready"
+  fi
+
+  info "applying migrations"
+  ( cd "$SERVER_DIR" && READFLOW_DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
+      uv run alembic upgrade head >/dev/null ) || die "database migration failed"
+  ok "schema is up to date"
+}
+
+container_engine() {
+  if command -v podman >/dev/null 2>&1; then echo podman
+  elif command -v docker >/dev/null 2>&1; then echo docker
+  else echo ""
+  fi
+}
+
+stop_database() {
+  local engine; engine=$(container_engine)
+  [[ -z $engine ]] && return 0
+  if "$engine" container inspect "$PG_CONTAINER" >/dev/null 2>&1; then
+    "$engine" rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+    ok "removed the dev postgres container (the $PG_VOLUME volume is kept)"
+  fi
+}
+
 # --- stack pieces ------------------------------------------------------------
 start_api() {
   if (($no_server)); then
@@ -403,7 +530,15 @@ start_api() {
   uv_args+=(uvicorn main:app "${flags[@]}")
 
   info "starting api on ${BOLD}$api_url${OFF} ${DIM}(provider: $provider)${OFF}"
-  start_proc server "$API_LOG" env "READFLOW_TTS_PROVIDER=$provider" uv "${uv_args[@]}"
+  local api_env=("READFLOW_TTS_PROVIDER=$provider")
+  if ((memory_mode)); then
+    # Explicitly unset it: an inherited DATABASE_URL would otherwise select
+    # Postgres despite --memory.
+    api_env+=("DATABASE_URL=" "READFLOW_DATABASE_URL=")
+  else
+    api_env+=("DATABASE_URL=$database_url")
+  fi
+  start_proc server "$API_LOG" env "${api_env[@]}" uv "${uv_args[@]}"
   api_pid=$proc_pid
   if ((no_sync)); then
     hint "flash-attn present — running with 'uv run --no-sync' to avoid pruning the CUDA extra"
@@ -613,6 +748,7 @@ start() {
   preflight
 
   trap startup_signal INT TERM
+  ensure_database
   start_api
   start_web
 
@@ -791,6 +927,19 @@ status() {
     local sp; sp=$(state_get provider)
     box_row "provider" "$sp" "${BOLD}$sp${OFF}"
   fi
+  local s_db s_db_url
+  s_db=$(state_get database)
+  if [[ $s_db == memory ]]; then
+    box_row "database" "in-memory" "${YEL}in-memory${OFF} ${DIM}(rows lost on exit)${OFF}"
+  elif [[ -n $s_db ]]; then
+    s_db_url=$(state_get database_url)
+    if db_reachable; then
+      box_row "database" "postgres up" "${C_OK}postgres${OFF} ${DIM}up${OFF}"
+    else
+      box_row "database" "postgres down" "${C_BAD}postgres${OFF} ${DIM}down${OFF}"
+    fi
+    [[ -n $s_db_url ]] && hint "database: $s_db_url"
+  fi
   if [[ -n $s_api || -n $s_web ]]; then
     tr="api ${s_api:-—} · web ${s_web:-—}"
     box_row "script pids" "$tr" "${DIM}$tr${OFF}"
@@ -851,6 +1000,8 @@ while ((i < ${#args[@]})); do
     --no-web) no_web=1 ;;
     --no-follow) no_follow=1 ;;
     --access-log) access_log=1 ;;
+    --memory) memory_mode=1 ;;
+    --with-db) with_db=1 ;;
     -*) die "unknown option '$a' — try 'scripts/dev.sh help'" ;;
     *) die "unknown command '$a' — try 'scripts/dev.sh help'" ;;
   esac
@@ -864,8 +1015,8 @@ esac
 
 case "$cmd" in
   start | up) start ;;
-  stop) stop ;;
-  restart) stop && start ;;
+  stop) stop; ((with_db)) && stop_database; exit 0 ;;
+  restart) stop; ((with_db)) && stop_database; start ;;
   status) status ;;
   logs) logs ;;
   test) make_target test ;;
