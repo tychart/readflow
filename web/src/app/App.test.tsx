@@ -10,6 +10,12 @@ import userEvent from "@testing-library/user-event";
 import { liveClient } from "../lib/live-client";
 import { setReaderTitle } from "../state/reader-title";
 import { useAppStore } from "../state/store";
+import {
+  authStatusFor,
+  resetAuthForTest,
+  signInForTest,
+  TEST_USER,
+} from "../test-utils/auth";
 import { App } from "./App";
 
 class MockWebSocket extends EventTarget {
@@ -132,6 +138,10 @@ function seedStore() {
 
 beforeEach(() => {
   seedStore();
+  resetAuthForTest();
+  // The shell is behind the auth gate now; every test here acts as a signed-in
+  // admin unless it says otherwise.
+  signInForTest();
   setScrollY(0);
   // The open reader's title outlives a route change by design, so a test that
   // publishes one must not leak it into the next test.
@@ -181,6 +191,9 @@ beforeEach(() => {
           trash_count: 0,
         }),
       };
+    }
+    if (url.endsWith("/api/auth/status")) {
+      return { ok: true, json: async () => authStatusFor(TEST_USER) };
     }
     if (url.endsWith("/api/jobs")) {
       return { ok: true, json: async () => [] };
@@ -253,6 +266,9 @@ test("shows idle rather than connecting when nothing needs the live socket", asy
         ok: true,
         json: async () => ({ folders: [], jobs: [], trash_count: 0 }),
       };
+    }
+    if (url.endsWith("/api/auth/status")) {
+      return { ok: true, json: async () => authStatusFor(TEST_USER) };
     }
     if (url.endsWith("/api/jobs")) {
       return { ok: true, json: async () => [] };

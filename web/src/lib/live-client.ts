@@ -1,3 +1,4 @@
+import { clearAuth } from "../app/auth/auth-store";
 import { useAppStore } from "../state/store";
 import type { JobSummary, WsEnvelope } from "../types/api";
 import type { WebSocketStatus } from "../types/events";
@@ -8,6 +9,8 @@ const HEARTBEAT_MS = 15_000;
 const STALE_AFTER_MS = 30_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 const RELEASE_GRACE_MS = 250;
+/** Server close code for "no valid session" (policy violation). */
+const UNAUTHENTICATED_CLOSE_CODE = 1008;
 
 function mergeSnapshotJobs(
   existingJobs: Record<string, JobSummary>,
@@ -279,7 +282,7 @@ class LiveClient {
       });
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.socket === socket) {
         this.socket = null;
       }
@@ -289,6 +292,14 @@ class LiveClient {
       if (this.heartbeatTimer !== null) {
         window.clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = null;
+      }
+      if (event.code === UNAUTHENTICATED_CLOSE_CODE) {
+        // The session is gone (logged out, expired, or the account was
+        // disabled). Reconnecting would just be refused again, so stop and let
+        // the auth gate send the user to the login page.
+        clearAuth();
+        this.stop();
+        return;
       }
       this.scheduleReconnect();
     });

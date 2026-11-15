@@ -90,6 +90,7 @@ test("downloadJobAudio asks for the requested encoding", async () => {
 
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/jobs/job-1/download?format=flac",
+    { credentials: "same-origin" },
   );
   expect(result.filename).toBe("my-book.flac");
   expect(result.blob).toBe(blob);
@@ -106,7 +107,10 @@ test("downloadJobAudio defaults to m4a", async () => {
 
   const result = await api.downloadJobAudio("job-1");
 
-  expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/download?format=m4a");
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/jobs/job-1/download?format=m4a",
+    { credentials: "same-origin" },
+  );
   // No Content-Disposition: fall back to the requested encoding's extension.
   expect(result.filename).toBe("readflow-job-job-1.m4a");
 });

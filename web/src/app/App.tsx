@@ -20,6 +20,7 @@ import { AdminPage } from "../features/admin/AdminPage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { TrashPage } from "../features/library/TrashPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
+import { useAuth } from "../hooks/useAuth";
 import { useReaderTitle } from "../hooks/useReaderTitle";
 import { useScrollProgressVar } from "../hooks/useScrollProgress";
 import { useTheme } from "../hooks/useTheme";
@@ -28,6 +29,10 @@ import { PlayerProvider } from "../player/PlayerProvider";
 import { registerPlayerNavigate, usePlayerStore } from "../player/player-store";
 import { useAppStore } from "../state/store";
 import type { WebSocketStatus } from "../types/events";
+import { AuthGate } from "./auth/AuthGate";
+import { LoginPage } from "./auth/LoginPage";
+import { SetupPage } from "./auth/SetupPage";
+import { UserMenu } from "./auth/UserMenu";
 
 /* ── Connection Badge ─────────────────────────────────────── */
 
@@ -125,9 +130,16 @@ const NAVBAR_COMPACT_HEIGHT = 56;
 
 function Shell() {
   const location = useLocation();
+  // Only an admin sees the Admin tab; the route itself is gated again below,
+  // because hiding a link is not access control.
+  const isAdmin = useAuth().user?.is_admin === true;
   const hasPlayer = usePlayerStore((state) => state.job !== null);
+  const isAuthenticated = useAuth().phase === "authenticated";
   // The reader owns its full playbar; every other route gets the mini-player.
-  const showMiniPlayer = hasPlayer && !location.pathname.startsWith("/jobs/");
+  // A signed-out tab shows neither: the player is cleared on logout, and the
+  // login/setup screens are the only thing on screen.
+  const showMiniPlayer =
+    isAuthenticated && hasPlayer && !location.pathname.startsWith("/jobs/");
   const { theme } = useTheme();
   // Periodically re-render to update the "seconds ago" display
   const [, forceUpdate] = useState(0);
@@ -239,7 +251,7 @@ function Shell() {
             <nav className="flex gap-1">
               {[
                 ["/", "Library"],
-                ["/admin", "Admin"],
+                ...(isAdmin ? [["/admin", "Admin"]] : []),
               ].map(([to, label]) => (
                 <NavLink
                   className={({ isActive }) =>
@@ -259,6 +271,7 @@ function Shell() {
             </nav>
             <ConnectionBadge />
             <ThemeToggle />
+            <UserMenu />
           </div>
         </div>
       </header>
@@ -269,12 +282,49 @@ function Shell() {
       <main className={showMiniPlayer ? "flex-1 pb-24" : "flex-1"}>
         <ErrorBoundary key={location.pathname}>
           <Routes>
-            <Route element={<LibraryPage />} path="/" />
-            <Route element={<LibraryPage />} path="/library/:folderId" />
-            <Route element={<TrashPage />} path="/trash" />
-            <Route element={<ReaderPage />} path="/jobs/:jobId" />
-            <Route element={<AdminPage />} path="/admin" />
-            {/* Unknown URLs redirect to the jobs page (replace keeps history clean) */}
+            <Route element={<LoginPage />} path="/login" />
+            <Route element={<SetupPage />} path="/setup" />
+            <Route
+              element={
+                <AuthGate>
+                  <LibraryPage />
+                </AuthGate>
+              }
+              path="/"
+            />
+            <Route
+              element={
+                <AuthGate>
+                  <LibraryPage />
+                </AuthGate>
+              }
+              path="/library/:folderId"
+            />
+            <Route
+              element={
+                <AuthGate>
+                  <TrashPage />
+                </AuthGate>
+              }
+              path="/trash"
+            />
+            <Route
+              element={
+                <AuthGate>
+                  <ReaderPage />
+                </AuthGate>
+              }
+              path="/jobs/:jobId"
+            />
+            <Route
+              element={
+                <AuthGate>
+                  <AdminOnly />
+                </AuthGate>
+              }
+              path="/admin"
+            />
+            {/* Unknown URLs redirect to the library (replace keeps history clean) */}
             <Route element={<Navigate replace to="/" />} path="*" />
           </Routes>
         </ErrorBoundary>
@@ -282,6 +332,19 @@ function Shell() {
       {showMiniPlayer ? <MiniPlayer /> : null}
     </div>
   );
+}
+
+/**
+ * `/admin` for admins only.
+ *
+ * Lives inside `AuthGate` on purpose: the gate renders its children only once
+ * the session is resolved, so this sees the real user. Checking in the route
+ * element instead read `isAdmin` before the status arrived and bounced an
+ * admin to the library.
+ */
+function AdminOnly() {
+  const isAdmin = useAuth().user?.is_admin === true;
+  return isAdmin ? <AdminPage /> : <Navigate replace to="/" />;
 }
 
 /** Gives the app-level player SPA navigation without coupling it to the router. */

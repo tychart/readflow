@@ -1,3 +1,4 @@
+import { clearAuth } from "../app/auth/auth-store";
 import type {
   AdminConfig,
   AdminQueue,
@@ -14,6 +15,14 @@ import type {
   UserPreferences,
   Voice,
 } from "../types/api";
+import type {
+  AuthStatus,
+  AuthUser,
+  CreateUserPayload,
+  LoginPayload,
+  SetupPayload,
+  UpdateUserPayload,
+} from "../types/auth";
 import { apiPath } from "./transport";
 
 /**
@@ -50,9 +59,30 @@ async function readErrorDetail(response: Response): Promise<string | null> {
 /**
  * Makes a fetch request to the API with proper error handling.
  */
+/**
+ * Paths whose 401 is a normal answer rather than an expired session.
+ *
+ * A failed login is a 401 and must not bounce the user through the global
+ * "session expired" handling; the status probe runs before there is a session at
+ * all.
+ */
+const AUTH_ANONYMOUS_PATHS = [
+  "/api/auth/login",
+  "/api/auth/status",
+  "/api/auth/setup",
+];
+
+/**
+ * Makes a fetch request to the API with proper error handling.
+ *
+ * `credentials: "same-origin"` is required for the session cookie: the frontend
+ * and the API share an origin (Vite proxy in dev, Caddy in production), and
+ * without it every request would arrive anonymously.
+ */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
       ...(init?.body instanceof FormData
         ? {}
@@ -61,6 +91,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
+    if (
+      response.status === 401 &&
+      !AUTH_ANONYMOUS_PATHS.some((p) => path.startsWith(p))
+    ) {
+      // One place decides what an expired session means. The gate then renders
+      // the login page, which is why no component needs its own 401 branch.
+      clearAuth();
+    }
     const detail = await readErrorDetail(response);
     throw new ApiError(
       detail ?? `Request failed: ${response.status}`,
@@ -93,6 +131,79 @@ function parseDownloadFilename(
 }
 
 export const api = {
+  /* ── Auth ─────────────────────────────────────────────── */
+
+  /** Public bootstrap state: setup needed, session valid, current user. */
+  authStatus: () => request<AuthStatus>(apiPath("/auth/status")),
+
+  /** First-run setup. Succeeds once per install. */
+  setup: (payload: SetupPayload) =>
+    request<AuthStatus>(apiPath("/auth/setup"), {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  login: (payload: LoginPayload) =>
+    request<AuthStatus>(apiPath("/auth/login"), {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Idempotent: clears the cookie and the session row. */
+  logout: () => request<void>(apiPath("/auth/logout"), { method: "POST" }),
+
+  me: () => request<AuthUser>(apiPath("/auth/me")),
+
+  /** Revokes every other session for this user. */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>(apiPath("/auth/password"), {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    }),
+
+  /* ── Admin: users and backup ──────────────────────────── */
+
+  adminUsers: () =>
+    request<{ users: AuthUser[] }>(apiPath("/admin/users")).then(
+      (payload) => payload.users,
+    ),
+
+  createUser: (payload: CreateUserPayload) =>
+    request<AuthUser>(apiPath("/admin/users"), {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateUser: (userId: string, payload: UpdateUserPayload) =>
+    request<AuthUser>(apiPath(`/admin/users/${userId}`), {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Streams a `pg_dump -Fc` of the database (admin only). */
+  downloadBackup: async () => {
+    const path = apiPath("/admin/backup");
+    const response = await fetch(path, { credentials: "same-origin" });
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      throw new ApiError(
+        detail ?? `Request failed: ${response.status}`,
+        path,
+        response.status,
+      );
+    }
+    return {
+      blob: await response.blob(),
+      filename: parseDownloadFilename(
+        response.headers.get("content-disposition"),
+        "readflow.dump",
+      ),
+    };
+  },
+
   /** Fetches all jobs. */
   listJobs: () => request<JobSummary[]>(apiPath("/jobs")),
 
@@ -296,7 +407,7 @@ export const api = {
     format: DownloadFormatName = "m4a",
   ) => {
     const path = apiPath(`/jobs/${jobId}/download?format=${format}`);
-    const response = await fetch(path);
+    const response = await fetch(path, { credentials: "same-origin" });
     if (!response.ok) {
       const detail = await readErrorDetail(response);
       throw new ApiError(

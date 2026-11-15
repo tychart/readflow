@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { AdminUsersTab } from "../../app/auth/AdminUsersTab";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { api } from "../../lib/api";
 import { useAppStore } from "../../state/store";
@@ -999,11 +1000,12 @@ function AdminOverview() {
 
 /* ── Tabs ─────────────────────────────────────────────────── */
 
-type AdminTab = "overview" | "queue";
+type AdminTab = "overview" | "queue" | "users";
 
 const ADMIN_TABS: Array<{ id: AdminTab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "queue", label: "Queue" },
+  { id: "users", label: "Users" },
 ];
 
 function AdminTabs({
@@ -1075,7 +1077,8 @@ export function AdminPage() {
         >
           <AdminOverview />
         </div>
-      ) : (
+      ) : null}
+      {activeTab === "queue" ? (
         <div
           aria-labelledby="admin-tab-queue"
           id="admin-panel-queue"
@@ -1083,7 +1086,16 @@ export function AdminPage() {
         >
           <QueueInspector />
         </div>
-      )}
+      ) : null}
+      {activeTab === "users" ? (
+        <div
+          aria-labelledby="admin-tab-users"
+          id="admin-panel-users"
+          role="tabpanel"
+        >
+          <AdminUsersTab />
+        </div>
+      ) : null}
     </div>
   );
 }

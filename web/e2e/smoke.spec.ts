@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockAuthenticatedSession } from "./helpers/session";
+
 /** A written chunk as the API returns it. `version` matters: the reader only
  *  renders the active version of a chunk, so fixtures without it are dropped. */
 function buildChunk(
@@ -85,6 +87,8 @@ function buildGapManifest() {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Signed in as an admin: the auth gate otherwise redirects every page below.
+  await mockAuthenticatedSession(page);
   await page.addInitScript({
     content: `
       class FakeSourceBuffer extends EventTarget {

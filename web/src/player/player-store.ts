@@ -114,6 +114,30 @@ export function registerPlayerControls(next: PlayerControls | null): void {
   controls = next;
 }
 
+/**
+ * Drop the open document without unregistering the provider's controls.
+ *
+ * Used on logout and on a 401: the next playback flush would be rejected, and a
+ * signed-out tab must not keep a book loaded. Unlike `resetPlayerStore` this
+ * keeps the imperative controls registered, because the provider is still
+ * mounted.
+ */
+export function closePlayer(): void {
+  controls?.pausePlayback();
+  usePlayerStore.setState({
+    ...IDLE_OUTPUTS,
+    job: null,
+    manifest: null,
+    anchorIndex: 0,
+    anchorOffsetSeconds: 0,
+    durationSeconds: 0,
+    streamRestartKey: 0,
+    pendingSeekJobSeconds: null,
+    playIntent: false,
+    lastSyncError: null,
+  });
+}
+
 /** Test/reset hook: put the store back to its idle state. */
 export function resetPlayerStore(): void {
   controls = null;
