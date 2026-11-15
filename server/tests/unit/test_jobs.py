@@ -58,7 +58,7 @@ async def test_voice_switch_rebuilds_pending_chunks_in_place():
     assert failed.voice_id == "howard"
     assert failed.attempts == 0
     assert failed.error is None
-    assert {id(chunk) for chunk in await manager.renderable_chunks()} == {id(pending), id(failed)}
+    assert {id(chunk) for chunk in await manager.planned_chunks()} == {id(pending), id(failed)}
 
 
 async def test_partial_voice_switch_reactivates_a_completed_job_with_a_failed_gap():
@@ -346,8 +346,7 @@ async def test_pause_excludes_planned_chunks_from_dispatch_and_stays_paused():
     manager, job, chunks = await _job_with_chunks(1)
     await manager.pause_job(job.id)
 
-    assert list(await manager.renderable_chunks()) == []
-    assert await manager.has_renderable_chunks() is False
+    assert await manager.planned_chunks() == []
 
     await manager.mark_chunk_rendering(chunks[0])
     await manager.mark_chunk_written(

@@ -7,14 +7,14 @@ any mutation so a rejected move/reorder leaves the library exactly as it was
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import uuid4
 
 from app.core.identity import DEFAULT_USER_ID
 from app.core.time import utc_now
 from app.db.protocols import Database, UnitOfWork
 from app.jobs.models import Job, JobSummary
-from app.library.models import Folder, JobProgress, TrashEntry, TrashKind
+from app.library.models import Folder, TrashEntry, TrashKind
 from app.library.tree import (
     LibraryError,
     LibraryItem,
@@ -39,7 +39,6 @@ class LibrarySnapshot:
 
     folders: list[Folder]
     jobs: list[JobSummary]
-    progress: dict[str, JobProgress] = field(default_factory=dict)
     trash_count: int = 0
 
 
@@ -51,14 +50,17 @@ class LibraryService:
     # ── reads ───────────────────────────────────────────────────────────────
 
     async def snapshot(self) -> LibrarySnapshot:
+        """Folders, job summaries and the trash count in one read.
+
+        Listening progress is deliberately *not* read here: `ProgressService`
+        batches those rows for exactly the jobs this returns, so reading them in
+        both places was one redundant query per library refresh.
+        """
         async with self._db.transaction() as uow:
             folders = await uow.folders.list(self._user_id)
             jobs = await uow.jobs.summaries(self._user_id)
-            progress = {row.job_id: row for row in await uow.progress.list(self._user_id)}
             trash_count = len(await uow.trash.list(self._user_id))
-        return LibrarySnapshot(
-            folders=folders, jobs=jobs, progress=progress, trash_count=trash_count
-        )
+        return LibrarySnapshot(folders=folders, jobs=jobs, trash_count=trash_count)
 
     async def folder_path(self, folder_id: str | None) -> list[Folder]:
         async with self._db.transaction() as uow:

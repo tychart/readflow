@@ -296,7 +296,7 @@ async def test_playback_updates_keep_active_listener_status_honest(client, servi
     await client.post(f"/api/jobs/{job_id}/activate")
     stale = await services.job_manager.get_job(job_id)
     stale.playback_state.last_event_at = 0.0
-    await services.scheduler._expire_stale_listeners()
+    await services.scheduler._expire_stale_listeners(await services.job_manager.summaries_all())
     assert (await services.job_manager.get_job(job_id)).is_active_listening is False
 
     # One command owns a playback report: it folds the position into the job
@@ -1185,7 +1185,7 @@ async def test_admin_config_exposes_and_updates_inactive_ahead_window(client, se
     long_text = "A sentence that is long enough to plan a chunk. " * 200
     created = await client.post("/api/jobs", data={"text": long_text, "voice_id": "suzy"})
     job_id = created.json()["job"]["id"]
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
     job = await services.job_manager.get_job(job_id)
     assert sum(1 for chunk in job.chunks if chunk.status == "planned") == 4
 

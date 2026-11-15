@@ -230,6 +230,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
             raise _http_error(exc) from exc
         for job_id in purged:
             app_services.media_store.remove_job(job_id)
+            app_services.scheduler.forget_source(job_id)
         await _broadcast_library(app_services, "purged")
 
     # ── listening progress ──────────────────────────────────────────────────

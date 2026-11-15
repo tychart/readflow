@@ -591,6 +591,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def delete_job(job_id: str, app_services: AppServices = Depends(services)) -> None:
         await app_services.job_manager.delete_job(job_id)
         app_services.media_store.remove_job(job_id)
+        # The scheduler caches canonical source text per job; a deleted job must
+        # not leave its text behind.
+        app_services.scheduler.forget_source(job_id)
 
     @router.get("/voices", response_model=list[VoiceResponse])
     async def list_voices(app_services: AppServices = Depends(services)) -> list[VoiceResponse]:
@@ -712,7 +715,10 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         scheduler = SchedulerStateResponse(
             queue_depth=await app_services.job_manager.queue_depth(),
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
-            active_batch=app_services.scheduler.active_batch(),
+            active_batch=app_services.scheduler.active_batch(
+                await app_services.job_manager.rendering_chunks(),
+                await app_services.job_manager.summaries_all(),
+            ),
             vram_per_chunk_mb=app_services.scheduler.vram_per_chunk_mb,
             **app_services.scheduler.residency_snapshot(),
             **app_services.scheduler.liveness_snapshot(),

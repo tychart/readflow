@@ -209,9 +209,13 @@ async def test_manager_queue_queries_are_user_scoped(database: Database) -> None
     await owner.add_planned_chunk(job.id, ChunkPlan(text="One.", char_start=0, char_end=4))
 
     other = JobManager(database, user_id="other")
-    assert await other.renderable_chunks() == []
+    # Queue depth is user-scoped; `planned_chunks` is deliberately system scope
+    # (the scheduler picks work across every user's jobs).
     assert await other.queue_depth() == 0
     assert await owner.queue_depth() == 1
+    assert await owner.get_job(job.id) is not None
+    with pytest.raises(KeyError):
+        await other.get_job(job.id)
 
 
 async def test_a_job_is_stored_with_its_source_text_in_its_own_row(database: Database) -> None:

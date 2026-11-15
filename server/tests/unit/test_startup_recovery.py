@@ -174,7 +174,7 @@ async def test_recovery_without_an_audio_check_only_repairs_interrupted_renders(
 async def test_a_trashed_job_is_repaired_too() -> None:
     """A job trashed mid-render must not come back stuck.
 
-    `renderable_chunks()` only dispatches `PLANNED` chunks, so a `RENDERING` one
+    `planned_chunks()` only dispatches `PLANNED` chunks, so a `RENDERING` one
     left behind by a crash would never be picked up again after a restore.
     """
     manager = _manager()

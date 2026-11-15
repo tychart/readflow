@@ -58,7 +58,8 @@ SUMMARY_OVERHEAD_BYTES = 512
 
 # Repository methods whose result is a Job aggregate.
 _AGGREGATE_METHODS = frozenset({"get", "get_any"})
-_AGGREGATE_LIST_METHODS = frozenset({"list", "planned_chunks", "rendering_chunks"})
+_AGGREGATE_LIST_METHODS = frozenset({"list"})
+_CHUNK_LIST_METHODS = frozenset({"planned_chunks", "rendering_chunks"})
 
 
 def job_bytes(job: Job, *, include_source: bool = True) -> int:
@@ -139,6 +140,11 @@ class CountingRepository:
             return job_bytes(result)
         if self._aggregate and method in _AGGREGATE_LIST_METHODS:
             return sum(job_bytes(job) for job in result or ())
+        if method in _CHUNK_LIST_METHODS:
+            return sum(
+                len(chunk.text.encode("utf-8")) + CHUNK_OVERHEAD_BYTES
+                for chunk in result or ()
+            )
         if method in {"summaries", "summaries_all"}:
             return sum(summary_bytes(summary) for summary in result or ())
         return 0

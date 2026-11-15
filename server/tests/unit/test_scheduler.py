@@ -318,7 +318,8 @@ async def test_pending_chunks_for_inspection_filters_unschedulable(services):
     deprecated.deprecated = True
 
     result = services.scheduler._pending_chunks_for_inspection(
-        await services.job_manager.list_jobs()
+        await services.job_manager.list_jobs(),
+        await services.job_manager.summaries_all(),
     )
     assert {id(chunk) for chunk in result} == {id(planned), id(queued), id(rendering)}
     assert id(old_plan) not in {id(chunk) for chunk in result}
@@ -336,7 +337,8 @@ async def test_pending_chunks_for_inspection_orders_by_priority(services):
     queued_a = await _add_chunk(services, queued, "cccc")
 
     result = services.scheduler._pending_chunks_for_inspection(
-        await services.job_manager.list_jobs()
+        await services.job_manager.list_jobs(),
+        await services.job_manager.summaries_all(),
     )
     assert result == [active_a, active_b, queued_a]
 
@@ -344,7 +346,13 @@ async def test_pending_chunks_for_inspection_orders_by_priority(services):
 async def test_active_batch_is_none_when_idle(services):
     job = await _create_job(services, title="idle")
     await _add_chunk(services, job, "idle chunk")
-    assert services.scheduler._active_batch(await services.job_manager.list_jobs()) is None
+    assert (
+        services.scheduler._active_batch(
+            await services.job_manager.rendering_chunks(),
+            await services.job_manager.summaries_all(),
+        )
+        is None
+    )
 
 
 async def test_active_batch_groups_rendering_chunks(services):
@@ -357,7 +365,10 @@ async def test_active_batch_groups_rendering_chunks(services):
         chunk.status = ChunkStatus.RENDERING
         chunk.updated_at = updated_at
 
-    batch = services.scheduler._active_batch(await services.job_manager.list_jobs())
+    batch = services.scheduler._active_batch(
+        await services.job_manager.rendering_chunks(),
+        await services.job_manager.summaries_all(),
+    )
     assert batch is not None
     assert batch.chunk_count == 3
     assert batch.model_id == job.model_id
@@ -667,7 +678,7 @@ async def test_plan_ahead_window_controls_planning(services):
     )
     services.settings.runtime.plan_ahead_chunks = 3
 
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
 
     planned = [chunk for chunk in job.chunks if chunk.status == ChunkStatus.PLANNED]
     assert len(planned) == 3
@@ -703,7 +714,7 @@ async def test_comfortable_buffer_does_not_stop_planning(services):
     _stored = await services.job_manager.get_job(job.id)
     _stored.buffered_seconds = 10_000.0
 
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
 
     assert await _planned_count(services, job.id) == 3
 
@@ -716,11 +727,11 @@ async def test_render_ahead_cap_is_opt_in_and_render_to_end_overrides_it(service
     _stored = await services.job_manager.get_job(job.id)
     _stored.buffered_seconds = 400.0
 
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
     assert await _planned_count(services, job.id) == 0
 
     await services.job_manager.set_render_to_end(job.id)
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
     assert await _planned_count(services, job.id) == 3
 
 
@@ -729,7 +740,7 @@ async def test_pause_still_stops_planning_even_when_render_to_end_is_set(service
     await services.job_manager.set_render_to_end(job.id)
     await services.job_manager.pause_job(job.id)
 
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
 
     assert await _planned_count(services, job.id) == 0
 
@@ -941,7 +952,7 @@ async def test_same_priority_jobs_get_equal_turns(services):
     await _long_job(services, title="job B")
     services.settings.runtime.plan_ahead_chunks = 3
 
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
     ranked, _jobs_by_id = await _ranked(services)
 
     indices = [chunk.index for chunk in ranked]

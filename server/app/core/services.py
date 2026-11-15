@@ -15,6 +15,7 @@ from app.library.progress_service import ProgressService
 from app.library.service import LibraryService
 from app.media.store import MediaStore
 from app.scheduler.service import SchedulerService
+from app.scheduler.source_cache import SourceTextCache
 from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import FakeQwenProvider, QwenProvider, SynthesisProvider
 from app.synthesis.worker import SynthesisWorker
@@ -102,6 +103,7 @@ async def build_services(
         model_manager=model_manager,
         telemetry=telemetry,
         hub=hub,
+        source_cache=SourceTextCache(settings.source_cache_chars),
     )
     return AppServices(
         settings=settings,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from uuid import uuid4
 
 from app.chunking.normalize import normalize_source_text
@@ -9,7 +9,6 @@ from app.core.identity import DEFAULT_USER_ID
 from app.core.time import utc_now
 from app.db.protocols import Database, UnitOfWork
 from app.jobs.models import (
-    PENDING_CHUNK_STATUSES,
     TERMINAL_JOB_STATUSES,
     ChunkRecord,
     ChunkStatus,
@@ -99,6 +98,34 @@ class JobManager:
         """Flat projections of every live job, without chunks or source text."""
         async with self._db.transaction() as uow:
             return await uow.jobs.summaries(self._user_id)
+
+    # ── system scope (scheduler only; never reachable from a handler) ───────
+
+    async def summaries_all(self, *, include_deleted: bool = False) -> list[JobSummary]:
+        """Every job in the install, as one read.
+
+        This is the scheduler's read model: one call replaces the per-chunk
+        aggregate loads that used to dominate a tick. It sees other users' jobs
+        because one GPU serves the whole machine, so it must stay out of request
+        handlers.
+        """
+        async with self._db.transaction() as uow:
+            return await uow.jobs.summaries_all(include_deleted=include_deleted)
+
+    async def planned_chunks(self) -> list[ChunkRecord]:
+        """Dispatchable chunks across every job, live takes only."""
+        async with self._db.transaction() as uow:
+            return await uow.jobs.planned_chunks()
+
+    async def rendering_chunks(self) -> list[ChunkRecord]:
+        """In-flight chunks across every job (the active batch)."""
+        async with self._db.transaction() as uow:
+            return await uow.jobs.rendering_chunks()
+
+    async def source_text_any(self, job_id: str) -> str:
+        """Source text without an ownership check (scheduler planning only)."""
+        async with self._db.transaction() as uow:
+            return await uow.jobs.source_text_any(job_id)
 
     async def get_job(self, job_id: str) -> Job:
         async with self._db.transaction() as uow:
@@ -205,30 +232,40 @@ class JobManager:
             await uow.jobs.save(job)
             return job
 
-    async def expire_stale_listeners(self, timeout_seconds: float) -> list[Job]:
+    async def expire_stale_listeners(
+        self, timeout_seconds: float, *, summaries: Sequence[JobSummary] | None = None
+    ) -> list[JobSummary]:
         """Forget listeners that stopped reporting playback positions.
 
         `is_active_listening` used to be sticky until an explicit pause or job
         completion, so a closed tab kept its job in the urgent priority band
         (and, with a lookahead cap configured, frozen at that cap forever).
-        Returns the jobs that changed so the caller can broadcast them.
+
+        The candidates come from summaries (one cheap read, or the list the
+        caller already has), and only a job that actually expired gets its own
+        transaction. Returns the changed summaries so the caller can broadcast
+        them without loading a single aggregate.
         """
         if timeout_seconds <= 0:
             return []
         now = utc_now()
-        expired: list[Job] = []
-        async with self._db.transaction() as uow:
-            for job in await uow.jobs.list(self._user_id):
-                if not job.is_active_listening:
-                    continue
-                if now - job.playback_state.last_event_at <= timeout_seconds:
+        candidates = summaries if summaries is not None else await self.summaries()
+        expired: list[JobSummary] = []
+        for summary in candidates:
+            if not summary.is_active_listening:
+                continue
+            if now - summary.playback_state.last_event_at <= timeout_seconds:
+                continue
+            async with self._db.transaction() as uow:
+                job = await uow.jobs.get(self._user_id, summary.id)
+                if job is None:
                     continue
                 job.is_active_listening = False
                 if job.status == JobStatus.PLAYING:
                     job.status = JobStatus.QUEUED
                 job.updated_at = now
                 await uow.jobs.save(job)
-                expired.append(job)
+                expired.append(job.summary())
         return expired
 
     async def set_voice(self, job_id: str, voice_id: str, *, rerender_written: bool = False) -> Job:
@@ -532,43 +569,13 @@ class JobManager:
             paths.append(chunk.wav_path)
         return paths
 
-    async def renderable_chunks(self) -> list[ChunkRecord]:
-        """Planned chunks the scheduler may dispatch.
-
-        Paused jobs are skipped here, not merely deprioritised. A paused job
-        normally still has plan-ahead chunks sitting in `PLANNED`, and sending
-        those to the GPU silently undid the pause (finishing the batch then
-        rewrote the job status). Pause is the one intentional stop.
-
-        A list, not a generator: the storage layer is asynchronous, so there is
-        nothing left to stream lazily.
-        """
-        async with self._db.transaction() as uow:
-            jobs = await uow.jobs.list(self._user_id)
-        return [
-            chunk
-            for job in jobs
-            if job.status != JobStatus.PAUSED
-            for chunk in job.chunks
-            if chunk.status == ChunkStatus.PLANNED
-            and chunk.plan_version == job.plan_version
-            and not chunk.deprecated
-        ]
-
-    async def has_renderable_chunks(self) -> bool:
-        """True when the scheduler has dispatchable work (paused jobs excluded)."""
-        return bool(await self.renderable_chunks())
-
     async def queue_depth(self) -> int:
-        """Chunks the scheduler can still act on (superseded takes excluded)."""
-        async with self._db.transaction() as uow:
-            jobs = await uow.jobs.list(self._user_id)
-        return sum(
-            1
-            for job in jobs
-            for chunk in job.chunks
-            if chunk.status in PENDING_CHUNK_STATUSES and not chunk.deprecated
-        )
+        """Chunks the scheduler can still act on.
+
+        Summed from the stored `pending_chunks` rollup, so answering "how much
+        work is left" costs one column read instead of every chunk of every job.
+        """
+        return sum(job.pending_chunks for job in await self.summaries())
 
     async def add_versioned_chunk(
         self,

@@ -23,7 +23,7 @@ async def test_the_next_job_in_a_playing_folder_is_warmed(services):
     background = await _job(services, "Background", folder_id=None)
 
     await services.job_manager.activate_job(current.id)
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
     following_job = await services.job_manager.get_job(following.id)
     background_job = await services.job_manager.get_job(background.id)
@@ -42,7 +42,7 @@ async def test_warming_stops_once_the_next_job_has_its_prebuffer(services):
         services.settings.runtime.up_next_prebuffer_seconds + 1
     )
 
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
     assert services.scheduler._priority_band(following_job) == 2
 
 
@@ -53,7 +53,7 @@ async def test_warming_can_be_disabled_with_zero(services):
     await services.job_manager.activate_job(current.id)
     services.settings.runtime.up_next_prebuffer_seconds = 0
 
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
     assert services.scheduler._priority_band(await services.job_manager.get_job(following.id)) == 2
 
@@ -65,7 +65,7 @@ async def test_a_paused_job_does_not_warm_its_successor(services):
     await services.job_manager.activate_job(current.id)
     await services.job_manager.pause_job(current.id)
 
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
     assert services.scheduler._priority_band(await services.job_manager.get_job(following.id)) == 2
 
@@ -77,9 +77,9 @@ async def test_the_last_job_and_root_jobs_have_nothing_to_warm(services):
     await services.job_manager.activate_job(only.id)
     await services.job_manager.activate_job(root.id)
 
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
-    assert await services.scheduler._refresh_up_next() is None
+    assert services.scheduler._refresh_up_next(await services.job_manager.summaries_all()) is None
     assert services.scheduler._up_next_job_ids == set()
 
 
@@ -88,13 +88,13 @@ async def test_priority_info_labels_an_up_next_job(services):
     current = await _job(services, "Current", folder_id=folder.id)
     following = await _job(services, "Following", folder_id=folder.id)
     await services.job_manager.activate_job(current.id)
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
-    await services.scheduler._ensure_planned_chunks()
+    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
     following_job = await services.job_manager.get_job(following.id)
     chunk = next(
         chunk
-        for chunk in await services.job_manager.renderable_chunks()
+        for chunk in await services.job_manager.planned_chunks()
         if chunk.job_id == following.id
     )
     band, label, reason = services.scheduler._priority_info(following_job, chunk)
@@ -109,7 +109,7 @@ async def test_an_active_listener_keeps_its_urgent_band(services):
     current = await _job(services, "Current", folder_id=folder.id)
     await _job(services, "Following", folder_id=folder.id)
     await services.job_manager.activate_job(current.id)
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
     current_job = await services.job_manager.get_job(current.id)
     current_job.buffered_seconds = 0.0
@@ -135,7 +135,7 @@ async def test_a_finished_job_still_warms_its_folder_successor(services):
         await uow.jobs.save(stored)
 
     await services.job_manager.activate_job(current.id)
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
     successor = await services.job_manager.get_job(following.id)
     assert services.scheduler._priority_band(successor) == 1
@@ -155,6 +155,6 @@ async def test_a_finished_job_stops_warming_when_the_listener_pauses(services):
 
     await services.job_manager.activate_job(current.id)
     await services.job_manager.pause_job(current.id)
-    await services.scheduler._refresh_up_next()
+    services.scheduler._refresh_up_next(await services.job_manager.summaries_all())
 
     assert services.scheduler._priority_band(await services.job_manager.get_job(following.id)) == 2

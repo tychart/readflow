@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     scheduler_autostart: bool = True
     voices_dir: str = "voices"
     temp_dir_name: str = "readflow"
+    # Budget for the scheduler's cache of canonical job source text, in
+    # characters. Reading a book-sized row on every tick is pure overhead and the
+    # text never changes, so it is cached; this bounds what that costs.
+    source_cache_chars: int = 64 * 1024 * 1024
     # Largest source text (UTF-8 bytes) accepted for a job, whether pasted or
     # uploaded. Also used as the multipart part limit, because Starlette's
     # default (1 MiB) silently made the paste path far stricter than uploads.
