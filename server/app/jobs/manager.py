@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from uuid import uuid4
 
 from app.chunking.normalize import normalize_source_text
@@ -57,20 +57,20 @@ class JobManager:
 
     # ── reads ───────────────────────────────────────────────────────────────
 
-    def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
-        job = uow.jobs.get(self._user_id, job_id)
+    async def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
+        job = await uow.jobs.get(self._user_id, job_id)
         if job is None:
             raise KeyError(f"Unknown job '{job_id}'")
         return job
 
-    def _require_chunk_job(self, uow: UnitOfWork, job_id: str) -> Job:
+    async def _require_chunk_job(self, uow: UnitOfWork, job_id: str) -> Job:
         """A job the worker can still write to, including one in the trash.
 
         Trashing stops *new* dispatch, but a batch already on the GPU may come
         back; writing its audio keeps a restored job consistent. A purged job is
         genuinely gone and still raises.
         """
-        job = uow.jobs.get(self._user_id, job_id, include_deleted=True)
+        job = await uow.jobs.get(self._user_id, job_id, include_deleted=True)
         if job is None:
             raise KeyError(f"Unknown job '{job_id}'")
         return job
@@ -90,28 +90,28 @@ class JobManager:
                 return candidate
         raise KeyError(f"Job '{job.id}' has no chunk {chunk.index} v{chunk.version}")
 
-    def list_jobs(self) -> list[Job]:
-        with self._db.transaction() as uow:
-            jobs = uow.jobs.list(self._user_id)
+    async def list_jobs(self) -> list[Job]:
+        async with self._db.transaction() as uow:
+            jobs = await uow.jobs.list(self._user_id)
         return sorted(jobs, key=lambda job: job.submitted_at, reverse=True)
 
-    def summaries(self) -> list[JobSummary]:
+    async def summaries(self) -> list[JobSummary]:
         """Flat projections of every live job, without chunks or source text."""
-        with self._db.transaction() as uow:
-            return uow.jobs.summaries(self._user_id)
+        async with self._db.transaction() as uow:
+            return await uow.jobs.summaries(self._user_id)
 
-    def get_job(self, job_id: str) -> Job:
-        with self._db.transaction() as uow:
-            return self._require_job(uow, job_id)
+    async def get_job(self, job_id: str) -> Job:
+        async with self._db.transaction() as uow:
+            return await self._require_job(uow, job_id)
 
-    def source_text(self, job_id: str) -> str:
+    async def source_text(self, job_id: str) -> str:
         """The canonical (already normalized) source text of one job."""
-        with self._db.transaction() as uow:
-            return uow.jobs.source_text(self._user_id, job_id)
+        async with self._db.transaction() as uow:
+            return await uow.jobs.source_text(self._user_id, job_id)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
-    def create_job(
+    async def create_job(
         self,
         *,
         source_text: str,
@@ -125,8 +125,8 @@ class JobManager:
         """Create a job, appended to the end of its folder's manual order."""
         normalized_text = normalize_source_text(source_text)
         now = utc_now()
-        with self._db.transaction() as uow:
-            if folder_id is not None and uow.folders.get(self._user_id, folder_id) is None:
+        async with self._db.transaction() as uow:
+            if folder_id is not None and await uow.folders.get(self._user_id, folder_id) is None:
                 raise KeyError(f"Unknown folder '{folder_id}'")
             job = Job(
                 id=str(uuid4()),
@@ -138,74 +138,74 @@ class JobManager:
                 language=language,
                 user_id=self._user_id,
                 folder_id=folder_id,
-                position=uow.jobs.next_position(self._user_id, folder_id),
+                position=await uow.jobs.next_position(self._user_id, folder_id),
                 submitted_at=now,
                 updated_at=now,
             )
             # The source text is its own row: list and scheduler reads must not
             # pay for megabytes they never look at.
-            uow.jobs.add(job, source_text=normalized_text)
+            await uow.jobs.add(job, source_text=normalized_text)
             return job
 
-    def delete_job(self, job_id: str) -> None:
-        with self._db.transaction() as uow:
-            uow.jobs.delete(self._user_id, job_id)
+    async def delete_job(self, job_id: str) -> None:
+        async with self._db.transaction() as uow:
+            await uow.jobs.delete(self._user_id, job_id)
 
-    def activate_job(self, job_id: str) -> Job:
+    async def activate_job(self, job_id: str) -> Job:
         """Record that someone is listening to this job.
 
         A finished job is still listened to: its audio is local (the status must
         stay COMPLETED), but the active-listener flag is what makes the
         scheduler warm the folder's next job, so it is set either way.
         """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             job.is_active_listening = True
             job.playback_state.last_event_at = utc_now()
             if job.status not in TERMINAL_JOB_STATUSES:
                 job.playback_state.is_playing = True
                 job.status = JobStatus.PLAYING
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def pause_job(self, job_id: str) -> Job:
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+    async def pause_job(self, job_id: str) -> Job:
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             job.is_active_listening = False
             job.playback_state.is_playing = False
             job.playback_state.last_event_at = utc_now()
             if job.status not in TERMINAL_JOB_STATUSES:
                 job.status = JobStatus.PAUSED
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def resume_job(self, job_id: str) -> Job:
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+    async def resume_job(self, job_id: str) -> Job:
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             if job.status == JobStatus.COMPLETED:
                 return job
             job.status = JobStatus.QUEUED
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def set_render_to_end(self, job_id: str, enabled: bool = True) -> Job:
+    async def set_render_to_end(self, job_id: str, enabled: bool = True) -> Job:
         """Opt this job out of (or back into) the scheduler's lookahead cap.
 
         The manual escape hatch for "keep rendering this book": it only affects
         `render_ahead_seconds`. A paused job still does not render, because pause
         is the one intentional stop.
         """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             job.render_to_end = enabled
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def expire_stale_listeners(self, timeout_seconds: float) -> list[Job]:
+    async def expire_stale_listeners(self, timeout_seconds: float) -> list[Job]:
         """Forget listeners that stopped reporting playback positions.
 
         `is_active_listening` used to be sticky until an explicit pause or job
@@ -217,8 +217,8 @@ class JobManager:
             return []
         now = utc_now()
         expired: list[Job] = []
-        with self._db.transaction() as uow:
-            for job in uow.jobs.list(self._user_id):
+        async with self._db.transaction() as uow:
+            for job in await uow.jobs.list(self._user_id):
                 if not job.is_active_listening:
                     continue
                 if now - job.playback_state.last_event_at <= timeout_seconds:
@@ -227,11 +227,11 @@ class JobManager:
                 if job.status == JobStatus.PLAYING:
                     job.status = JobStatus.QUEUED
                 job.updated_at = now
-                uow.jobs.save(job)
+                await uow.jobs.save(job)
                 expired.append(job)
         return expired
 
-    def set_voice(self, job_id: str, voice_id: str, *, rerender_written: bool = False) -> Job:
+    async def set_voice(self, job_id: str, voice_id: str, *, rerender_written: bool = False) -> Job:
         """Re-voice the chunks that have not been rendered yet.
 
         A voice change is not a discard: every chunk the scheduler can still act
@@ -252,8 +252,8 @@ class JobManager:
         generation and written as the old voice, and for a full re-render it is
         requeued with the new voice (see `_requeue_superseded_chunk`).
         """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             if job.voice_id == voice_id and not rerender_written:
                 return job
             job.voice_id = voice_id
@@ -282,7 +282,7 @@ class JobManager:
                 job.completed_seconds = 0.0
                 job.playback_state.current_time_seconds = 0.0
                 job.playback_state.is_playing = False
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             if requeued or rerender_written:
                 # A finished job with work to redo must leave the terminal state
                 # or the reader treats it as local and stops watching for the
@@ -291,7 +291,7 @@ class JobManager:
                     job.status = JobStatus.QUEUED
                 self._settle_status(job)
             job.updated_at = now
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
     def _apply_voice(self, job: Job, chunk: ChunkRecord, now: float) -> None:
@@ -323,14 +323,14 @@ class JobManager:
         self._apply_voice(job, chunk, utc_now())
         return True
 
-    def add_planned_chunk(self, job_id: str, plan: ChunkPlan) -> ChunkRecord:
+    async def add_planned_chunk(self, job_id: str, plan: ChunkPlan) -> ChunkRecord:
         """Store one planned chunk and advance the planner cursor.
 
         The manager owns every mutation of the job: the planner only proposes a
         `ChunkPlan`. That keeps "planning advanced" and "chunk exists" atomic.
         """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             chunk = ChunkRecord(
                 job_id=job_id,
                 index=job.next_chunk_index,
@@ -350,33 +350,33 @@ class JobManager:
                 -1 if plan.char_end >= job.source_char_count else plan.char_end
             )
             job.planner_cursor.chunks_emitted += 1
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return chunk
 
-    def finish_planning(self, job_id: str) -> Job:
+    async def finish_planning(self, job_id: str) -> Job:
         """Mark the planner as having reached the end of the source text."""
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             job.planner_cursor.offset = -1
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             self._settle_status(job)
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def mark_chunk_rendering(self, chunk: ChunkRecord) -> None:
-        with self._db.transaction() as uow:
-            job = self._require_chunk_job(uow, chunk.job_id)
+    async def mark_chunk_rendering(self, chunk: ChunkRecord) -> None:
+        async with self._db.transaction() as uow:
+            job = await self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.status = ChunkStatus.RENDERING
             stored.updated_at = utc_now()
             if job.status != JobStatus.PAUSED:
                 job.status = JobStatus.RENDERING
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
 
-    def mark_chunk_planned(self, chunk: ChunkRecord) -> Job:
+    async def mark_chunk_planned(self, chunk: ChunkRecord) -> Job:
         """Return a chunk to the queue untouched.
 
         Used when a batch is only partially rendered (the worker retries an OOM
@@ -384,38 +384,38 @@ class JobManager:
         chunks are retried on a later tick instead of being left stuck in
         `RENDERING`.
         """
-        return self._requeue_chunk(chunk)
+        return await self._requeue_chunk(chunk)
 
-    def mark_chunk_retry(self, chunk: ChunkRecord, error: str) -> Job:
+    async def mark_chunk_retry(self, chunk: ChunkRecord, error: str) -> Job:
         """Requeue a chunk after a failed attempt, counting the attempt.
 
         Keeps the job alive: only the chunk is requeued, and the job continues
         rendering its other chunks until the attempt budget is spent.
         """
-        with self._db.transaction() as uow:
-            job = self._require_chunk_job(uow, chunk.job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.attempts += 1
             stored.error = error
-            return self._requeue_chunk_locked(uow, job, stored)
+            return await self._requeue_chunk_locked(uow, job, stored)
 
-    def _requeue_chunk(self, chunk: ChunkRecord) -> Job:
-        with self._db.transaction() as uow:
-            job = self._require_chunk_job(uow, chunk.job_id)
+    async def _requeue_chunk(self, chunk: ChunkRecord) -> Job:
+        async with self._db.transaction() as uow:
+            job = await self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
-            return self._requeue_chunk_locked(uow, job, stored)
+            return await self._requeue_chunk_locked(uow, job, stored)
 
-    def _requeue_chunk_locked(self, uow: UnitOfWork, job: Job, chunk: ChunkRecord) -> Job:
+    async def _requeue_chunk_locked(self, uow: UnitOfWork, job: Job, chunk: ChunkRecord) -> Job:
         chunk.status = ChunkStatus.PLANNED
         chunk.updated_at = utc_now()
         self._requeue_superseded_chunk(job, chunk)
-        self._refresh_derived(uow, job)
+        await self._refresh_derived(uow, job)
         self._settle_status(job)
         job.updated_at = utc_now()
-        uow.jobs.save(job)
+        await uow.jobs.save(job)
         return job
 
-    def mark_chunk_written(
+    async def mark_chunk_written(
         self,
         chunk: ChunkRecord,
         *,
@@ -423,16 +423,16 @@ class JobManager:
         segment_path: str,
         wav_path: str,
     ) -> Job:
-        with self._db.transaction() as uow:
-            job = self._require_chunk_job(uow, chunk.job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             # A chunk that came back after its plan generation was superseded is
             # requeued with the job's current voice rather than written as stale
             # audio (see `_requeue_superseded_chunk`).
             if self._requeue_superseded_chunk(job, stored):
-                self._refresh_derived(uow, job)
+                await self._refresh_derived(uow, job)
                 job.updated_at = utc_now()
-                uow.jobs.save(job)
+                await uow.jobs.save(job)
                 return job
             stored.status = ChunkStatus.WRITTEN
             stored.duration_seconds = duration_seconds
@@ -440,13 +440,13 @@ class JobManager:
             stored.wav_path = wav_path
             stored.error = None
             stored.updated_at = utc_now()
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             self._settle_status(job)
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def mark_chunk_failed(self, chunk: ChunkRecord, error: str) -> Job:
+    async def mark_chunk_failed(self, chunk: ChunkRecord, error: str) -> Job:
         """Mark a single chunk failed after its attempt budget is spent.
 
         Deliberately does NOT fail the whole job. One unrenderable chunk should
@@ -454,17 +454,17 @@ class JobManager:
         the rest of the job keeps rendering, rather than turning the job
         terminal and stopping all work on it.
         """
-        with self._db.transaction() as uow:
-            job = self._require_chunk_job(uow, chunk.job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.status = ChunkStatus.FAILED
             stored.error = error
             stored.updated_at = utc_now()
             self._requeue_superseded_chunk(job, stored)
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             self._settle_status(job)
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
     def _settle_status(self, job: Job) -> None:
@@ -489,7 +489,7 @@ class JobManager:
         else:
             job.status = JobStatus.QUEUED
 
-    def _refresh_derived(self, uow: UnitOfWork, job: Job) -> None:
+    async def _refresh_derived(self, uow: UnitOfWork, job: Job) -> None:
         """Recompute the derived state, then keep the progress row consistent.
 
         The computation itself lives on the domain object
@@ -498,9 +498,9 @@ class JobManager:
         same way the manager does it.
         """
         job.recompute_derived()
-        self._sync_progress_heard_seconds(uow, job)
+        await self._sync_progress_heard_seconds(uow, job)
 
-    def _sync_progress_heard_seconds(self, uow: UnitOfWork, job: Job) -> None:
+    async def _sync_progress_heard_seconds(self, uow: UnitOfWork, job: Job) -> None:
         """Keep the progress row's `heard_seconds` consistent with the takes.
 
         The sum is stored rather than derived so `remaining_seconds` needs no
@@ -508,15 +508,15 @@ class JobManager:
         invalidates it, and every one of those paths ends in `_refresh_derived`.
         The row is only written when the value actually moved.
         """
-        progress = uow.progress.get(job.user_id, job.id)
+        progress = await uow.progress.get(job.user_id, job.id)
         if progress is None:
             return
         expected = heard_seconds(job, progress)
         if progress.heard_seconds != expected:
             progress.heard_seconds = expected
-            uow.progress.save(progress)
+            await uow.progress.save(progress)
 
-    def exportable_wav_paths(self, job: Job) -> list[str]:
+    async def exportable_wav_paths(self, job: Job) -> list[str]:
         """WAV paths of the downloadable run: live takes, written, from index 0.
 
         The export must follow the *active* take of each index. Walking every
@@ -532,35 +532,37 @@ class JobManager:
             paths.append(chunk.wav_path)
         return paths
 
-    def renderable_chunks(self) -> Iterable[ChunkRecord]:
+    async def renderable_chunks(self) -> list[ChunkRecord]:
         """Planned chunks the scheduler may dispatch.
 
         Paused jobs are skipped here, not merely deprioritised. A paused job
         normally still has plan-ahead chunks sitting in `PLANNED`, and sending
         those to the GPU silently undid the pause (finishing the batch then
         rewrote the job status). Pause is the one intentional stop.
+
+        A list, not a generator: the storage layer is asynchronous, so there is
+        nothing left to stream lazily.
         """
-        with self._db.transaction() as uow:
-            jobs = uow.jobs.list(self._user_id)
-        for job in jobs:
-            if job.status == JobStatus.PAUSED:
-                continue
-            for chunk in job.chunks:
-                if (
-                    chunk.status == ChunkStatus.PLANNED
-                    and chunk.plan_version == job.plan_version
-                    and not chunk.deprecated
-                ):
-                    yield chunk
+        async with self._db.transaction() as uow:
+            jobs = await uow.jobs.list(self._user_id)
+        return [
+            chunk
+            for job in jobs
+            if job.status != JobStatus.PAUSED
+            for chunk in job.chunks
+            if chunk.status == ChunkStatus.PLANNED
+            and chunk.plan_version == job.plan_version
+            and not chunk.deprecated
+        ]
 
-    def has_renderable_chunks(self) -> bool:
+    async def has_renderable_chunks(self) -> bool:
         """True when the scheduler has dispatchable work (paused jobs excluded)."""
-        return any(True for _ in self.renderable_chunks())
+        return bool(await self.renderable_chunks())
 
-    def queue_depth(self) -> int:
+    async def queue_depth(self) -> int:
         """Chunks the scheduler can still act on (superseded takes excluded)."""
-        with self._db.transaction() as uow:
-            jobs = uow.jobs.list(self._user_id)
+        async with self._db.transaction() as uow:
+            jobs = await uow.jobs.list(self._user_id)
         return sum(
             1
             for job in jobs
@@ -568,7 +570,7 @@ class JobManager:
             if chunk.status in PENDING_CHUNK_STATUSES and not chunk.deprecated
         )
 
-    def add_versioned_chunk(
+    async def add_versioned_chunk(
         self,
         job_id: str,
         *,
@@ -584,8 +586,8 @@ class JobManager:
         here rather than relying on the caller to remember: the reader stops
         polling a completed job, so it would never see the replacement chunk.
         """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             existing = job.active_chunk(parent_index)
             if existing is None:
                 # Validate before appending: a rejected parent index used to
@@ -609,13 +611,13 @@ class JobManager:
             )
             job.chunks.append(chunk)
             job.activate_chunk_version(parent_index, version)
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             self._settle_status(job)
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def set_active_chunk_version(self, job_id: str, chunk_index: int, version: int) -> Job:
+    async def set_active_chunk_version(self, job_id: str, chunk_index: int, version: int) -> Job:
         """Make an already-rendered take the live one for `chunk_index`.
 
         Switching takes changes what the reader plays and what the download
@@ -627,22 +629,22 @@ class JobManager:
         already buffered the old take would keep playing it. Positions are left
         alone — this is a take swap, not a re-render of the whole job.
         """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             job.activate_chunk_version(chunk_index, version)
             job.audio_epoch += 1
-            self._refresh_derived(uow, job)
+            await self._refresh_derived(uow, job)
             self._settle_status(job)
             job.updated_at = utc_now()
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
-    def reactivate_job(self, job_id: str) -> Job:
+    async def reactivate_job(self, job_id: str) -> Job:
         """Reactivate a completed or failed job so it can be reprocessed."""
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
             self._reactivate_locked(job)
-            uow.jobs.save(job)
+            await uow.jobs.save(job)
             return job
 
     def _reactivate_locked(self, job: Job) -> None:
@@ -655,7 +657,7 @@ class JobManager:
 
     # ── startup reconciliation ─────────────────────────────────────────────
 
-    def recover_after_restart(
+    async def recover_after_restart(
         self,
         audio_exists: Callable[[ChunkRecord], bool] | None = None,
     ) -> RecoveryResult:
@@ -675,22 +677,22 @@ class JobManager:
         dispatches `PLANNED` ones — so restoring it later would leave it stuck
         forever. Repairing it here costs one write and keeps restore honest.
         """
-        with self._db.transaction() as uow:
-            job_ids = [summary.id for summary in uow.jobs.summaries_all(include_deleted=True)]
+        async with self._db.transaction() as uow:
+            job_ids = [summary.id for summary in await uow.jobs.summaries_all(include_deleted=True)]
         recovered: list[str] = []
         for job_id in job_ids:
-            with self._db.transaction() as uow:
-                job = uow.jobs.get_any(job_id, include_deleted=True)
+            async with self._db.transaction() as uow:
+                job = await uow.jobs.get_any(job_id, include_deleted=True)
                 if job is None:
                     continue
                 plan = plan_startup_recovery(job, audio_exists)
                 if not plan.needed:
                     continue
-                self._apply_recovery_plan(uow, job, plan)
+                await self._apply_recovery_plan(uow, job, plan)
                 recovered.append(job.id)
         return RecoveryResult(examined=len(job_ids), recovered=tuple(recovered))
 
-    def _apply_recovery_plan(self, uow: UnitOfWork, job: Job, plan: RecoveryPlan) -> None:
+    async def _apply_recovery_plan(self, uow: UnitOfWork, job: Job, plan: RecoveryPlan) -> None:
         now = utc_now()
         reset_audio = {id(chunk) for chunk in plan.reset_audio}
         for chunk in plan.requeue:
@@ -711,10 +713,10 @@ class JobManager:
         if job.status in TERMINAL_JOB_STATUSES and job.has_unfinished_chunks():
             # A terminal job with queued work is not terminal any more.
             job.status = JobStatus.QUEUED
-        self._refresh_derived(uow, job)
+        await self._refresh_derived(uow, job)
         self._settle_status(job)
         job.updated_at = now
-        uow.jobs.save(job)
+        await uow.jobs.save(job)
 
     def _derive_title(self, source_text: str) -> str:
         first_line = source_text.strip().splitlines()[0] if source_text.strip() else "Untitled Job"

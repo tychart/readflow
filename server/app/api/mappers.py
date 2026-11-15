@@ -35,27 +35,27 @@ from app.schemas.library import (
 )
 
 
-def job_summary_response(services: AppServices, job: JobSummary) -> JobSummaryResponse:
-    return job_to_summary(job, progress=services.progress.view(job))
+async def job_summary_response(services: AppServices, job: JobSummary) -> JobSummaryResponse:
+    return job_to_summary(job, progress=await services.progress.view(job))
 
 
-def job_summaries_response(
+async def job_summaries_response(
     services: AppServices, jobs: Iterable[JobSummary]
 ) -> list[JobSummaryResponse]:
     jobs = list(jobs)
-    views = services.progress.views(jobs)
+    views = await services.progress.views(jobs)
     return [job_to_summary(job, progress=views.get(job.id)) for job in jobs]
 
 
-def job_detail_response(services: AppServices, job: Job) -> JobDetailResponse:
+async def job_detail_response(services: AppServices, job: Job) -> JobDetailResponse:
     """One job's full reader payload, including its canonical source text.
 
     This is the only read that materialises the source text, and it is the only
     one that needs folder neighbours; both are fetched here so the route stays a
     translator.
     """
-    siblings = services.job_manager.summaries()
-    path = services.library.folder_path(job.folder_id)
+    siblings = await services.job_manager.summaries()
+    path = await services.library.folder_path(job.folder_id)
     previous = previous_job_in_folder(siblings, job)
     following = next_job_in_folder(siblings, job)
     ordered = ordered_folder_jobs(siblings, job.folder_id) if job.folder_id else []
@@ -65,8 +65,8 @@ def job_detail_response(services: AppServices, job: Job) -> JobDetailResponse:
     )
     return job_to_detail(
         job,
-        source_text=services.job_manager.source_text(job.id),
-        progress=services.progress.view(job),
+        source_text=await services.job_manager.source_text(job.id),
+        progress=await services.progress.view(job),
         folder_path=[FolderBriefResponse(id=folder.id, name=folder.name) for folder in path],
         previous_job_id=previous.id if previous is not None else None,
         next_job_id=following.id if following is not None else None,
@@ -77,22 +77,22 @@ def job_detail_response(services: AppServices, job: Job) -> JobDetailResponse:
     )
 
 
-def library_job_response(
+async def library_job_response(
     services: AppServices, job: JobSummary, views: dict[str, ProgressView]
 ) -> LibraryJobResponse:
     summary = job_to_summary(job, progress=views.get(job.id))
     return LibraryJobResponse(**summary.model_dump(), position=job.position)
 
 
-def library_response(services: AppServices) -> LibraryResponse:
+async def library_response(services: AppServices) -> LibraryResponse:
     """One consistent snapshot for the library page.
 
     Folder counts and progress are computed here, not in React: the aggregate
     rules (recursive jobs, chunk-weighted progress) belong next to the storage
     model, and the tree then renders what it is given.
     """
-    snapshot = services.library.snapshot()
-    views = services.progress.views(snapshot.jobs)
+    snapshot = await services.library.snapshot()
+    views = await services.progress.views(snapshot.jobs)
     counts = subtree_counts(snapshot.folders, snapshot.jobs)
     folder_counts: dict[str, int] = {}
     for folder in snapshot.folders:
@@ -124,6 +124,6 @@ def library_response(services: AppServices) -> LibraryResponse:
     jobs = sorted(snapshot.jobs, key=lambda job: (job.folder_id or "", job.position, job.id))
     return LibraryResponse(
         folders=folders,
-        jobs=[library_job_response(services, job, views) for job in jobs],
+        jobs=[await library_job_response(services, job, views) for job in jobs],
         trash_count=snapshot.trash_count,
     )

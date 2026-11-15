@@ -211,7 +211,7 @@ async def handle_socket_message(
                 # One command owns a playback report: it folds the position into
                 # the job (scheduler buffering) and the heard marks into progress,
                 # in one transaction. The HTTP /progress route calls the same one.
-                app_services.progress.record(
+                await app_services.progress.record(
                     str(job_id),
                     position_seconds=float(payload.get("current_time_seconds", 0.0)),
                     is_playing=bool(payload.get("is_playing", True)),
@@ -259,7 +259,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def list_jobs(app_services: AppServices = Depends(services)) -> list[JobSummaryResponse]:
         # Summaries, not aggregates: the list shows status and derived progress,
         # so it must not materialise every chunk (or the source text) per job.
-        return job_summaries_response(app_services, app_services.job_manager.summaries())
+        return await job_summaries_response(
+            app_services, await app_services.job_manager.summaries()
+        )
 
     @router.post(
         "/jobs",
@@ -288,7 +290,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         )
         _reject_unsupported_model(selected_model)
         try:
-            job = app_services.job_manager.create_job(
+            job = await app_services.job_manager.create_job(
                 source_text=payload_text,
                 source_kind=source_kind,
                 model_id=selected_model,
@@ -300,7 +302,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = job_detail_response(app_services, job)
+        detail = await job_detail_response(app_services, job)
         # Streamed job payloads carry the summary only. `source_text` is static
         # per job and is fetched over HTTP, so broadcasting it (megabytes for a
         # book) on every job event would be pure overhead.
@@ -316,7 +318,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str, app_services: AppServices = Depends(services)
     ) -> JobDetailResponse:
         try:
-            return job_detail_response(app_services, app_services.job_manager.get_job(job_id))
+            return await job_detail_response(
+                app_services, await app_services.job_manager.get_job(job_id)
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -325,7 +329,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str, app_services: AppServices = Depends(services)
     ) -> JobManifestResponse:
         try:
-            job = app_services.job_manager.get_job(job_id)
+            job = await app_services.job_manager.get_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         init_path = app_services.media_store.init_segment_path(job_id)
@@ -348,7 +352,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     ) -> JobDetailResponse:
         """Reprocess a specific chunk, optionally with new text/voice."""
         try:
-            job = app_services.job_manager.get_job(job_id)
+            job = await app_services.job_manager.get_job(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Job not found") from None
 
@@ -368,7 +372,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
         # `add_versioned_chunk` also revives a completed/failed job: a reprocess
         # is real work the reader has to be told about.
-        job = app_services.job_manager.add_versioned_chunk(
+        job = await app_services.job_manager.add_versioned_chunk(
             job_id,
             text=text,
             char_start=chunk.char_start,
@@ -377,7 +381,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             parent_index=chunk_index,
         )
 
-        detail = job_detail_response(app_services, job)
+        detail = await job_detail_response(app_services, job)
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
         )
@@ -395,12 +399,12 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     ) -> JobDetailResponse:
         """Set the active version for a chunk index."""
         try:
-            job = app_services.job_manager.get_job(job_id)
+            job = await app_services.job_manager.get_job(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Job not found") from None
 
         try:
-            job = app_services.job_manager.set_active_chunk_version(
+            job = await app_services.job_manager.set_active_chunk_version(
                 job_id, chunk_index, request.version
             )
         except KeyError:
@@ -410,7 +414,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                 status_code=404, detail=f"No version {request.version} for chunk {chunk_index}"
             ) from None
 
-        detail = job_detail_response(app_services, job)
+        detail = await job_detail_response(app_services, job)
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
         )
@@ -465,11 +469,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> FileResponse:
         try:
-            job = app_services.job_manager.get_job(job_id)
+            job = await app_services.job_manager.get_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        wav_paths = app_services.job_manager.exportable_wav_paths(job)
+        wav_paths = await app_services.job_manager.exportable_wav_paths(job)
         if not wav_paths:
             raise HTTPException(status_code=409, detail="No contiguous rendered audio is ready")
 
@@ -499,7 +503,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str, app_services: AppServices = Depends(services)
     ) -> JobSummaryResponse:
         try:
-            job = app_services.job_manager.activate_job(job_id)
+            job = await app_services.job_manager.activate_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
@@ -513,7 +517,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str, app_services: AppServices = Depends(services)
     ) -> JobSummaryResponse:
         try:
-            job = app_services.job_manager.pause_job(job_id)
+            job = await app_services.job_manager.pause_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
@@ -527,7 +531,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str, app_services: AppServices = Depends(services)
     ) -> JobSummaryResponse:
         try:
-            job = app_services.job_manager.resume_job(job_id)
+            job = await app_services.job_manager.resume_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
@@ -547,7 +551,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         Pausing still stops rendering; this only ignores `render_ahead_seconds`.
         """
         try:
-            job = app_services.job_manager.set_render_to_end(
+            job = await app_services.job_manager.set_render_to_end(
                 job_id, True if request is None else request.enabled
             )
         except KeyError as exc:
@@ -572,12 +576,12 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         """
         try:
             app_services.voice_registry.get_voice(request.voice_id)
-            job = app_services.job_manager.set_voice(
+            job = await app_services.job_manager.set_voice(
                 job_id, request.voice_id, rerender_written=request.rerender_written
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = job_detail_response(app_services, job)
+        detail = await job_detail_response(app_services, job)
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
         )
@@ -585,7 +589,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
     @router.delete("/jobs/{job_id}", status_code=204)
     async def delete_job(job_id: str, app_services: AppServices = Depends(services)) -> None:
-        app_services.job_manager.delete_job(job_id)
+        await app_services.job_manager.delete_job(job_id)
         app_services.media_store.remove_job(job_id)
 
     @router.get("/voices", response_model=list[VoiceResponse])
@@ -606,7 +610,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         `null` fields mean nothing has been chosen yet, so the create form falls
         back to the resident (GPU) model/voice and then the app defaults.
         """
-        preferences = app_services.preferences.get()
+        preferences = await app_services.preferences.get()
         return UserPreferencesResponse(model_id=preferences.model_id, voice_id=preferences.voice_id)
 
     @router.put("/preferences", response_model=UserPreferencesResponse)
@@ -620,7 +624,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             app_services.voice_registry.get_voice(request.voice_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        preferences = app_services.preferences.remember(
+        preferences = await app_services.preferences.remember(
             model_id=request.model_id, voice_id=request.voice_id
         )
         return UserPreferencesResponse(model_id=preferences.model_id, voice_id=preferences.voice_id)
@@ -693,18 +697,20 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
         Ordering, priority bands, and the predicted next batch come from the
         scheduler itself, so this view mirrors the real dispatch order. The
-        snapshot is synchronous on purpose: it must not await provider calls
-        (which queue behind an in-flight synthesis) and must not yield the event
-        loop partway through, or the response could mix pre- and post-batch
-        state.
+        The snapshot reads everything it needs up front and then builds the
+        response from those locals, so it never awaits a *provider* call (which
+        would queue behind an in-flight synthesis) and never yields partway
+        through building the payload — which is what used to produce
+        self-inconsistent responses such as `queue_depth: 0` next to a `written`
+        chunk.
         """
-        return app_services.scheduler.queue_snapshot()
+        return await app_services.scheduler.queue_snapshot()
 
     @router.get("/admin/state", response_model=AdminStateResponse)
     async def get_admin_state(app_services: AppServices = Depends(services)) -> AdminStateResponse:
         config = admin_config_response(app_services)
         scheduler = SchedulerStateResponse(
-            queue_depth=app_services.job_manager.queue_depth(),
+            queue_depth=await app_services.job_manager.queue_depth(),
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
             active_batch=app_services.scheduler.active_batch(),
             vram_per_chunk_mb=app_services.scheduler.vram_per_chunk_mb,

@@ -77,29 +77,31 @@ def _recomputed_rollups(job: Job) -> dict[str, object]:
     }
 
 
-def test_rollups_match_a_rescan_of_the_chunks(services_free_manager=None) -> None:
+async def test_rollups_match_a_rescan_of_the_chunks(services_free_manager=None) -> None:
     manager = JobManager(MemoryDatabase())
-    job = build_messy_job(manager)
+    job = await build_messy_job(manager)
 
     for name, expected in _recomputed_rollups(job).items():
         assert getattr(job, name) == expected, name
 
 
-def test_rollups_survive_every_mutation_of_the_fixture() -> None:
+async def test_rollups_survive_every_mutation_of_the_fixture() -> None:
     """The single writer keeps them correct at each step, not just at the end."""
     manager = JobManager(MemoryDatabase())
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="alpha beta gamma",
         source_kind="text",
         model_id=MODEL,
         voice_id="suzy",
     )
-    chunk = manager.add_planned_chunk(job.id, ChunkPlan(text="alpha", char_start=0, char_end=5))
+    chunk = await manager.add_planned_chunk(
+        job.id, ChunkPlan(text="alpha", char_start=0, char_end=5)
+    )
     assert job.pending_chunks == 1
     assert job.unfinished_chunks == 1
     assert job.unwritten_chars == len("alpha")
 
-    manager.mark_chunk_written(
+    await manager.mark_chunk_written(
         chunk, duration_seconds=4.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
     assert job.pending_chunks == 0
@@ -109,9 +111,9 @@ def test_rollups_survive_every_mutation_of_the_fixture() -> None:
     assert job.last_written_index == 0
 
 
-def test_summary_freezes_mutable_state() -> None:
+async def test_summary_freezes_mutable_state() -> None:
     manager = JobManager(MemoryDatabase())
-    job = build_messy_job(manager)
+    job = await build_messy_job(manager)
     summary = job.summary()
 
     job.active_chunk_version[99] = 3
@@ -123,9 +125,9 @@ def test_summary_freezes_mutable_state() -> None:
     assert summary.planner_cursor.offset != 123
 
 
-def test_summary_and_aggregate_agree_on_every_derived_answer() -> None:
+async def test_summary_and_aggregate_agree_on_every_derived_answer() -> None:
     manager = JobManager(MemoryDatabase())
-    job = build_messy_job(manager)
+    job = await build_messy_job(manager)
     progress = JobProgress(
         user_id="local",
         job_id=job.id,
@@ -148,50 +150,50 @@ def test_summary_and_aggregate_agree_on_every_derived_answer() -> None:
     assert job_view == summary_view
 
 
-def test_summary_ordering_matches_the_aggregates() -> None:
+async def test_summary_ordering_matches_the_aggregates() -> None:
     database = MemoryDatabase()
     manager = JobManager(database)
-    first = build_messy_job(manager)
+    first = await build_messy_job(manager)
     # A second job in the same folder, so ordering has something to order.
-    with database.transaction() as uow:
-        uow.folders.add(_folder("folder-1"))
-        job = uow.jobs.get("local", first.id)
+    async with database.transaction() as uow:
+        await uow.folders.add(_folder("folder-1"))
+        job = await uow.jobs.get("local", first.id)
         assert job is not None
         job.folder_id = "folder-1"
         job.position = 1
-        uow.jobs.save(job)
-    manager.create_job(
+        await uow.jobs.save(job)
+    await manager.create_job(
         source_text="second job text",
         source_kind="text",
         model_id=MODEL,
         voice_id="suzy",
         folder_id="folder-1",
     )
-    with database.transaction() as uow:
-        second = next(job for job in uow.jobs.list("local") if job.id != first.id)
+    async with database.transaction() as uow:
+        second = next(job for job in await uow.jobs.list("local") if job.id != first.id)
         second.position = 0
-        uow.jobs.save(second)
+        await uow.jobs.save(second)
 
-    aggregates = manager.list_jobs()
-    summaries = manager.summaries()
+    aggregates = await manager.list_jobs()
+    summaries = await manager.summaries()
     assert [job.id for job in ordered_folder_jobs(aggregates, "folder-1")] == [
         job.id for job in ordered_folder_jobs(summaries, "folder-1")
     ]
 
 
-def test_upcoming_warming_is_the_same_from_summaries() -> None:
+async def test_upcoming_warming_is_the_same_from_summaries() -> None:
     database = MemoryDatabase()
     manager = JobManager(database)
-    warmed = build_messy_job(manager)
-    with database.transaction() as uow:
-        uow.folders.add(_folder("folder-1"))
-        job = uow.jobs.get("local", warmed.id)
+    warmed = await build_messy_job(manager)
+    async with database.transaction() as uow:
+        await uow.folders.add(_folder("folder-1"))
+        job = await uow.jobs.get("local", warmed.id)
         assert job is not None
         job.folder_id = "folder-1"
         job.position = 0
         job.is_active_listening = True
-        uow.jobs.save(job)
-    manager.create_job(
+        await uow.jobs.save(job)
+    await manager.create_job(
         source_text="next book",
         source_kind="text",
         model_id=MODEL,
@@ -199,8 +201,8 @@ def test_upcoming_warming_is_the_same_from_summaries() -> None:
         folder_id="folder-1",
     )
 
-    aggregates = manager.list_jobs()
-    summaries = manager.summaries()
+    aggregates = await manager.list_jobs()
+    summaries = await manager.summaries()
     assert up_next_job_ids(aggregates, prebuffer_seconds=120) == up_next_job_ids(
         summaries, prebuffer_seconds=120
     )

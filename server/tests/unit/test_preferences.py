@@ -11,45 +11,45 @@ def _service(database: MemoryDatabase, user_id: str = "local") -> UserPreference
     return UserPreferencesService(database, user_id=user_id)
 
 
-def test_no_preference_until_the_user_chooses() -> None:
+async def test_no_preference_until_the_user_chooses() -> None:
     """The create form falls back to the resident choice on a fresh install."""
     service = _service(MemoryDatabase())
 
-    assert service.get() == UserPreferences(model_id=None, voice_id=None)
+    assert await service.get() == UserPreferences(model_id=None, voice_id=None)
 
 
-def test_remember_persists_the_selection() -> None:
+async def test_remember_persists_the_selection() -> None:
     database = MemoryDatabase()
     service = _service(database)
 
-    remembered = service.remember(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard")
+    remembered = await service.remember(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard")
 
     assert remembered == UserPreferences(
         model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard"
     )
     # A fresh service over the same database reads it back: it is stored on the
     # user row, not held in this instance.
-    assert _service(database).get() == remembered
+    assert (await _service(database).get()) == remembered
 
 
-def test_remember_overwrites_the_previous_choice() -> None:
+async def test_remember_overwrites_the_previous_choice() -> None:
     service = _service(MemoryDatabase())
-    service.remember(model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base", voice_id="suzy")
+    await service.remember(model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base", voice_id="suzy")
 
-    service.remember(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard")
+    await service.remember(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard")
 
-    assert service.get() == UserPreferences(
+    assert await service.get() == UserPreferences(
         model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard"
     )
 
 
-def test_preferences_are_per_user() -> None:
+async def test_preferences_are_per_user() -> None:
     database = MemoryDatabase()
-    with database.transaction() as uow:
-        uow.users.add(User(id="someone-else", display_name="Someone else"))
+    async with database.transaction() as uow:
+        await uow.users.add(User(id="someone-else", display_name="Someone else"))
 
-    _service(database).remember(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard")
+    await _service(database).remember(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", voice_id="howard")
 
-    assert _service(database, user_id="someone-else").get() == UserPreferences(
+    assert (await _service(database, user_id="someone-else").get()) == UserPreferences(
         model_id=None, voice_id=None
     )

@@ -34,13 +34,13 @@ def _build_wav_bytes(duration_frames: int = 2400, sample_rate: int = 24_000) -> 
     return buffer.getvalue()
 
 
-def _seed_written_chunk(services, job, index: int):
-    chunk = services.job_manager.add_planned_chunk(
+async def _seed_written_chunk(services, job, index: int):
+    chunk = await services.job_manager.add_planned_chunk(
         job.id,
         ChunkPlan(text=f"Chunk {index}", char_start=index * 10, char_end=index * 10 + 7),
     )
     stored = services.media_store.package_wav_chunk(job.id, chunk.index, _build_wav_bytes())
-    services.job_manager.mark_chunk_written(
+    await services.job_manager.mark_chunk_written(
         chunk,
         duration_seconds=stored.duration_seconds,
         segment_path=stored.segment_path,
@@ -281,7 +281,7 @@ async def test_render_to_end_endpoint_overrides_the_lookahead_cap(client, servic
 
     assert response.status_code == 200
     assert response.json()["render_to_end"] is True
-    assert services.job_manager.get_job(job_id).render_to_end is True
+    assert (await services.job_manager.get_job(job_id)).render_to_end is True
 
     missing = await client.post("/api/jobs/does-not-exist/render-to-end", json={"enabled": True})
     assert missing.status_code == 404
@@ -294,10 +294,10 @@ async def test_playback_updates_keep_active_listener_status_honest(client, servi
     job_id = created.json()["job"]["id"]
 
     await client.post(f"/api/jobs/{job_id}/activate")
-    stale = services.job_manager.get_job(job_id)
+    stale = await services.job_manager.get_job(job_id)
     stale.playback_state.last_event_at = 0.0
     await services.scheduler._expire_stale_listeners()
-    assert services.job_manager.get_job(job_id).is_active_listening is False
+    assert (await services.job_manager.get_job(job_id)).is_active_listening is False
 
     # One command owns a playback report: it folds the position into the job
     # and the heard marks into progress in a single transaction.
@@ -308,7 +308,7 @@ async def test_playback_updates_keep_active_listener_status_honest(client, servi
 
     assert synced.status_code == 200
     assert synced.json()["position_seconds"] == 12.5
-    job = services.job_manager.get_job(job_id)
+    job = await services.job_manager.get_job(job_id)
     assert job.is_active_listening is True
     assert job.completed_seconds == 12.5
 
@@ -424,7 +424,7 @@ async def test_packaging_runs_off_the_event_loop(client, services, monkeypatch):
 
     for _ in range(20):
         await services.scheduler.run_once()
-        job = services.job_manager.get_job(job_id)
+        job = await services.job_manager.get_job(job_id)
         if any(chunk.status == ChunkStatus.WRITTEN for chunk in job.chunks):
             break
         await asyncio.sleep(0)
@@ -445,14 +445,14 @@ async def test_download_export_runs_off_the_event_loop(client, services, monkeyp
 
     monkeypatch.setattr(services.media_store, "build_export_file", spy)
 
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Export off the loop.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Export thread",
     )
-    _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 0)
     job.planner_cursor.offset = -1
 
     response = await client.get(f"/api/jobs/{job.id}/download")
@@ -462,16 +462,16 @@ async def test_download_export_runs_off_the_event_loop(client, services, monkeyp
 
 
 async def test_download_job_audio_returns_full_m4a_for_completed_job(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Downloadable job.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Finished download",
     )
-    _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 0)
     job.planner_cursor.offset = -1
-    _seed_written_chunk(services, job, 1)
+    await _seed_written_chunk(services, job, 1)
 
     response = await client.get(f"/api/jobs/{job.id}/download")
 
@@ -505,14 +505,14 @@ _DOWNLOAD_MAGIC = {
 async def test_download_job_audio_encodes_every_offered_format(
     client, services, download_format: str, media_type: str, extension: str
 ):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Format download.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title=f"Format {download_format}",
     )
-    _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 0)
     job.planner_cursor.offset = -1
 
     response = await client.get(f"/api/jobs/{job.id}/download?format={download_format}")
@@ -527,16 +527,16 @@ async def test_download_job_audio_encodes_every_offered_format(
 
 
 async def test_download_job_audio_defaults_to_m4a_when_no_format_is_given(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Default format download.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Default format",
     )
-    _seed_written_chunk(services, job, 0)
-    _seed_written_chunk(services, job, 1)
-    services.job_manager.finish_planning(job.id)
+    await _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 1)
+    await services.job_manager.finish_planning(job.id)
 
     response = await client.get(f"/api/jobs/{job.id}/download")
 
@@ -546,14 +546,14 @@ async def test_download_job_audio_defaults_to_m4a_when_no_format_is_given(client
 
 
 async def test_download_job_audio_rejects_an_unknown_format(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Unknown format download.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Unknown format",
     )
-    _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 0)
     job.planner_cursor.offset = -1
 
     response = await client.get(f"/api/jobs/{job.id}/download?format=ogg")
@@ -564,7 +564,7 @@ async def test_download_job_audio_rejects_an_unknown_format(client, services):
 async def test_download_job_audio_returns_partial_contiguous_audio_for_in_progress_job(
     client, services
 ):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         # Longer than the two seeded chunks, so the job is genuinely in progress.
         source_text="Partial download. " * 5,
         source_kind="text",
@@ -572,8 +572,8 @@ async def test_download_job_audio_returns_partial_contiguous_audio_for_in_progre
         voice_id="suzy",
         title="Partial download",
     )
-    _seed_written_chunk(services, job, 0)
-    _seed_written_chunk(services, job, 1)
+    await _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 1)
 
     response = await client.get(f"/api/jobs/{job.id}/download")
 
@@ -583,26 +583,26 @@ async def test_download_job_audio_returns_partial_contiguous_audio_for_in_progre
 
 
 async def test_download_job_audio_ignores_written_chunks_after_the_first_gap(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Gap download.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Gap download",
     )
-    _seed_written_chunk(services, job, 0)
-    _seed_written_chunk(services, job, 1)
-    _seed_written_chunk(services, job, 2)
-    gap_chunk = services.job_manager.add_planned_chunk(
+    await _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 1)
+    await _seed_written_chunk(services, job, 2)
+    gap_chunk = await services.job_manager.add_planned_chunk(
         job.id,
         ChunkPlan(text="Gap chunk", char_start=30, char_end=39),
     )
     assert gap_chunk.index == 3
-    services.job_manager.add_planned_chunk(
+    await services.job_manager.add_planned_chunk(
         job.id,
         ChunkPlan(text="Still missing", char_start=40, char_end=53),
     )
-    _seed_written_chunk(services, job, 5)
+    await _seed_written_chunk(services, job, 5)
 
     response = await client.get(f"/api/jobs/{job.id}/download")
 
@@ -614,14 +614,14 @@ async def test_download_job_audio_ignores_written_chunks_after_the_first_gap(cli
 async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_ready(
     client, services
 ):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Nothing ready yet.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="No audio yet",
     )
-    services.job_manager.add_planned_chunk(
+    await services.job_manager.add_planned_chunk(
         job.id,
         ChunkPlan(text="Chunk 0", char_start=0, char_end=7),
     )
@@ -633,19 +633,19 @@ async def test_download_job_audio_returns_409_when_no_front_contiguous_audio_is_
 
 
 async def test_update_voice_requeues_pending_chunks_instead_of_discarding_them(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="One. Two.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
     )
-    written = services.job_manager.add_planned_chunk(
+    written = await services.job_manager.add_planned_chunk(
         job.id, ChunkPlan(text="One.", char_start=0, char_end=4)
     )
-    pending = services.job_manager.add_planned_chunk(
+    pending = await services.job_manager.add_planned_chunk(
         job.id, ChunkPlan(text="Two.", char_start=5, char_end=9)
     )
-    services.job_manager.mark_chunk_written(
+    await services.job_manager.mark_chunk_written(
         written, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
 
@@ -665,17 +665,17 @@ async def test_update_voice_requeues_pending_chunks_instead_of_discarding_them(c
 
 
 async def test_update_voice_can_rerender_written_audio_for_one_consistent_take(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="One finished chunk.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
     )
-    chunk = services.job_manager.add_planned_chunk(
+    chunk = await services.job_manager.add_planned_chunk(
         job.id,
         ChunkPlan(text="One finished chunk.", char_start=0, char_end=18),
     )
-    services.job_manager.mark_chunk_written(
+    await services.job_manager.mark_chunk_written(
         chunk, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
 
@@ -719,14 +719,14 @@ async def test_create_job_rejects_invalid_model_id(client, services):
 
 
 async def test_delete_job_removes_export_source_files(client, services):
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text="Delete this job.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Delete me",
     )
-    _seed_written_chunk(services, job, 0)
+    await _seed_written_chunk(services, job, 0)
     wav_path = services.media_store.wav_path(job.id, 0)
 
     assert wav_path.exists()
@@ -1014,7 +1014,7 @@ async def test_admin_queue_marks_paused_job_chunks(client, services):
         "/api/jobs", data={"text": "Paused text. " * 20, "voice_id": "suzy", "title": "Paused"}
     )
     job_id = created.json()["job"]["id"]
-    services.job_manager.add_planned_chunk(
+    await services.job_manager.add_planned_chunk(
         job_id,
         ChunkPlan(text="A planned chunk on a paused job.", char_start=0, char_end=31),
     )
@@ -1123,7 +1123,7 @@ async def test_admin_queue_reflects_reprocessed_chunk(client, services):
         "/api/jobs", data={"text": "Reprocess me. " * 20, "voice_id": "suzy", "title": "Repro"}
     )
     job_id = created.json()["job"]["id"]
-    services.job_manager.add_planned_chunk(
+    await services.job_manager.add_planned_chunk(
         job_id,
         ChunkPlan(text="Original chunk text.", char_start=0, char_end=21),
     )
@@ -1143,7 +1143,7 @@ async def test_admin_queue_reflects_reprocessed_chunk(client, services):
 async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, services):
     """The queue view must answer even while the provider is mid-synthesis.
 
-    Historically `memory_stats()` ran on the synthesis worker thread, so awaiting it
+    Historically `await memory_stats()` ran on the synthesis worker thread, so awaiting it
     here queued behind the batch and the endpoint never returned, which is why
     the admin Queue tab looked empty. The snapshot must not touch it.
     """
@@ -1157,7 +1157,7 @@ async def test_admin_queue_does_not_depend_on_provider_memory_stats(client, serv
         "/api/jobs", data={"text": "Queue must answer. " * 20, "voice_id": "suzy"}
     )
     job_id = created.json()["job"]["id"]
-    services.job_manager.add_planned_chunk(
+    await services.job_manager.add_planned_chunk(
         job_id,
         ChunkPlan(text="A pending chunk while the model is busy.", char_start=0, char_end=40),
     )
@@ -1185,8 +1185,8 @@ async def test_admin_config_exposes_and_updates_inactive_ahead_window(client, se
     long_text = "A sentence that is long enough to plan a chunk. " * 200
     created = await client.post("/api/jobs", data={"text": long_text, "voice_id": "suzy"})
     job_id = created.json()["job"]["id"]
-    services.scheduler._ensure_planned_chunks()
-    job = services.job_manager.get_job(job_id)
+    await services.scheduler._ensure_planned_chunks()
+    job = await services.job_manager.get_job(job_id)
     assert sum(1 for chunk in job.chunks if chunk.status == "planned") == 4
 
 
@@ -1314,18 +1314,18 @@ async def test_memory_failures_clear_readings_in_http_and_live_events(
 
 
 async def _job_with_one_chunk(services, *, text: str = "Original chunk text.") -> tuple[Any, Any]:
-    job = services.job_manager.create_job(
+    job = await services.job_manager.create_job(
         source_text=f"{text} And more text after it.",
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Versioning",
     )
-    chunk = services.job_manager.add_planned_chunk(
+    chunk = await services.job_manager.add_planned_chunk(
         job.id,
         ChunkPlan(text=text, char_start=0, char_end=len(text)),
     )
-    services.job_manager.mark_chunk_written(
+    await services.job_manager.mark_chunk_written(
         chunk, duration_seconds=1.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
     return job, chunk
@@ -1361,7 +1361,7 @@ async def test_reprocess_reuses_the_live_take_text(client, services):
     second = await client.post(f"/api/jobs/{job.id}/chunks/0/reprocess", json={})
     assert second.status_code == 200
 
-    live = services.job_manager.get_job(job.id).active_chunk(0)
+    live = (await services.job_manager.get_job(job.id)).active_chunk(0)
     assert live is not None
     assert live.version == 2
     assert live.text == "Edited take text."
@@ -1392,7 +1392,7 @@ async def test_set_active_version_rejects_a_version_that_does_not_exist(client, 
 
     assert response.status_code == 404
     # The rejected request must not have moved the live take.
-    assert services.job_manager.get_job(job.id).active_chunk_version == {0: 0}
+    assert (await services.job_manager.get_job(job.id)).active_chunk_version == {0: 0}
 
 
 async def test_each_chunk_version_is_served_from_its_own_files(client, services):
@@ -1406,7 +1406,7 @@ async def test_each_chunk_version_is_served_from_its_own_files(client, services)
     job_id = created.json()["job"]["id"]
     await services.scheduler.run_once()
 
-    original = services.job_manager.get_job(job_id).active_chunk(0)
+    original = (await services.job_manager.get_job(job_id)).active_chunk(0)
     assert original is not None and original.version == 0
     original_bytes = (await client.get(f"/api/jobs/{job_id}/chunks/0?v=0")).content
     assert original_bytes
@@ -1418,7 +1418,7 @@ async def test_each_chunk_version_is_served_from_its_own_files(client, services)
     assert reprocess.status_code == 200
     await services.scheduler.run_once()
 
-    job = services.job_manager.get_job(job_id)
+    job = await services.job_manager.get_job(job_id)
     live = job.active_chunk(0)
     assert live is not None and live.version == 1
     new_bytes = (await client.get(f"/api/jobs/{job_id}/chunks/0?v=1")).content
@@ -1473,13 +1473,13 @@ async def test_progress_and_the_websocket_ping_produce_the_same_state(client, se
         ),
     )
 
-    http_job = services.job_manager.get_job(first_id)
-    socket_job = services.job_manager.get_job(second_id)
+    http_job = await services.job_manager.get_job(first_id)
+    socket_job = await services.job_manager.get_job(second_id)
     assert http_job.playback_state.current_time_seconds == 7.5
     assert socket_job.playback_state.current_time_seconds == 7.5
     assert http_job.is_active_listening is socket_job.is_active_listening is True
-    assert services.progress.view(http_job).heard_chunks == (
-        services.progress.view(socket_job).heard_chunks
+    assert (await services.progress.view(http_job)).heard_chunks == (
+        (await services.progress.view(socket_job)).heard_chunks
     )
 
 
@@ -1511,7 +1511,9 @@ async def test_reader_detail_returns_the_exact_canonical_source_text(client, ser
 
     assert body["source_text"] == "First line. \n\nSecond line."
     # The aggregate carries only the length, so the two cannot drift.
-    assert services.job_manager.get_job(job_id).source_char_count == len(body["source_text"])
+    assert (await services.job_manager.get_job(job_id)).source_char_count == len(
+        body["source_text"]
+    )
 
 
 async def test_list_endpoints_never_read_the_source_text(client, services, monkeypatch):

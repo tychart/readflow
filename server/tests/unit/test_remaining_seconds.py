@@ -56,9 +56,9 @@ def _progress(job: Job, heard: Iterable[int]) -> JobProgress:
     return row
 
 
-def test_new_formula_equals_the_legacy_sum_on_a_messy_job() -> None:
+async def test_new_formula_equals_the_legacy_sum_on_a_messy_job() -> None:
     manager = JobManager(MemoryDatabase())
-    job = build_messy_job(manager)
+    job = await build_messy_job(manager)
 
     # Only written takes can be heard through playback, so those are the states
     # the old and new formulas must agree on.
@@ -72,7 +72,7 @@ def test_new_formula_equals_the_legacy_sum_on_a_messy_job() -> None:
         ) == pytest.approx(expected), heard
 
 
-def test_a_heard_mark_on_unrendered_text_does_not_hide_its_cost() -> None:
+async def test_a_heard_mark_on_unrendered_text_does_not_hide_its_cost() -> None:
     """Deliberate difference from the old sum.
 
     A chunk that is still `PLANNED` has no audio, so hearing it is impossible;
@@ -82,7 +82,7 @@ def test_a_heard_mark_on_unrendered_text_does_not_hide_its_cost() -> None:
     rollup formula keeps it, so the number only ever shrinks as audio arrives.
     """
     manager = JobManager(MemoryDatabase())
-    job = build_messy_job(manager)
+    job = await build_messy_job(manager)
     row = _progress(job, {3})
     assert 3 in valid_heard(job, row)
 
@@ -95,21 +95,21 @@ def test_a_heard_mark_on_unrendered_text_does_not_hide_its_cost() -> None:
     assert current - legacy == pytest.approx(len(third.text) / CHARS_PER_SECOND)
 
 
-def test_new_formula_equals_the_legacy_sum_with_unplanned_text() -> None:
+async def test_new_formula_equals_the_legacy_sum_with_unplanned_text() -> None:
     manager = JobManager(MemoryDatabase())
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         source_kind="text",
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
-    first = manager.add_planned_chunk(
+    first = await manager.add_planned_chunk(
         job.id, ChunkPlan(text="alpha beta", char_start=0, char_end=10)
     )
-    manager.mark_chunk_written(
+    await manager.mark_chunk_written(
         first, duration_seconds=12.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
-    second = manager.add_planned_chunk(
+    second = await manager.add_planned_chunk(
         job.id, ChunkPlan(text="gamma delta", char_start=10, char_end=21)
     )
     assert second.status == ChunkStatus.PLANNED
@@ -124,7 +124,7 @@ def test_new_formula_equals_the_legacy_sum_with_unplanned_text() -> None:
         )
 
 
-def test_appending_audio_never_increases_the_estimate() -> None:
+async def test_appending_audio_never_increases_the_estimate() -> None:
     """Rendering more text must monotonically reduce what is left to hear.
 
     Each chunk's real duration is shorter than its character estimate (as real
@@ -133,7 +133,7 @@ def test_appending_audio_never_increases_the_estimate() -> None:
     """
     chunk_chars = 180
     manager = JobManager(MemoryDatabase())
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="x" * (chunk_chars * 4),
         source_kind="text",
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -141,7 +141,7 @@ def test_appending_audio_never_increases_the_estimate() -> None:
     )
     estimates = []
     for index in range(4):
-        chunk = manager.add_planned_chunk(
+        chunk = await manager.add_planned_chunk(
             job.id,
             ChunkPlan(
                 text="x" * chunk_chars,
@@ -150,7 +150,7 @@ def test_appending_audio_never_increases_the_estimate() -> None:
             ),
         )
         estimates.append(remaining_seconds(job, 0.0, chars_per_second=CHARS_PER_SECOND))
-        manager.mark_chunk_written(
+        await manager.mark_chunk_written(
             chunk,
             duration_seconds=6.0,
             segment_path=f"/tmp/{index}.m4s",
@@ -161,18 +161,18 @@ def test_appending_audio_never_increases_the_estimate() -> None:
     assert estimates == sorted(estimates, reverse=True)
 
 
-def test_heard_audio_is_subtracted_exactly() -> None:
+async def test_heard_audio_is_subtracted_exactly() -> None:
     manager = JobManager(MemoryDatabase())
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="alpha beta gamma",
         source_kind="text",
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
-    chunk = manager.add_planned_chunk(
+    chunk = await manager.add_planned_chunk(
         job.id, ChunkPlan(text="alpha beta", char_start=0, char_end=10)
     )
-    manager.mark_chunk_written(
+    await manager.mark_chunk_written(
         chunk, duration_seconds=20.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
 

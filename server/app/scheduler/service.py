@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from time import monotonic
 from typing import NamedTuple, TypedDict
 
@@ -273,16 +274,16 @@ class SchedulerService:
     async def run_once(self) -> None:
         self._last_tick_at = utc_now()
         await self._expire_stale_listeners()
-        self._refresh_up_next()
-        self._ensure_planned_chunks()
-        self._telemetry.set_queue_depth(self._job_manager.queue_depth())
+        await self._refresh_up_next()
+        await self._ensure_planned_chunks()
+        self._telemetry.set_queue_depth(await self._job_manager.queue_depth())
         block = await self._dispatch_tick()
         await self._supervise_dispatch(block)
         # Keep the model resident while there is dispatchable work; only let it
         # idle out once the queue is genuinely empty. Paused jobs do not count:
         # they keep plan-ahead chunks in `PLANNED` but nothing will render them.
         await self._model_manager.maybe_unload_idle(
-            has_pending_work=self._job_manager.has_renderable_chunks()
+            has_pending_work=await self._job_manager.has_renderable_chunks()
         )
         await self._broadcast_scheduler_state()
 
@@ -300,13 +301,13 @@ class SchedulerService:
             # provider (see `_supervise_dispatch`), and until then the failure
             # stays visible instead of the queue silently freezing. Only worth
             # recovering while something is actually waiting to render.
-            if not self._job_manager.has_renderable_chunks():
+            if not await self._job_manager.has_renderable_chunks():
                 return None
             return DispatchBlock.PROVIDER_ERROR
-        renderable = self._rank_renderable_chunks()
+        renderable, jobs = await self._rank_renderable_chunks()
         if not renderable:
             return None
-        return await self._render_next_batch(renderable)
+        return await self._render_next_batch(renderable, jobs)
 
     async def _supervise_dispatch(self, block: DispatchBlock | None) -> None:
         """Keep a blocked scheduler from freezing for good.
@@ -380,12 +381,15 @@ class SchedulerService:
         the batch currently being rendered, so that view can refresh live
         without polling and without re-sending the whole queue every tick.
         """
-        active_batch = self._active_batch()
+        # The in-flight batch is derived from `RENDERING` chunks, so the tick
+        # reads the jobs once here rather than in a helper that cannot await.
+        jobs = await self._job_manager.list_jobs()
+        active_batch = self._active_batch(jobs)
         await self._hub.broadcast(
             WsEnvelope(
                 type="scheduler_state",
                 payload={
-                    "queue_depth": self._job_manager.queue_depth(),
+                    "queue_depth": sum(job.pending_chunks for job in jobs),
                     "batch_candidates": self._config.batch_candidates_small_model,
                     "active_batch": (
                         active_batch.model_dump() if active_batch is not None else None
@@ -397,23 +401,23 @@ class SchedulerService:
             ).model_dump()
         )
 
-    def _ensure_planned_chunks(self) -> None:
-        for job in self._job_manager.list_jobs():
+    async def _ensure_planned_chunks(self) -> None:
+        for job in await self._job_manager.list_jobs():
             if job.status in {JobStatus.PAUSED, JobStatus.COMPLETED}:
                 continue
             if job.planner_cursor.exhausted:
                 continue
             # The source text is its own row. It is read only for a job that is
             # actually planning, and only once per tick (phase 3 adds a cache).
-            source_text = self._job_manager.source_text(job.id)
+            source_text = await self._job_manager.source_text(job.id)
             while self._needs_more_planning(job):
                 plan = self._planner.plan_next(source_text, job.planner_cursor.offset)
                 if plan is None:
                     # Nothing left to cut: record it so completion can settle
                     # and nobody asks this job for more work again.
-                    self._job_manager.finish_planning(job.id)
+                    await self._job_manager.finish_planning(job.id)
                     break
-                self._job_manager.add_planned_chunk(job.id, plan)
+                await self._job_manager.add_planned_chunk(job.id, plan)
 
     def _needs_more_planning(self, job: Job) -> bool:
         active_planned = sum(
@@ -443,7 +447,7 @@ class SchedulerService:
         Without this the flag was sticky for the life of the process, so a tab
         that was closed mid-book kept its job in the urgent band.
         """
-        expired = self._job_manager.expire_stale_listeners(
+        expired = await self._job_manager.expire_stale_listeners(
             self._config.active_listener_timeout_seconds
         )
         for job in expired:
@@ -453,11 +457,20 @@ class SchedulerService:
                 ).model_dump()
             )
 
-    def _rank_renderable_chunks(self) -> list[ChunkRecord]:
-        chunks = list(self._job_manager.renderable_chunks())
-        return self._ordered_for_dispatch(chunks)
+    async def _rank_renderable_chunks(self) -> tuple[list[ChunkRecord], list[Job]]:
+        """Dispatchable chunks in scheduler order, plus the jobs they belong to.
 
-    def _ordered_for_dispatch(self, chunks: list[ChunkRecord]) -> list[ChunkRecord]:
+        The job snapshot is returned alongside because the ordering and grouping
+        helpers are pure functions over it: an asynchronous storage layer cannot
+        be queried from inside a sort key, so the reads happen once, up front.
+        """
+        chunks = await self._job_manager.renderable_chunks()
+        jobs = await self._job_manager.list_jobs()
+        return self._ordered_for_dispatch(chunks, jobs), jobs
+
+    def _ordered_for_dispatch(
+        self, chunks: list[ChunkRecord], jobs: Sequence[Job]
+    ) -> list[ChunkRecord]:
         """Order chunks for dispatch.
 
         The rule the user asked for is: take turns by *amount of work*, not by
@@ -476,7 +489,8 @@ class SchedulerService:
         if not chunks:
             return []
         # (submitted_at, id) gives a fully deterministic oldest-first order.
-        job_order = {job.id: (job.submitted_at, job.id) for job in self._job_manager.list_jobs()}
+        jobs_by_id = {job.id: job for job in jobs}
+        job_order = {job.id: (job.submitted_at, job.id) for job in jobs}
 
         # Per-job ordinal: position among that job's chunks in this list, by index.
         ordinal: dict[int, int] = {}
@@ -489,7 +503,7 @@ class SchedulerService:
                 ordinal[id(chunk)] = position
 
         def chunk_key(chunk: ChunkRecord) -> tuple[int, int, float, str, int]:
-            job = self._job_manager.get_job(chunk.job_id)
+            job = jobs_by_id[chunk.job_id]
             submitted_at, job_id = job_order.get(job.id, (0.0, ""))
             return (
                 self._priority_band(job),
@@ -501,7 +515,7 @@ class SchedulerService:
 
         groups: dict[BatchGroup, list[ChunkRecord]] = defaultdict(list)
         for chunk in chunks:
-            groups[self._group_key(chunk)].append(chunk)
+            groups[self._group_key(chunk, jobs_by_id)].append(chunk)
 
         def group_priority(
             item: tuple[BatchGroup, list[ChunkRecord]],
@@ -510,7 +524,7 @@ class SchedulerService:
             _key, group = item
             return min(
                 (
-                    self._priority_band(self._job_manager.get_job(chunk.job_id)),
+                    self._priority_band(jobs_by_id[chunk.job_id]),
                     *job_order.get(chunk.job_id, (0.0, "")),
                 )
                 for chunk in group
@@ -521,10 +535,10 @@ class SchedulerService:
             ordered.extend(sorted(group, key=chunk_key))
         return ordered
 
-    def _refresh_up_next(self) -> None:
+    async def _refresh_up_next(self) -> None:
         """Recompute the folder successors that deserve a warmed buffer."""
         self._up_next_job_ids = up_next_job_ids(
-            self._job_manager.list_jobs(),
+            await self._job_manager.list_jobs(),
             prebuffer_seconds=self._config.up_next_prebuffer_seconds,
         )
 
@@ -601,12 +615,14 @@ class SchedulerService:
             )
         return band, "Background", "Queued job with no active listener."
 
-    def _group_key(self, chunk: ChunkRecord) -> BatchGroup:
+    def _group_key(self, chunk: ChunkRecord, jobs: Mapping[str, Job]) -> BatchGroup:
         """The (model, language, voice) a chunk must be batched under."""
-        job = self._job_manager.get_job(chunk.job_id)
+        job = jobs[chunk.job_id]
         return BatchGroup(job.model_id, job.language, chunk.voice_id)
 
-    def _group_chunks(self, chunks: list[ChunkRecord]) -> dict[BatchGroup, list[ChunkRecord]]:
+    def _group_chunks(
+        self, chunks: list[ChunkRecord], jobs: Mapping[str, Job]
+    ) -> dict[BatchGroup, list[ChunkRecord]]:
         """Group chunks by the scheduler's batch key: model, language, voice.
 
         One batch is always drawn from a single group, so preserving insertion
@@ -614,7 +630,7 @@ class SchedulerService:
         """
         grouped: dict[BatchGroup, list[ChunkRecord]] = defaultdict(list)
         for chunk in chunks:
-            grouped[self._group_key(chunk)].append(chunk)
+            grouped[self._group_key(chunk, jobs)].append(chunk)
         return dict(grouped)
 
     def _sync_residency(self) -> None:
@@ -639,6 +655,7 @@ class SchedulerService:
         self,
         keys: list[BatchGroup],
         groups: dict[BatchGroup, list[ChunkRecord]],
+        jobs: Mapping[str, Job],
     ) -> BatchGroup:
         """Pick which (model, language, voice) group gets the next batch.
 
@@ -657,10 +674,7 @@ class SchedulerService:
         urgent_models = {
             key.model_id
             for key, chunks in groups.items()
-            if any(
-                self._priority_band(self._job_manager.get_job(chunk.job_id)) == 0
-                for chunk in chunks
-            )
+            if any(self._priority_band(jobs[chunk.job_id]) == 0 for chunk in chunks)
         }
 
         resident = self._resident_model_id
@@ -713,6 +727,7 @@ class SchedulerService:
     def _select_next_batch(
         self,
         ranked_chunks: list[ChunkRecord],
+        jobs: Mapping[str, Job],
         vram_allocated_mb: int,
         vram_total_mb: int,
         *,
@@ -723,10 +738,10 @@ class SchedulerService:
         Shared by `_render_next_batch` and `queue_snapshot` so the admin queue
         view can mark the real "up next" chunks instead of re-deriving them.
         """
-        grouped = self._group_chunks(ranked_chunks)
+        grouped = self._group_chunks(ranked_chunks, jobs)
         if not grouped:
             return None, []
-        group_key = self._choose_group_key(list(grouped), grouped)
+        group_key = self._choose_group_key(list(grouped), grouped, jobs)
         chunks = grouped[group_key]
         batch_size = self._choose_batch_size(
             len(chunks),
@@ -736,9 +751,12 @@ class SchedulerService:
         )
         return group_key, chunks[:batch_size]
 
-    async def _render_next_batch(self, ranked_chunks: list[ChunkRecord]) -> DispatchBlock | None:
+    async def _render_next_batch(
+        self, ranked_chunks: list[ChunkRecord], jobs: Sequence[Job]
+    ) -> DispatchBlock | None:
         if not ranked_chunks:
             return None
+        jobs_by_id = {job.id: job for job in jobs}
         stats = await self._dispatch_memory_stats()
         if stats is None or (
             stats.device.startswith("cuda")
@@ -774,6 +792,7 @@ class SchedulerService:
             return DispatchBlock.MEMORY
         group_key, batch = self._select_next_batch(
             ranked_chunks,
+            jobs_by_id,
             vram_allocated,
             vram_total,
             vram_headroom_mb=self._vram_headroom_mb(stats),
@@ -786,7 +805,7 @@ class SchedulerService:
         # Straight to RENDERING: a QUEUED stopover was never observable (no
         # await between the two transitions, so nothing could see it).
         for chunk in batch:
-            self._job_manager.mark_chunk_rendering(chunk)
+            await self._job_manager.mark_chunk_rendering(chunk)
         # Broadcast once the batch is marked rendering so the admin queue view
         # can show it in flight; the end-of-tick broadcast sees it completed.
         await self._broadcast_scheduler_state()
@@ -806,14 +825,14 @@ class SchedulerService:
                 key="model_load_vram",
             )
             for chunk in batch:
-                self._job_manager.mark_chunk_planned(chunk)
+                await self._job_manager.mark_chunk_planned(chunk)
             return DispatchBlock.MEMORY
         except Exception as exc:
             # Never let one bad batch kill the loop. The chunks are retried
             # within their attempt budget; once that is spent only those chunks
             # are marked failed and the job keeps rendering its other chunks.
             logger.exception("Batch render failed for %d chunk(s)", len(batch))
-            self._handle_batch_failure(batch, exc)
+            await self._handle_batch_failure(batch, exc)
             return
         # `strict=False`: the worker shrinks a batch when it hits an OOM and
         # retries, so a short result list is expected here (leftovers are
@@ -821,7 +840,7 @@ class SchedulerService:
         self._record_vram_estimate(len(results), results, base_allocated_mb=vram_allocated)
         for chunk, result in zip(batch, results, strict=False):
             try:
-                job = self._job_manager.mark_chunk_written(
+                job = await self._job_manager.mark_chunk_written(
                     chunk,
                     duration_seconds=result.duration_seconds,
                     segment_path=result.segment_path,
@@ -855,10 +874,10 @@ class SchedulerService:
         # it did not return is put back in the queue so it is rendered on a
         # later tick rather than left stuck in `RENDERING`.
         for chunk in batch[len(results) :]:
-            self._job_manager.mark_chunk_planned(chunk)
+            await self._job_manager.mark_chunk_planned(chunk)
         return None
 
-    def _handle_batch_failure(self, batch: list[ChunkRecord], error: Exception) -> None:
+    async def _handle_batch_failure(self, batch: list[ChunkRecord], error: Exception) -> None:
         """Requeue or fail the chunks of a batch that raised.
 
         Retries are bounded by `chunk_max_attempts`; when the budget is spent
@@ -869,9 +888,9 @@ class SchedulerService:
         for chunk in batch:
             try:
                 if chunk.attempts + 1 >= self._config.chunk_max_attempts:
-                    self._job_manager.mark_chunk_failed(chunk, message)
+                    await self._job_manager.mark_chunk_failed(chunk, message)
                 else:
-                    self._job_manager.mark_chunk_retry(chunk, message)
+                    await self._job_manager.mark_chunk_retry(chunk, message)
             except KeyError:
                 # A purged job's chunks no longer exist; the failure is moot.
                 continue
@@ -1003,7 +1022,7 @@ class SchedulerService:
 
     # ── Admin queue inspection ─────────────────────────────────────────
 
-    def _pending_chunks_for_inspection(self) -> list[ChunkRecord]:
+    def _pending_chunks_for_inspection(self, jobs: Sequence[Job]) -> list[ChunkRecord]:
         """All schedulable chunks across jobs, in scheduler priority order.
 
         Unlike `JobManager.renderable_chunks()`, this also includes chunks that
@@ -1013,34 +1032,39 @@ class SchedulerService:
         """
         chunks = [
             chunk
-            for job in self._job_manager.list_jobs()
+            for job in jobs
             for chunk in job.chunks
             if chunk.plan_version == job.plan_version
             and not chunk.deprecated
             and chunk.status in PENDING_CHUNK_STATUSES
         ]
-        return self._ordered_for_dispatch(chunks)
+        return self._ordered_for_dispatch(chunks, jobs)
 
     def active_batch(self) -> QueueBatch | None:
-        """Public accessor for the batch currently in flight."""
+        """Public accessor for the batch currently in flight.
+
+        Synchronous on purpose: it is derived from the chunks it is handed, and
+        the HTTP route loads those once. See `queue_snapshot`.
+        """
         return self._active_batch()
 
-    def _active_batch(self) -> QueueBatch | None:
+    def _active_batch(self, jobs: Sequence[Job] | None = None) -> QueueBatch | None:
         """The batch currently in flight, derived from `RENDERING` status.
 
         No extra scheduler state is needed: chunks are flipped to `RENDERING`
         immediately before `render_batch` and to `WRITTEN` after, so the
         rendering set *is* the active batch.
         """
+        jobs = list(jobs or [])
         rendering = [
             chunk
-            for job in self._job_manager.list_jobs()
+            for job in jobs
             for chunk in job.chunks
             if chunk.status == ChunkStatus.RENDERING and chunk.plan_version == job.plan_version
         ]
         if not rendering:
             return None
-        grouped = self._group_chunks(rendering)
+        grouped = self._group_chunks(rendering, {job.id: job for job in jobs})
         group, chunks = next(iter(grouped.items()))
         return QueueBatch(
             chunk_count=len(chunks),
@@ -1050,11 +1074,13 @@ class SchedulerService:
             started_at=to_iso(min(chunk.updated_at for chunk in chunks)),
         )
 
-    def _batch_summary(self, batch: list[ChunkRecord]) -> QueueBatch | None:
+    def _batch_summary(
+        self, batch: list[ChunkRecord], jobs: Mapping[str, Job]
+    ) -> QueueBatch | None:
         """Summarize an already-selected batch (no start time)."""
         if not batch:
             return None
-        group = self._group_key(batch[0])
+        group = self._group_key(batch[0], jobs)
         return QueueBatch(
             chunk_count=len(batch),
             model_id=group.model_id,
@@ -1183,7 +1209,7 @@ class SchedulerService:
             ],
         )
 
-    def queue_snapshot(self) -> AdminQueueResponse:
+    async def queue_snapshot(self) -> AdminQueueResponse:
         """Build the admin queue read-model.
 
         Deliberately synchronous and free of provider calls. The real provider
@@ -1199,14 +1225,20 @@ class SchedulerService:
         same helpers the real scheduler uses, so the admin view cannot drift
         from what the scheduler will actually do.
         """
-        self._refresh_up_next()
-        pending = self._pending_chunks_for_inspection()
-        renderable = self._rank_renderable_chunks()
+        await self._refresh_up_next()
+        # Read everything this snapshot needs exactly once, then build the whole
+        # response from those locals in one turn. The reads are awaited before
+        # any building starts, so a slow query cannot produce a response that
+        # mixes pre- and post-batch state.
+        jobs = await self._job_manager.list_jobs()
+        jobs_by_id = {job.id: job for job in jobs}
+        pending = self._pending_chunks_for_inspection(jobs)
+        renderable, _ = await self._rank_renderable_chunks()
         # The next batch is a prediction. It is sized without live VRAM figures
         # (that would require the blocking provider call described above); the
         # real dispatch still applies the VRAM-aware downshift in
         # `_render_next_batch`.
-        _next_key, next_batch = self._select_next_batch(renderable, 0, 0)
+        _next_key, next_batch = self._select_next_batch(renderable, jobs_by_id, 0, 0)
         next_batch_ids = {(chunk.job_id, chunk.index, chunk.version) for chunk in next_batch}
         pending_ranks = {
             (chunk.job_id, chunk.index, chunk.version): rank
@@ -1215,11 +1247,8 @@ class SchedulerService:
 
         return AdminQueueResponse(
             generated_at=to_iso(utc_now()),
-            queue_depth=self._job_manager.queue_depth(),
-            active_batch=self._active_batch(),
-            next_batch=self._batch_summary(next_batch),
-            jobs=[
-                self._job_group(job, pending_ranks, next_batch_ids)
-                for job in self._job_manager.list_jobs()
-            ],
+            queue_depth=sum(job.pending_chunks for job in jobs),
+            active_batch=self._active_batch(jobs),
+            next_batch=self._batch_summary(next_batch, jobs_by_id),
+            jobs=[self._job_group(job, pending_ranks, next_batch_ids) for job in jobs],
         )

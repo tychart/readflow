@@ -23,12 +23,12 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         nonlocal scheduler_task
-        services = build_services(settings, base_dir)
+        services = await build_services(settings, base_dir)
         app.state.services = services
         # Reconcile whatever the previous process left mid-flight *before* the
         # scheduler can dispatch: an interrupted `RENDERING` chunk or a
         # `WRITTEN` chunk whose audio is gone is repaired here, once.
-        recovery = services.job_manager.recover_after_restart(
+        recovery = await services.job_manager.recover_after_restart(
             services.media_store.chunk_files_exist
         )
         if recovery.recovered:
@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
         await services.model_manager.unload()
-        services.database.close()
+        await services.database.close()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

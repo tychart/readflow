@@ -45,7 +45,7 @@ class AppServices:
     hub: WebSocketHub
 
 
-def build_services(
+async def build_services(
     settings: Settings, base_dir: Path, *, database: Database | None = None
 ) -> AppServices:
     """Construct the whole service graph once per process.
@@ -56,7 +56,7 @@ def build_services(
     """
     if database is None:
         database = MemoryDatabase()
-    current_user = database.get_user(DEFAULT_USER_ID)
+    current_user = await database.get_user(DEFAULT_USER_ID)
     if current_user is None:  # pragma: no cover - the adapter seeds it
         raise RuntimeError("The database did not seed a default user")
     job_manager = JobManager(database)

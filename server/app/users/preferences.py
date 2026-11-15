@@ -29,9 +29,9 @@ class UserPreferencesService:
         self._db = database
         self._user_id = user_id
 
-    def get(self) -> UserPreferences:
-        with self._db.transaction() as uow:
-            user = uow.users.get(self._user_id)
+    async def get(self) -> UserPreferences:
+        async with self._db.transaction() as uow:
+            user = await uow.users.get(self._user_id)
             if user is None:  # pragma: no cover - the adapter seeds it
                 raise KeyError(f"Unknown user '{self._user_id}'")
             return UserPreferences(
@@ -39,17 +39,17 @@ class UserPreferencesService:
                 voice_id=user.preferred_voice_id,
             )
 
-    def remember(self, *, model_id: str, voice_id: str) -> UserPreferences:
+    async def remember(self, *, model_id: str, voice_id: str) -> UserPreferences:
         """Store the selection the user just made.
 
         Callers validate the ids (supported model, known voice) before calling:
         this service stores profile data, it does not own the catalogues.
         """
-        with self._db.transaction() as uow:
-            user = uow.users.get(self._user_id)
+        async with self._db.transaction() as uow:
+            user = await uow.users.get(self._user_id)
             if user is None:  # pragma: no cover - the adapter seeds it
                 raise KeyError(f"Unknown user '{self._user_id}'")
             user.preferred_model_id = model_id
             user.preferred_voice_id = voice_id
-            uow.users.save(user)
+            await uow.users.save(user)
         return UserPreferences(model_id=model_id, voice_id=voice_id)

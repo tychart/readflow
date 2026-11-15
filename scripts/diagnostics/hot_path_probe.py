@@ -122,9 +122,9 @@ class CountingRepository:
         if not callable(target):
             return target
 
-        def counted(*args: Any, **kwargs: Any) -> Any:
+        async def counted(*args: Any, **kwargs: Any) -> Any:
             self._counters.add_call(f"{self._name}.{attribute}")
-            result = target(*args, **kwargs)
+            result = await target(*args, **kwargs)
             self._counters.bytes_read += self._result_bytes(attribute, result)
             return result
 
@@ -155,18 +155,18 @@ class CountingUnitOfWork:
         self.trash = CountingRepository(inner.trash, counters, name="trash")
         self.users = CountingRepository(inner.users, counters, name="users")
 
-    def __enter__(self) -> CountingUnitOfWork:
-        self._inner.__enter__()
+    async def __aenter__(self) -> CountingUnitOfWork:
+        await self._inner.__aenter__()
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self._inner.__exit__(exc_type, exc, tb)
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self._inner.__aexit__(exc_type, exc, tb)
 
-    def commit(self) -> None:
-        self._inner.commit()
+    async def commit(self) -> None:
+        await self._inner.commit()
 
-    def rollback(self) -> None:
-        self._inner.rollback()
+    async def rollback(self) -> None:
+        await self._inner.rollback()
 
 
 class CountingDatabase:
@@ -177,12 +177,21 @@ class CountingDatabase:
     def transaction(self) -> CountingUnitOfWork:
         return CountingUnitOfWork(self.inner.transaction(), self.counters)
 
-    def get_user(self, user_id: str) -> Any:
+    async def get_user(self, user_id: str) -> Any:
         self.counters.add_call("database.get_user")
-        return self.inner.get_user(user_id)
+        return await self.inner.get_user(user_id)
+
+    async def get_user_by_username(self, username: str) -> Any:
+        self.counters.add_call("database.get_user_by_username")
+        return await self.inner.get_user_by_username(username)
+
+    async def close(self) -> None:
+        await self.inner.close()
 
 
-def build_fixture(*, job_count: int, source_chars: int) -> tuple[AppServices, CountingDatabase]:
+async def build_fixture(
+    *, job_count: int, source_chars: int
+) -> tuple[AppServices, CountingDatabase]:
     settings = Settings(
         tts_provider="fake",
         scheduler_autostart=False,
@@ -190,12 +199,12 @@ def build_fixture(*, job_count: int, source_chars: int) -> tuple[AppServices, Co
         runtime=RuntimeConfig(default_voice_id="suzy"),
     )
     counting = CountingDatabase(MemoryDatabase())
-    services = build_services(settings, SERVER_DIR, database=counting)
+    services = await build_services(settings, SERVER_DIR, database=counting)
 
     text = "The quick brown fox jumps over the lazy dog. " * (source_chars // 45 + 1)
     text = text[:source_chars]
     for index in range(job_count):
-        services.job_manager.create_job(
+        await services.job_manager.create_job(
             source_text=f"Probe job {index}\n\n{text}",
             source_kind="text",
             model_id=settings.runtime.default_model_id,
@@ -235,7 +244,7 @@ def summarize(samples: list[Counters]) -> Counter[str]:
     return averaged
 
 
-def main() -> int:
+async def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -247,8 +256,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    services, _database = build_fixture(job_count=args.jobs, source_chars=args.chars)
-    samples = asyncio.run(run_ticks(services, warmup=args.warmup, ticks=args.ticks))
+    services, _database = await build_fixture(job_count=args.jobs, source_chars=args.chars)
+    samples = await run_ticks(services, warmup=args.warmup, ticks=args.ticks)
 
     averaged = summarize(samples)
     mean_bytes = sum(sample.bytes_read for sample in samples) / len(samples)
@@ -274,4 +283,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

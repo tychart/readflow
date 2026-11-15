@@ -20,69 +20,69 @@ def _manager() -> JobManager:
     return JobManager(MemoryDatabase())
 
 
-def _job_with_chunks(manager: JobManager, *, written: int = 2) -> tuple[Job, list]:
-    job = manager.create_job(
+async def _job_with_chunks(manager: JobManager, *, written: int = 2) -> tuple[Job, list]:
+    job = await manager.create_job(
         source_text="alpha beta gamma delta epsilon",
         source_kind="text",
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
     chunks = [
-        manager.add_planned_chunk(
+        await manager.add_planned_chunk(
             job.id,
             ChunkPlan(text=f"chunk {index}", char_start=index * 5, char_end=index * 5 + 5),
         )
         for index in range(3)
     ]
     for chunk in chunks[:written]:
-        manager.mark_chunk_written(
+        await manager.mark_chunk_written(
             chunk,
             duration_seconds=10.0,
             segment_path=f"/tmp/{chunk.index}.m4s",
             wav_path=f"/tmp/{chunk.index}.wav",
         )
-    return manager.get_job(job.id), chunks
+    return await manager.get_job(job.id), chunks
 
 
-def test_an_interrupted_render_is_requeued_without_charging_an_attempt() -> None:
+async def test_an_interrupted_render_is_requeued_without_charging_an_attempt() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
-    interrupted = manager.get_job(job.id).active_chunk(2)
+    job, _chunks = await _job_with_chunks(manager)
+    interrupted = (await manager.get_job(job.id)).active_chunk(2)
     assert interrupted is not None
     interrupted.status = ChunkStatus.RENDERING
     interrupted.attempts = 1
 
-    plan = plan_startup_recovery(manager.get_job(job.id))
+    plan = plan_startup_recovery(await manager.get_job(job.id))
 
     assert [chunk.index for chunk in plan.requeue] == [2]
     assert plan.reset_audio == ()
     assert plan.needed is True
 
 
-def test_a_written_chunk_with_missing_audio_is_requeued_and_cleared() -> None:
+async def test_a_written_chunk_with_missing_audio_is_requeued_and_cleared() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
+    job, _chunks = await _job_with_chunks(manager)
 
     # Only chunk 0's audio survived the restart.
-    plan = plan_startup_recovery(manager.get_job(job.id), lambda chunk: chunk.index == 0)
+    plan = plan_startup_recovery(await manager.get_job(job.id), lambda chunk: chunk.index == 0)
 
     assert [chunk.index for chunk in plan.requeue] == [1]
     assert [chunk.index for chunk in plan.reset_audio] == [1]
 
 
-def test_recovery_clears_listener_flags_and_requeues_rendering_chunks() -> None:
+async def test_recovery_clears_listener_flags_and_requeues_rendering_chunks() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
-    manager.activate_job(job.id)
-    stored = manager.get_job(job.id)
+    job, _chunks = await _job_with_chunks(manager)
+    await manager.activate_job(job.id)
+    stored = await manager.get_job(job.id)
     rendering = stored.active_chunk(2)
     assert rendering is not None
     rendering.status = ChunkStatus.RENDERING
 
-    result = manager.recover_after_restart()
+    result = await manager.recover_after_restart()
 
     assert job.id in result.recovered
-    recovered = manager.get_job(job.id)
+    recovered = await manager.get_job(job.id)
     assert recovered.is_active_listening is False
     assert recovered.playback_state.is_playing is False
     requeued = recovered.active_chunk(2)
@@ -92,13 +92,13 @@ def test_recovery_clears_listener_flags_and_requeues_rendering_chunks() -> None:
     assert recovered.status in {JobStatus.QUEUED, JobStatus.PLAYING}
 
 
-def test_recovery_restores_a_written_take_that_lost_its_audio() -> None:
+async def test_recovery_restores_a_written_take_that_lost_its_audio() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
+    job, _chunks = await _job_with_chunks(manager)
 
-    manager.recover_after_restart(lambda chunk: chunk.index != 1)
+    await manager.recover_after_restart(lambda chunk: chunk.index != 1)
 
-    recovered = manager.get_job(job.id)
+    recovered = await manager.get_job(job.id)
     lost = recovered.active_chunk(1)
     assert lost is not None
     assert lost.status == ChunkStatus.PLANNED
@@ -110,46 +110,46 @@ def test_recovery_restores_a_written_take_that_lost_its_audio() -> None:
     assert recovered.unwritten_chars == len("chunk 1") + len("chunk 2")
 
 
-def test_recovery_leaves_a_finished_job_with_intact_audio_alone() -> None:
+async def test_recovery_leaves_a_finished_job_with_intact_audio_alone() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager, written=3)
-    manager.finish_planning(job.id)
-    finished = manager.get_job(job.id)
+    job, _chunks = await _job_with_chunks(manager, written=3)
+    await manager.finish_planning(job.id)
+    finished = await manager.get_job(job.id)
     assert finished.status == JobStatus.COMPLETED
     updated_before = finished.updated_at
 
-    result = manager.recover_after_restart(lambda _chunk: True)
+    result = await manager.recover_after_restart(lambda _chunk: True)
 
     assert result.recovered == ()
-    assert manager.get_job(job.id).updated_at == updated_before
-    assert manager.get_job(job.id).status == JobStatus.COMPLETED
+    assert (await manager.get_job(job.id)).updated_at == updated_before
+    assert (await manager.get_job(job.id)).status == JobStatus.COMPLETED
 
 
-def test_a_completed_job_whose_audio_vanished_is_revived() -> None:
+async def test_a_completed_job_whose_audio_vanished_is_revived() -> None:
     """Leaving it terminal would hide real work, so it starts rendering again."""
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager, written=3)
-    manager.finish_planning(job.id)
-    assert manager.get_job(job.id).status == JobStatus.COMPLETED
+    job, _chunks = await _job_with_chunks(manager, written=3)
+    await manager.finish_planning(job.id)
+    assert (await manager.get_job(job.id)).status == JobStatus.COMPLETED
 
-    manager.recover_after_restart(lambda _chunk: False)
+    await manager.recover_after_restart(lambda _chunk: False)
 
-    revived = manager.get_job(job.id)
+    revived = await manager.get_job(job.id)
     assert revived.status in {JobStatus.QUEUED, JobStatus.PLAYING}
     assert revived.total_chunks_completed == 0
 
 
-def test_recovery_is_idempotent() -> None:
+async def test_recovery_is_idempotent() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
-    stored = manager.get_job(job.id)
+    job, _chunks = await _job_with_chunks(manager)
+    stored = await manager.get_job(job.id)
     rendering = stored.active_chunk(2)
     assert rendering is not None
     rendering.status = ChunkStatus.RENDERING
-    manager.activate_job(job.id)
+    await manager.activate_job(job.id)
 
-    first = manager.recover_after_restart(lambda _chunk: chunk_index_exists(_chunk))
-    second = manager.recover_after_restart(lambda _chunk: chunk_index_exists(_chunk))
+    first = await manager.recover_after_restart(lambda _chunk: chunk_index_exists(_chunk))
+    second = await manager.recover_after_restart(lambda _chunk: chunk_index_exists(_chunk))
 
     assert job.id in first.recovered
     assert second.recovered == ()
@@ -160,38 +160,38 @@ def chunk_index_exists(chunk) -> bool:
     return chunk.index < 2
 
 
-def test_recovery_without_an_audio_check_only_repairs_interrupted_renders() -> None:
+async def test_recovery_without_an_audio_check_only_repairs_interrupted_renders() -> None:
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
+    job, _chunks = await _job_with_chunks(manager)
 
-    plan = plan_startup_recovery(manager.get_job(job.id), None)
+    plan = plan_startup_recovery(await manager.get_job(job.id), None)
 
     assert plan.requeue == ()
     assert plan.reset_audio == ()
     assert plan.needed is False
 
 
-def test_a_trashed_job_is_repaired_too() -> None:
+async def test_a_trashed_job_is_repaired_too() -> None:
     """A job trashed mid-render must not come back stuck.
 
     `renderable_chunks()` only dispatches `PLANNED` chunks, so a `RENDERING` one
     left behind by a crash would never be picked up again after a restore.
     """
     manager = _manager()
-    job, _chunks = _job_with_chunks(manager)
-    stored = manager.get_job(job.id)
+    job, _chunks = await _job_with_chunks(manager)
+    stored = await manager.get_job(job.id)
     rendering = stored.active_chunk(2)
     assert rendering is not None
     rendering.status = ChunkStatus.RENDERING
     stored.deleted_at = 1.0
     stored.trash_entry_id = "entry-1"
 
-    result = manager.recover_after_restart()
+    result = await manager.recover_after_restart()
 
     assert job.id in result.recovered
     trashed = manager._db.transaction()
-    with trashed as uow:
-        repaired = uow.jobs.get_any(job.id, include_deleted=True)
+    async with trashed as uow:
+        repaired = await uow.jobs.get_any(job.id, include_deleted=True)
     assert repaired is not None
     chunk = repaired.active_chunk(2)
     assert chunk is not None and chunk.status == ChunkStatus.PLANNED

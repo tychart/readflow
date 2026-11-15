@@ -92,7 +92,7 @@ def test_planner_ignores_trailing_whitespace_only():
     assert _planner(700).plan_next(f"{text}\n\n   \n", len(text)) is None
 
 
-def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
+async def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
     """Planning and storing are separate steps, and only storing advances.
 
     The planner used to mutate `job.planner_cursor` while producing a chunk, so
@@ -100,7 +100,7 @@ def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
     manager) silently dropped that slice of the document.
     """
     manager = JobManager(MemoryDatabase())
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="First sentence here. Second sentence follows. " * 8,
         source_kind="text",
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -108,14 +108,14 @@ def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
     )
     planner = _planner(120)
 
-    discarded = planner.plan_next(manager.source_text(job.id), job.planner_cursor.offset)
+    discarded = planner.plan_next(await manager.source_text(job.id), job.planner_cursor.offset)
     assert discarded is not None
     assert job.planner_cursor.offset == 0
     assert job.chunks == []
 
-    first = planner.plan_next(manager.source_text(job.id), job.planner_cursor.offset)
+    first = planner.plan_next(await manager.source_text(job.id), job.planner_cursor.offset)
     assert first is not None
-    manager.add_planned_chunk(job.id, first)
+    await manager.add_planned_chunk(job.id, first)
 
     assert job.planner_cursor.offset == first.char_end
     assert job.planner_cursor.chunks_emitted == 1
@@ -123,22 +123,22 @@ def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
     assert job.chunks[0].char_start == 0
 
 
-def test_finish_planning_marks_the_cursor_exhausted():
+async def test_finish_planning_marks_the_cursor_exhausted():
     manager = JobManager(MemoryDatabase())
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="Only text.",
         source_kind="text",
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
-    plan = _planner(700).plan_next(manager.source_text(job.id), 0)
+    plan = _planner(700).plan_next(await manager.source_text(job.id), 0)
     assert plan is not None
-    manager.add_planned_chunk(job.id, plan)
+    await manager.add_planned_chunk(job.id, plan)
 
     # add_planned_chunk already recorded exhaustion for a terminal plan.
     assert job.planner_cursor.exhausted
 
-    manager.finish_planning(job.id)
+    await manager.finish_planning(job.id)
     assert job.planner_cursor.exhausted
 
 

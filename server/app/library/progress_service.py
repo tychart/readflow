@@ -41,15 +41,15 @@ class ProgressService:
 
     # ── reads ───────────────────────────────────────────────────────────────
 
-    def views(self, jobs: Iterable[ProgressSource]) -> dict[str, ProgressView]:
+    async def views(self, jobs: Iterable[ProgressSource]) -> dict[str, ProgressView]:
         jobs = list(jobs)
-        with self._db.transaction() as uow:
-            rows = {row.job_id: row for row in uow.progress.list(self._user_id)}
+        async with self._db.transaction() as uow:
+            rows = {row.job_id: row for row in await uow.progress.list(self._user_id)}
         return {job.id: self._view(job, rows.get(job.id)) for job in jobs}
 
-    def view(self, job: ProgressSource) -> ProgressView:
-        with self._db.transaction() as uow:
-            row = uow.progress.get(self._user_id, job.id)
+    async def view(self, job: ProgressSource) -> ProgressView:
+        async with self._db.transaction() as uow:
+            row = await uow.progress.get(self._user_id, job.id)
         return self._view(job, row)
 
     def _view(self, job: ProgressSource, progress: JobProgress | None) -> ProgressView:
@@ -57,7 +57,7 @@ class ProgressService:
 
     # ── playback reports ────────────────────────────────────────────────────
 
-    def record(
+    async def record(
         self,
         job_id: str,
         *,
@@ -74,9 +74,9 @@ class ProgressService:
         reprocessed later.
         """
         now = utc_now()
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
-            progress, created = self._ensure(uow, job)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
+            progress, created = await self._ensure(uow, job)
             if progress.audio_epoch != job.audio_epoch:
                 # A full re-render replaced the audio; old heard marks describe
                 # a take that no longer exists.
@@ -91,37 +91,37 @@ class ProgressService:
             progress.heard_seconds = heard_seconds(job, progress)
             progress.updated_at = now
             if not created:
-                uow.progress.save(progress)
-            uow.jobs.save(job)
+                await uow.progress.save(progress)
+            await uow.jobs.save(job)
             return job, progress
 
     # ── manual marks ────────────────────────────────────────────────────────
 
-    def mark_job(
+    async def mark_job(
         self, job_id: str, *, read: bool, from_chunk: int | None = None
     ) -> tuple[Job, JobProgress]:
         """Mark a whole job, or everything from `from_chunk` onward."""
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
-            progress = self._apply_mark(uow, job, read=read, from_chunk=from_chunk)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
+            progress = await self._apply_mark(uow, job, read=read, from_chunk=from_chunk)
             return job, progress
 
-    def mark_many(self, job_ids: Iterable[str], *, read: bool) -> None:
+    async def mark_many(self, job_ids: Iterable[str], *, read: bool) -> None:
         """Bulk mark (selection mode) in one transaction.
 
         Validates every id before changing anything: a stale selection must not
         half-apply (the in-memory adapter does not roll back attribute edits).
         """
-        with self._db.transaction() as uow:
-            jobs = [self._require_job(uow, job_id) for job_id in dict.fromkeys(job_ids)]
+        async with self._db.transaction() as uow:
+            jobs = [await self._require_job(uow, job_id) for job_id in dict.fromkeys(job_ids)]
             for job in jobs:
-                self._apply_mark(uow, job, read=read, from_chunk=None)
+                await self._apply_mark(uow, job, read=read, from_chunk=None)
 
-    def _apply_mark(
+    async def _apply_mark(
         self, uow: UnitOfWork, job: Job, *, read: bool, from_chunk: int | None
     ) -> JobProgress:
         now = utc_now()
-        progress, created = self._ensure(uow, job)
+        progress, created = await self._ensure(uow, job)
         if progress.audio_epoch != job.audio_epoch:
             progress.heard.clear()
             progress.audio_epoch = job.audio_epoch
@@ -150,14 +150,16 @@ class ProgressService:
         progress.heard_seconds = heard_seconds(job, progress)
         progress.updated_at = now
         if not created:
-            uow.progress.save(progress)
+            await uow.progress.save(progress)
         return progress
 
-    def mark_chunk(self, job_id: str, chunk_index: int, *, heard: bool) -> tuple[Job, JobProgress]:
+    async def mark_chunk(
+        self, job_id: str, chunk_index: int, *, heard: bool
+    ) -> tuple[Job, JobProgress]:
         now = utc_now()
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
-            progress, created = self._ensure(uow, job)
+        async with self._db.transaction() as uow:
+            job = await self._require_job(uow, job_id)
+            progress, created = await self._ensure(uow, job)
             if progress.audio_epoch != job.audio_epoch:
                 progress.heard.clear()
                 progress.audio_epoch = job.audio_epoch
@@ -171,18 +173,18 @@ class ProgressService:
             progress.heard_seconds = heard_seconds(job, progress)
             progress.updated_at = now
             if not created:
-                uow.progress.save(progress)
+                await uow.progress.save(progress)
             return job, progress
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
-    def _ensure(self, uow: UnitOfWork, job: Job) -> tuple[JobProgress, bool]:
+    async def _ensure(self, uow: UnitOfWork, job: Job) -> tuple[JobProgress, bool]:
         """The job's progress row, inserted on first use.
 
         Returns the row and whether it was just created, so a fresh row is only
         `add`ed once and an existing one is only `save`d once.
         """
-        progress = uow.progress.get(self._user_id, job.id)
+        progress = await uow.progress.get(self._user_id, job.id)
         if progress is not None:
             return progress, False
         progress = JobProgress(
@@ -191,11 +193,11 @@ class ProgressService:
             audio_epoch=job.audio_epoch,
             updated_at=utc_now(),
         )
-        uow.progress.add(progress)
+        await uow.progress.add(progress)
         return progress, True
 
-    def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
-        job = uow.jobs.get(self._user_id, job_id)
+    async def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
+        job = await uow.jobs.get(self._user_id, job_id)
         if job is None:
             raise KeyError(f"Unknown job '{job_id}'")
         return job

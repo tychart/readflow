@@ -102,7 +102,7 @@ def layout(chunks: list[ChunkRecord]) -> None:
             running += chunk.duration_seconds
 
 
-def build_messy_job(manager: JobManager) -> Job:
+async def build_messy_job(manager: JobManager) -> Job:
     """A job with every shape the rollups have to survive.
 
     Built through the real manager so the fixture exercises the same write paths
@@ -114,7 +114,7 @@ def build_messy_job(manager: JobManager) -> Job:
     - chunk 3 planned but never rendered (a gap in the playable run)
     - the voice changed, so the pending chunk was re-pointed
     """
-    job = manager.create_job(
+    job = await manager.create_job(
         source_text="alpha beta gamma delta epsilon zeta eta theta",
         source_kind="text",
         model_id=MODEL,
@@ -122,21 +122,21 @@ def build_messy_job(manager: JobManager) -> Job:
         title="Messy",
     )
     chunks = [
-        manager.add_planned_chunk(
+        await manager.add_planned_chunk(
             job.id,
             ChunkPlan(text=f"chunk {index} text", char_start=index * 5, char_end=index * 5 + 5),
         )
         for index in range(4)
     ]
 
-    manager.mark_chunk_written(
+    await manager.mark_chunk_written(
         chunks[0], duration_seconds=10.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
     )
-    manager.mark_chunk_written(
+    await manager.mark_chunk_written(
         chunks[1], duration_seconds=7.5, segment_path="/tmp/1.m4s", wav_path="/tmp/1.wav"
     )
     # A reprocess appends a take and makes it live; the old take stays as history.
-    manager.add_versioned_chunk(
+    await manager.add_versioned_chunk(
         job.id,
         text="chunk 1 rewritten",
         char_start=5,
@@ -144,17 +144,17 @@ def build_messy_job(manager: JobManager) -> Job:
         voice_id="suzy",
         parent_index=1,
     )
-    rewritten = manager.get_job(job.id).active_chunk(1)
+    rewritten = (await manager.get_job(job.id)).active_chunk(1)
     assert rewritten is not None
-    manager.mark_chunk_written(
+    await manager.mark_chunk_written(
         rewritten,
         duration_seconds=9.0,
         segment_path="/tmp/1_v1.m4s",
         wav_path="/tmp/1_v1.wav",
     )
-    manager.mark_chunk_failed(chunks[2], "synthesis exploded")
+    await manager.mark_chunk_failed(chunks[2], "synthesis exploded")
     # Switching the live take back bumps the audio epoch.
-    manager.set_active_chunk_version(job.id, 1, 0)
+    await manager.set_active_chunk_version(job.id, 1, 0)
     # A voice change re-points work that has not rendered yet.
-    manager.set_voice(job.id, "howard")
-    return manager.get_job(job.id)
+    await manager.set_voice(job.id, "howard")
+    return await manager.get_job(job.id)

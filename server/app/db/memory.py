@@ -103,16 +103,16 @@ class MemoryUserRepository:
             users, journal, key=lambda user: user.id, label="User"
         )
 
-    def add(self, user: User) -> None:
+    async def add(self, user: User) -> None:
         self._table.add(user)
 
-    def save(self, user: User) -> None:
+    async def save(self, user: User) -> None:
         self._table.save(user)
 
-    def get(self, user_id: str) -> User | None:
+    async def get(self, user_id: str) -> User | None:
         return self._table.get(user_id)
 
-    def get_by_username(self, username: str) -> User | None:
+    async def get_by_username(self, username: str) -> User | None:
         # Unique in the real schema; the first match is enough here because the
         # auth service checks for a duplicate before inserting.
         wanted = username.strip().lower()
@@ -121,7 +121,7 @@ class MemoryUserRepository:
             None,
         )
 
-    def list(self) -> list[User]:
+    async def list(self) -> list[User]:
         return self._table.values()
 
 
@@ -131,26 +131,26 @@ class MemorySessionRepository:
             rows, journal, key=lambda session: session.id, label="Session"
         )
 
-    def add(self, session: Session) -> None:
+    async def add(self, session: Session) -> None:
         self._table.add(session)
 
-    def save(self, session: Session) -> None:
+    async def save(self, session: Session) -> None:
         self._table.save(session)
 
-    def get_by_token_hash(self, token_hash: bytes) -> Session | None:
+    async def get_by_token_hash(self, token_hash: bytes) -> Session | None:
         return next(
             (row for row in self._table.values() if row.token_hash == token_hash),
             None,
         )
 
-    def delete(self, session_id: str) -> None:
+    async def delete(self, session_id: str) -> None:
         self._table.delete(session_id)
 
-    def delete_for_user(self, user_id: str) -> None:
+    async def delete_for_user(self, user_id: str) -> None:
         for session in [row for row in self._table.values() if row.user_id == user_id]:
             self._table.delete(session.id)
 
-    def list_for_user(self, user_id: str) -> list[Session]:
+    async def list_for_user(self, user_id: str) -> list[Session]:
         return [row for row in self._table.values() if row.user_id == user_id]
 
 
@@ -160,13 +160,15 @@ class MemoryFolderRepository:
             rows, journal, key=lambda folder: folder.id, label="Folder"
         )
 
-    def add(self, folder: Folder) -> None:
+    async def add(self, folder: Folder) -> None:
         self._table.add(folder)
 
-    def save(self, folder: Folder) -> None:
+    async def save(self, folder: Folder) -> None:
         self._table.save(folder)
 
-    def get(self, user_id: str, folder_id: str, *, include_deleted: bool = False) -> Folder | None:
+    async def get(
+        self, user_id: str, folder_id: str, *, include_deleted: bool = False
+    ) -> Folder | None:
         folder = self._table.get(folder_id)
         if folder is None or folder.user_id != user_id:
             return None
@@ -174,22 +176,23 @@ class MemoryFolderRepository:
             return None
         return folder
 
-    def list(self, user_id: str, *, include_deleted: bool = False) -> list[Folder]:
+    async def list(self, user_id: str, *, include_deleted: bool = False) -> list[Folder]:
         return [
             folder
             for folder in self._table.values()
             if folder.user_id == user_id and (include_deleted or folder.deleted_at is None)
         ]
 
-    def delete(self, user_id: str, folder_id: str) -> None:
-        folder = self.get(user_id, folder_id, include_deleted=True)
+    async def delete(self, user_id: str, folder_id: str) -> None:
+        folder = await self.get(user_id, folder_id, include_deleted=True)
         if folder is not None:
             self._table.delete(folder_id)
 
-    def next_position(self, user_id: str, parent_id: str | None) -> int:
+    async def next_position(self, user_id: str, parent_id: str | None) -> int:
+        folders = await self.list(user_id)
         return (
             max(
-                (folder.position for folder in self.list(user_id) if folder.parent_id == parent_id),
+                (folder.position for folder in folders if folder.parent_id == parent_id),
                 default=-1,
             )
             + 1
@@ -208,21 +211,22 @@ class MemoryJobSourceRepository:
         self._rows = rows
         self._journal = journal
 
-    def get(self, job_id: str) -> str | None:
+    async def get(self, job_id: str) -> str | None:
         return self._rows.get(job_id)
 
-    def put(self, job_id: str, text: str) -> None:
+    async def put(self, job_id: str, text: str) -> None:
         previous = self._rows.get(job_id)
         self._rows[job_id] = text
         self._journal.append(lambda: self._restore(job_id, previous))
 
-    def delete(self, job_id: str) -> None:
+    async def delete(self, job_id: str) -> None:
         """Drop the row (the SQL adapter gets this from `ON DELETE CASCADE`)."""
         previous = self._rows.pop(job_id, None)
         if previous is not None:
             self._journal.append(lambda: self._rows.__setitem__(job_id, previous))
 
     def _restore(self, job_id: str, previous: str | None) -> None:
+        """Journal entry: journal callbacks are synchronous by construction."""
         if previous is None:
             self._rows.pop(job_id, None)
         else:
@@ -241,14 +245,14 @@ class MemoryJobRepository:
         # insert cannot write a row the source repository cannot see.
         self._sources = sources
 
-    def add(self, job: Job, *, source_text: str) -> None:
+    async def add(self, job: Job, *, source_text: str) -> None:
         self._table.add(job)
-        self._sources.put(job.id, source_text)
+        await self._sources.put(job.id, source_text)
 
-    def save(self, job: Job) -> None:
+    async def save(self, job: Job) -> None:
         self._table.save(job)
 
-    def get(self, user_id: str, job_id: str, *, include_deleted: bool = False) -> Job | None:
+    async def get(self, user_id: str, job_id: str, *, include_deleted: bool = False) -> Job | None:
         job = self._table.get(job_id)
         # Ownership is checked at the boundary, never by the caller. A job that
         # belongs to someone else is indistinguishable from a missing one.
@@ -258,64 +262,65 @@ class MemoryJobRepository:
             return None
         return job
 
-    def get_any(self, job_id: str, *, include_deleted: bool = False) -> Job | None:
+    async def get_any(self, job_id: str, *, include_deleted: bool = False) -> Job | None:
         job = self._table.get(job_id)
         if job is None or (job.deleted_at is not None and not include_deleted):
             return None
         return job
 
-    def list(self, user_id: str, *, include_deleted: bool = False) -> list[Job]:
+    async def list(self, user_id: str, *, include_deleted: bool = False) -> list[Job]:
         return [
             job
             for job in self._table.values()
             if job.user_id == user_id and (include_deleted or job.deleted_at is None)
         ]
 
-    def summaries(self, user_id: str, *, include_deleted: bool = False) -> list[JobSummary]:
+    async def summaries(self, user_id: str, *, include_deleted: bool = False) -> list[JobSummary]:
         return [
             job.summary()
             for job in self._table.values()
             if job.user_id == user_id and (include_deleted or job.deleted_at is None)
         ]
 
-    def summaries_all(self, *, include_deleted: bool = False) -> list[JobSummary]:
+    async def summaries_all(self, *, include_deleted: bool = False) -> list[JobSummary]:
         return [
             job.summary()
             for job in self._table.values()
             if include_deleted or job.deleted_at is None
         ]
 
-    def source_text(self, user_id: str, job_id: str) -> str:
-        job = self.get(user_id, job_id, include_deleted=True)
+    async def source_text(self, user_id: str, job_id: str) -> str:
+        job = await self.get(user_id, job_id, include_deleted=True)
         if job is None:
             raise KeyError(f"Unknown job '{job_id}'")
-        return self.source_text_any(job_id)
+        return await self.source_text_any(job_id)
 
-    def source_text_any(self, job_id: str) -> str:
-        text = self._sources.get(job_id)
+    async def source_text_any(self, job_id: str) -> str:
+        text = await self._sources.get(job_id)
         if text is None:
             raise KeyError(f"Job '{job_id}' has no source text")
         return text
 
-    def delete(self, user_id: str, job_id: str) -> None:
-        job = self.get(user_id, job_id, include_deleted=True)
+    async def delete(self, user_id: str, job_id: str) -> None:
+        job = await self.get(user_id, job_id, include_deleted=True)
         if job is not None:
             self._table.delete(job_id)
-            self._sources.delete(job_id)
+            await self._sources.delete(job_id)
 
-    def next_position(self, user_id: str, folder_id: str | None) -> int:
+    async def next_position(self, user_id: str, folder_id: str | None) -> int:
+        jobs = await self.list(user_id)
         return (
             max(
-                (job.position for job in self.list(user_id) if job.folder_id == folder_id),
+                (job.position for job in jobs if job.folder_id == folder_id),
                 default=-1,
             )
             + 1
         )
 
-    def planned_chunks(self) -> list[ChunkRecord]:
+    async def planned_chunks(self) -> list[ChunkRecord]:
         return self._system_chunks(ChunkStatus.PLANNED)
 
-    def rendering_chunks(self) -> list[ChunkRecord]:
+    async def rendering_chunks(self) -> list[ChunkRecord]:
         return self._system_chunks(ChunkStatus.RENDERING)
 
     def _system_chunks(self, status: ChunkStatus) -> list[ChunkRecord]:
@@ -345,24 +350,24 @@ class MemoryProgressRepository:
             label="Job progress",
         )
 
-    def add(self, progress: JobProgress) -> None:
+    async def add(self, progress: JobProgress) -> None:
         self._table.add(progress)
 
-    def get(self, user_id: str, job_id: str) -> JobProgress | None:
+    async def get(self, user_id: str, job_id: str) -> JobProgress | None:
         return self._table.get((user_id, job_id))
 
-    def list(self, user_id: str) -> list[JobProgress]:
+    async def list(self, user_id: str) -> list[JobProgress]:
         return [progress for progress in self._table.values() if progress.user_id == user_id]
 
-    def save(self, progress: JobProgress) -> None:
+    async def save(self, progress: JobProgress) -> None:
         self._table.save(progress)
 
-    def delete(self, user_id: str, job_id: str) -> None:
+    async def delete(self, user_id: str, job_id: str) -> None:
         self._table.delete((user_id, job_id))
 
-    def delete_many(self, user_id: str, job_ids: Iterable[str]) -> None:
+    async def delete_many(self, user_id: str, job_ids: Iterable[str]) -> None:
         for job_id in job_ids:
-            self.delete(user_id, job_id)
+            await self.delete(user_id, job_id)
 
 
 class MemoryTrashRepository:
@@ -371,24 +376,24 @@ class MemoryTrashRepository:
             rows, journal, key=lambda entry: entry.id, label="Trash entry"
         )
 
-    def add(self, entry: TrashEntry) -> None:
+    async def add(self, entry: TrashEntry) -> None:
         self._table.add(entry)
 
-    def get(self, user_id: str, entry_id: str) -> TrashEntry | None:
+    async def get(self, user_id: str, entry_id: str) -> TrashEntry | None:
         entry = self._table.get(entry_id)
         if entry is None or entry.user_id != user_id:
             return None
         return entry
 
-    def list(self, user_id: str) -> list[TrashEntry]:
+    async def list(self, user_id: str) -> list[TrashEntry]:
         return sorted(
             (entry for entry in self._table.values() if entry.user_id == user_id),
             key=lambda entry: entry.created_at,
             reverse=True,
         )
 
-    def delete(self, user_id: str, entry_id: str) -> None:
-        if self.get(user_id, entry_id) is not None:
+    async def delete(self, user_id: str, entry_id: str) -> None:
+        if await self.get(user_id, entry_id) is not None:
             self._table.delete(entry_id)
 
 
@@ -416,23 +421,23 @@ class MemoryUnitOfWork:
         self.trash: TrashRepository = MemoryTrashRepository(trash, self._journal)
         self._closed = False
 
-    def __enter__(self) -> MemoryUnitOfWork:
+    async def __aenter__(self) -> MemoryUnitOfWork:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         if exc_type is None:
-            self.commit()
+            await self.commit()
         else:
-            self.rollback()
+            await self.rollback()
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         if self._closed:
             return
         # Attribute edits were applied in place, so there is nothing to flush.
         self._closed = True
         self._journal.clear()
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         if self._closed:
             return
         for undo in reversed(self._journal):
@@ -458,7 +463,7 @@ class MemoryDatabase:
         self._progress: dict[object, JobProgress] = {}
         self._trash: dict[object, TrashEntry] = {}
         if seed:
-            self.seed_default_user()
+            self._seed_default_user()
 
     def transaction(self) -> UnitOfWork:
         return MemoryUnitOfWork(
@@ -471,20 +476,21 @@ class MemoryDatabase:
             self._trash,
         )
 
-    def get_user(self, user_id: str) -> User | None:
+    async def get_user(self, user_id: str) -> User | None:
         return self._users.get(user_id)
 
-    def get_user_by_username(self, username: str) -> User | None:
+    async def get_user_by_username(self, username: str) -> User | None:
         wanted = username.strip().lower()
         return next(
             (user for user in self._users.values() if user.username.lower() == wanted),
             None,
         )
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Nothing to release for an in-memory database."""
+        return None
 
-    def seed_default_user(self) -> User:
+    def _seed_default_user(self) -> User:
         existing = self._users.get(DEFAULT_USER_ID)
         if existing is not None:
             return existing

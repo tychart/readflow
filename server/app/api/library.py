@@ -87,7 +87,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def get_library(
         app_services: AppServices = Depends(services),
     ) -> LibraryResponse:
-        return library_response(app_services)
+        return await library_response(app_services)
 
     # ── folders and titles ─────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> FolderResponse:
         try:
-            folder = app_services.library.create_folder(request.name, request.parent_id)
+            folder = await app_services.library.create_folder(request.name, request.parent_id)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "folder_created")
@@ -112,7 +112,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         try:
             if request.name is None:
                 raise LibraryError("Nothing to update")
-            folder = app_services.library.rename_folder(folder_id, request.name)
+            folder = await app_services.library.rename_folder(folder_id, request.name)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "folder_updated")
@@ -127,11 +127,11 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         try:
             if request.title is None:
                 raise LibraryError("Nothing to update")
-            job = app_services.library.rename_job(job_id, request.title)
+            job = await app_services.library.rename_job(job_id, request.title)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "job_updated")
-        return job_summary_response(app_services, job.summary())
+        return await job_summary_response(app_services, job.summary())
 
     # ── ordering and bulk operations ────────────────────────────────────────
 
@@ -141,7 +141,9 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            app_services.library.reorder(request.parent_id, request.folder_ids, request.job_ids)
+            await app_services.library.reorder(
+                request.parent_id, request.folder_ids, request.job_ids
+            )
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "reordered")
@@ -152,7 +154,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            app_services.library.move(
+            await app_services.library.move(
                 [LibraryItem(kind=item.kind, id=item.id) for item in request.items],
                 request.folder_id,
             )
@@ -166,7 +168,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            app_services.library.delete(
+            await app_services.library.delete(
                 [LibraryItem(kind=item.kind, id=item.id) for item in request.items]
             )
         except (KeyError, LibraryError) as exc:
@@ -179,7 +181,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            app_services.library.delete_folder_only(folder_id)
+            await app_services.library.delete_folder_only(folder_id)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "deleted")
@@ -190,8 +192,8 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            job_ids = _job_ids_for_items(app_services, request.items)
-            app_services.progress.mark_many(job_ids, read=request.read)
+            job_ids = await _job_ids_for_items(app_services, request.items)
+            await app_services.progress.mark_many(job_ids, read=request.read)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         # Bulk selections can cover a whole folder; `library_changed` is the
@@ -204,7 +206,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def list_trash(
         app_services: AppServices = Depends(services),
     ) -> list[TrashEntryResponse]:
-        return [_trash_response(entry) for entry in app_services.library.list_trash()]
+        return [_trash_response(entry) for entry in await app_services.library.list_trash()]
 
     @router.post("/trash/restore", status_code=status.HTTP_204_NO_CONTENT)
     async def restore_trash(
@@ -212,7 +214,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            app_services.library.restore(request.entry_ids)
+            await app_services.library.restore(request.entry_ids)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "restored")
@@ -223,7 +225,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> None:
         try:
-            purged = app_services.library.purge(None if request.empty else request.entry_ids)
+            purged = await app_services.library.purge(None if request.empty else request.entry_ids)
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         for job_id in purged:
@@ -239,7 +241,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> ProgressUpdateResponse:
         try:
-            job, progress = app_services.progress.record(
+            job, progress = await app_services.progress.record(
                 job_id,
                 position_seconds=request.position_seconds,
                 is_playing=request.is_playing,
@@ -248,7 +250,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         except KeyError as exc:
             raise _http_error(exc) from exc
         await _broadcast_progress(app_services, [job_id])
-        return _progress_response(app_services, job, progress.position_seconds)
+        return await _progress_response(app_services, job, progress.position_seconds)
 
     @router.post("/jobs/{job_id}/read", response_model=ProgressUpdateResponse)
     async def update_job_read(
@@ -257,14 +259,14 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> ProgressUpdateResponse:
         try:
-            job, progress = app_services.progress.mark_job(
+            job, progress = await app_services.progress.mark_job(
                 job_id, read=request.read, from_chunk=request.from_chunk
             )
         except KeyError as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "read_state")
         await _broadcast_progress(app_services, [job_id])
-        return _progress_response(app_services, job, progress.position_seconds)
+        return await _progress_response(app_services, job, progress.position_seconds)
 
     @router.post(
         "/jobs/{job_id}/chunks/{chunk_index}/heard",
@@ -277,21 +279,21 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> ProgressUpdateResponse:
         try:
-            job, progress = app_services.progress.mark_chunk(
+            job, progress = await app_services.progress.mark_chunk(
                 job_id, chunk_index, heard=request.heard
             )
         except KeyError as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "read_state")
         await _broadcast_progress(app_services, [job_id])
-        return _progress_response(app_services, job, progress.position_seconds)
+        return await _progress_response(app_services, job, progress.position_seconds)
 
     return router
 
 
-def _job_ids_for_items(services: AppServices, items: list[ItemRef]) -> list[str]:
+async def _job_ids_for_items(services: AppServices, items: list[ItemRef]) -> list[str]:
     """Expand folder selections to their recursive jobs (bulk read)."""
-    snapshot = services.library.snapshot()
+    snapshot = await services.library.snapshot()
     folder_ids = {item.id for item in items if item.kind == "folder"}
     known_folders = {folder.id for folder in snapshot.folders}
     known_jobs = {job.id for job in snapshot.jobs}
@@ -308,10 +310,10 @@ def _job_ids_for_items(services: AppServices, items: list[ItemRef]) -> list[str]
     return sorted(job_ids)
 
 
-def _progress_response(
+async def _progress_response(
     services: AppServices, job: Job, position_seconds: float
 ) -> ProgressUpdateResponse:
-    view = services.progress.view(job)
+    view = await services.progress.view(job)
     return ProgressUpdateResponse(
         job_id=job.id,
         position_seconds=position_seconds,
@@ -322,8 +324,8 @@ def _progress_response(
 async def _broadcast_progress(services: AppServices, job_ids: list[str]) -> None:
     """Keep a second tab's rows fresh without re-sending chunk text."""
     for job_id in job_ids:
-        job = services.job_manager.get_job(job_id)
-        view = services.progress.view(job)
+        job = await services.job_manager.get_job(job_id)
+        view = await services.progress.view(job)
         await services.hub.broadcast(
             WsEnvelope(
                 type="job_progress",

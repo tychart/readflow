@@ -79,6 +79,10 @@ indent-style = "space"
 
 [tool.pyright]
 include = ["app", "tests"]
+# A forgotten `await` is otherwise a silent RuntimeWarning and a returned
+# coroutine that never runs. The storage seam is fully async, so this is a
+# correctness check, not a style rule.
+reportUnusedCoroutine = "error"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
