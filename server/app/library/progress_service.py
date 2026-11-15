@@ -90,8 +90,7 @@ class ProgressService:
                     progress.heard[index] = version
             progress.heard_seconds = heard_seconds(job, progress)
             progress.updated_at = now
-            if not created:
-                await uow.progress.save(progress)
+            await self._persist(uow, progress, created=created)
             await uow.jobs.save(job)
             return job, progress
 
@@ -149,8 +148,7 @@ class ProgressService:
                 progress.position_seconds = 0.0
         progress.heard_seconds = heard_seconds(job, progress)
         progress.updated_at = now
-        if not created:
-            await uow.progress.save(progress)
+        await self._persist(uow, progress, created=created)
         return progress
 
     async def mark_chunk(
@@ -172,29 +170,38 @@ class ProgressService:
                 progress.heard.pop(chunk_index, None)
             progress.heard_seconds = heard_seconds(job, progress)
             progress.updated_at = now
-            if not created:
-                await uow.progress.save(progress)
+            await self._persist(uow, progress, created=created)
             return job, progress
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
     async def _ensure(self, uow: UnitOfWork, job: Job) -> tuple[JobProgress, bool]:
-        """The job's progress row, inserted on first use.
+        """The job's progress row, without writing it yet.
 
-        Returns the row and whether it was just created, so a fresh row is only
-        `add`ed once and an existing one is only `save`d once.
+        Returns the row and whether it is new. The caller writes it **once at the
+        end**, after the marks are applied: `add()` persists the values it is
+        given, so mutating a row after an insert would be lost against a real
+        database (the in-memory adapter shares the instance and hides that).
         """
         progress = await uow.progress.get(self._user_id, job.id)
         if progress is not None:
             return progress, False
-        progress = JobProgress(
-            user_id=self._user_id,
-            job_id=job.id,
-            audio_epoch=job.audio_epoch,
-            updated_at=utc_now(),
+        return (
+            JobProgress(
+                user_id=self._user_id,
+                job_id=job.id,
+                audio_epoch=job.audio_epoch,
+                updated_at=utc_now(),
+            ),
+            True,
         )
-        await uow.progress.add(progress)
-        return progress, True
+
+    async def _persist(self, uow: UnitOfWork, progress: JobProgress, *, created: bool) -> None:
+        """Write a progress row exactly once (insert or update)."""
+        if created:
+            await uow.progress.add(progress)
+        else:
+            await uow.progress.save(progress)
 
     async def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
         job = await uow.jobs.get(self._user_id, job_id)

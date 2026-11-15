@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import cached_property
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -100,6 +100,17 @@ class Settings(BaseSettings):
 
     app_name: str = "ReadFlow"
     tts_provider: Literal["qwen", "fake"] = "qwen"
+    # Postgres connection string (psycopg3 async driver). Unset means "keep every
+    # row in process memory", which is the adapter tests and `dev.sh --memory`
+    # use. Selecting the adapter is this one setting; nothing above the storage
+    # seam knows which one it has.
+    #
+    # Both spellings work: `DATABASE_URL` is the conventional name compose,
+    # `scripts/dev.sh` and `alembic` use, and the READFLOW_ form stays consistent
+    # with every other setting.
+    database_url: Annotated[
+        str | None, Field(validation_alias=AliasChoices("READFLOW_DATABASE_URL", "DATABASE_URL"))
+    ] = None
     scheduler_autostart: bool = True
     voices_dir: str = "voices"
     temp_dir_name: str = "readflow"
@@ -114,6 +125,10 @@ class Settings(BaseSettings):
     # plenty of headroom while still bounding in-memory jobs.
     max_source_bytes: int = 64 * 1024 * 1024
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+
+    @property
+    def is_postgres(self) -> bool:
+        return bool(self.database_url)
 
     @cached_property
     def chunk_mime_type(self) -> str:

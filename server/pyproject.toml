@@ -15,6 +15,9 @@ dependencies = [
   # SQLAlchemy Core only (no ORM): app/db/schema.py is the metadata Alembic
   # autogenerates from, and the Postgres adapter issues Core statements.
   "sqlalchemy[asyncio]>=2.0",
+  # psycopg3 async driver for the Postgres adapter; alembic owns migrations.
+  "psycopg[binary]>=3.2",
+  "alembic>=1.13",
   # Pinned deliberately. PyPI torch 2.9 is a CUDA 12.8 build that matches the
   # nvidia/cuda:12.8 base images AND has a prebuilt flash-attn 2.8.3 wheel
   # (cu12torch2.9), so the container never has to compile flash-attn.
@@ -37,7 +40,9 @@ dev = [
   "pytest>=8.3.5",
   "pytest-asyncio>=0.26.0",
   "pytest-cov>=6.1.1",
-  "ruff>=0.11.8"
+  "ruff>=0.11.8",
+  # Property tests for the dirty-diff and planner invariants.
+  "hypothesis>=6.100"
 ]
 
 [build-system]

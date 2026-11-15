@@ -9,6 +9,7 @@ from app.core.hub import WebSocketHub
 from app.core.identity import DEFAULT_USER_ID
 from app.db.memory import MemoryDatabase
 from app.db.models import User
+from app.db.postgres import PostgresDatabase
 from app.db.protocols import Database
 from app.jobs.manager import JobManager
 from app.library.progress_service import ProgressService
@@ -56,7 +57,11 @@ async def build_services(
     touching every constructor.
     """
     if database is None:
-        database = MemoryDatabase()
+        # One setting decides the adapter: a URL means Postgres, no URL means
+        # in-memory (tests, `dev.sh --memory`).
+        database = (
+            PostgresDatabase(settings.database_url) if settings.database_url else MemoryDatabase()
+        )
     current_user = await database.get_user(DEFAULT_USER_ID)
     if current_user is None:  # pragma: no cover - the adapter seeds it
         raise RuntimeError("The database did not seed a default user")

@@ -37,7 +37,9 @@ test-fast:
 	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pytest --no-cov -q
 
 # ── Database ──────────────────────────────────
-# A local Postgres for development and the adapter contract suite. The dev
+# A local Postgres for development and the adapter contract suite. Postgres 18
+# expects its volume at /var/lib/postgresql (not .../data): the image puts the
+# data in a versioned subdirectory so pg_upgrade can work across majors.
 # database (`readflow`) and the throwaway test database (`readflow_test`) live
 # in one container and one named volume; nothing is published beyond loopback.
 PG_CONTAINER ?= readflow-dev-pg
@@ -71,7 +73,7 @@ db-up:
 	} || $(ENGINE) run -d --name $(PG_CONTAINER) \
 		-e POSTGRES_USER=$(PG_USER) -e POSTGRES_PASSWORD=$(PG_PASSWORD) \
 		-e POSTGRES_DB=readflow -e POSTGRES_INITDB_ARGS="--data-checksums" \
-		-v $(PG_VOLUME):/var/lib/postgresql/data \
+		-v $(PG_VOLUME):/var/lib/postgresql \
 		-p 127.0.0.1:$(PG_PORT):5432 $(PG_IMAGE) >/dev/null
 	@printf 'waiting for postgres'
 	@until $(ENGINE) exec $(PG_CONTAINER) pg_isready -U $(PG_USER) -d readflow >/dev/null 2>&1; do \

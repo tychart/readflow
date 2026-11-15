@@ -19,6 +19,9 @@ Semantics every adapter must provide
   a missing one.
 - **Explicit writes.** Reading an entity never writes. Mutations are declared
   with `save()` / `add()` / `delete()`, and `commit()` is the durability point.
+  `add()` persists the values it is given, so a row must be finished *before*
+  it is added: mutating it afterwards needs a `save()`, or a real database will
+  never see the change (the in-memory adapter shares the instance and hides it).
 - **Aggregate boundaries.** A `Job` is loaded and saved together with its
   `ChunkRecord` list. Chunks are append-only: a superseded take is marked
   `deprecated`, never deleted. The canonical source text lives in its own
