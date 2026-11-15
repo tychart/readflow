@@ -12,6 +12,11 @@
 # ReadFlow has no database — jobs, chunks and telemetry live in memory — so there
 # is nothing to migrate, and `stop`/`down` are the same thing.
 #
+# Configuration: `.env` in the repo root is sourced when it exists (the same file
+# compose and Vite read), so DEV_PROVIDER/DEV_WEB_HOST/HOST_URL and READFLOW_*
+# overrides can live there instead of on every command line. Switches below win
+# over the file, and the file wins over variables inherited from the shell.
+#
 # Usage:
 #   scripts/dev.sh [start]     start api + web, then follow logs. Ctrl-C stops both.
 #   scripts/dev.sh restart     stop a running stack, then start a fresh one
@@ -59,6 +64,19 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+# --- .env ----------------------------------------------------------------------
+# One local configuration file for the whole checkout: `.env` at the repo root is
+# also what compose and Vite read, so DEV_* settings, HOST_URL and READFLOW_*
+# overrides can all live there. Sourcing it means the file beats values inherited
+# from the shell, while the switches parsed below still beat both. `|| exit`
+# because a syntax error in the file would otherwise surface from `set -e` as a
+# bare "command not found" naming no file.
+if [[ -f $ROOT/.env ]]; then
+  set -a
+  . "$ROOT/.env" || { printf '  ✖ cannot read %s\n' "$ROOT/.env" >&2; exit 1; }
+  set +a
+fi
 
 LOG_DIR="$ROOT/.dev-logs"
 API_LOG="$LOG_DIR/api.log"

@@ -1952,8 +1952,17 @@ Design rules that are deliberate and easy to break:
   so the reader is usable from a phone with no extra setup, and the start/status boxes print
   the LAN URL whenever the bind is not loopback-only. The api keeps uvicorn's loopback
   default: LAN clients reach it *only* through Vite's `/api` proxy, so never "fix" LAN access
-  by binding uvicorn to `0.0.0.0`. Vite 6 already allows IP-address hosts; only a hostname
-  would need `server.allowedHosts`.
+  by binding uvicorn to `0.0.0.0`. Vite 6 already allows IP-address hosts; a *hostname*
+  (Caddy etc.) must be listed in `server.allowedHosts`, which `web/vite.config.ts` feeds from
+  `HOST_URL` in the gitignored repo-root `.env` — dev-only, nothing host-specific in git.
+- **`.env` is the one local config file.** The script sources `$ROOT/.env` (gitignored;
+  the same file compose and Vite read) with `set -a` before its defaults, so
+  `DEV_PROVIDER`/`DEV_WEB_HOST`/`HOST_URL`/`READFLOW_*` can live there instead of on each
+  command line. Precedence is switches → file → inherited shell: the file beats an inherited
+  variable, and `--fake`/`--real`/`--localhost` still beat the file (the provider is passed to
+  the api child explicitly, so a stale value cannot leak either way). Keep it sourced rather
+  than hand-parsed — that is what supports `export`, quotes and comments, and the failure is
+  reported with the file's own name instead of `set -e`'s bare "command not found".
 - **Never kill by pattern.** Only pids this script recorded are signalled, and each child is
   started with `setsid` so `kill -TERM -<pid>` reaches `uv run` *and* the `uvicorn --reload`
   child. Process groups are why `stop` cannot take out an unrelated dev server.

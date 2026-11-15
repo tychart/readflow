@@ -529,6 +529,21 @@ holding either port instead of guessing.
 what makes the reader usable from a phone. The API is *not* exposed directly — it keeps
 uvicorn's loopback default and LAN clients reach it only through Vite's `/api` proxy.
 
+To reach the dev server on a hostname (a reverse proxy such as Caddy), name it — Vite
+rejects any Host header it was not told about:
+
+```bash
+echo 'HOST_URL=readflow.example.com' >> .env   # repo root, gitignored
+```
+
+That file is shared: compose, `scripts/dev.sh` and Vite all read it, so
+`DEV_PROVIDER=fake`, `DEV_WEB_HOST` or `READFLOW_*` overrides can live there too instead
+of on every command line. Command-line switches win over the file.
+
+Then proxy the whole site to `http://<dev-machine>:5173`. Caddy's `reverse_proxy` upgrades
+WebSockets on its own, which is what keeps HMR working; `/api` stays on Vite's proxy, so no
+second upstream is needed.
+
 ## Testing
 
 The repo is set up so fast tests do not require the real Qwen model.

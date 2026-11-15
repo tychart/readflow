@@ -26,3 +26,6 @@ web/tsconfig.node.tsbuildinfo
 
 plans/
 .pi-subagents/
+
+# Local machine settings (compose overrides, dev HOST_URL, tokens).
+.env
