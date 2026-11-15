@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from app.core.services import AppServices
 from app.scheduler.service import SchedulerService
+from tests.conftest import Harness
 
 
 class CountingRepository:
@@ -59,7 +59,7 @@ class CountingUnitOfWork:
         await self._inner.rollback()
 
 
-def _count_calls(services: AppServices, monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
+def _count_calls(services: Harness, monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     """Count every repository call, whoever makes it.
 
     Wrapping `MemoryDatabase.transaction` rather than swapping `services.database`
@@ -77,11 +77,11 @@ def _count_calls(services: AppServices, monkeypatch: pytest.MonkeyPatch) -> Coun
     return counters
 
 
-async def _seed_jobs(services: AppServices, count: int) -> list[str]:
+async def _seed_jobs(services: Harness, count: int) -> list[str]:
     """Jobs with enough text that planning and rendering are non-trivial."""
     ids = []
     for index in range(count):
-        job = await services.job_manager.create_job(
+        job = await services.jobs.create_job(
             source_text=(f"Job {index} sentence number {index}. " * 40),
             source_kind="text",
             model_id=services.settings.runtime.default_model_id,
@@ -94,7 +94,7 @@ async def _seed_jobs(services: AppServices, count: int) -> list[str]:
 
 @pytest.mark.parametrize("job_count", [3, 10])
 async def test_a_tick_reads_the_job_table_a_constant_number_of_times(
-    services: AppServices, job_count: int, monkeypatch: pytest.MonkeyPatch
+    services: Harness, job_count: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A tick's reads must not scale with the library.
 
@@ -132,7 +132,7 @@ async def test_a_tick_reads_the_job_table_a_constant_number_of_times(
 
 @pytest.mark.parametrize("job_count", [3, 10])
 async def test_the_library_endpoint_does_not_scale_its_reads(
-    client: Any, services: AppServices, job_count: int, monkeypatch: pytest.MonkeyPatch
+    client: Any, services: Harness, job_count: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _seed_jobs(services, job_count)
     counting = _count_calls(services, monkeypatch)
@@ -150,7 +150,7 @@ async def test_the_library_endpoint_does_not_scale_its_reads(
 
 
 async def test_the_jobs_list_does_not_load_aggregates(
-    client: Any, services: AppServices, monkeypatch: pytest.MonkeyPatch
+    client: Any, services: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _seed_jobs(services, 5)
     counting = _count_calls(services, monkeypatch)
@@ -164,7 +164,7 @@ async def test_the_jobs_list_does_not_load_aggregates(
 
 
 async def test_the_reader_detail_is_a_bounded_number_of_reads(
-    client: Any, services: AppServices, monkeypatch: pytest.MonkeyPatch
+    client: Any, services: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job_ids = await _seed_jobs(services, 5)
     counting = _count_calls(services, monkeypatch)
@@ -181,10 +181,10 @@ async def test_the_reader_detail_is_a_bounded_number_of_reads(
 
 
 async def test_planning_a_job_reads_its_source_text_once_per_process(
-    services: AppServices, monkeypatch: pytest.MonkeyPatch
+    services: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The cache is the reason a book is not re-read on every tick."""
-    job = await services.job_manager.create_job(
+    job = await services.jobs.create_job(
         source_text="One sentence per chunk please. " * 400,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
@@ -197,15 +197,15 @@ async def test_planning_a_job_reads_its_source_text_once_per_process(
 
     # Planning keeps consuming the same document across ticks.
     assert counting["jobs.source_text_any"] == 1, counting
-    summaries = await services.job_manager.summaries_all()
+    summaries = await services.jobs.summaries_all()
     planned = next(summary for summary in summaries if summary.id == job.id)
     # The whole document was planned across those ticks, from one source read.
     assert planned.planner_cursor.exhausted
     assert planned.planner_cursor.chunks_emitted > 1
 
 
-async def test_deleting_a_job_forgets_its_cached_source(services: AppServices) -> None:
-    job = await services.job_manager.create_job(
+async def test_deleting_a_job_forgets_its_cached_source(services: Harness) -> None:
+    job = await services.jobs.create_job(
         source_text="Cache me. " * 50,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
@@ -219,12 +219,12 @@ async def test_deleting_a_job_forgets_its_cached_source(services: AppServices) -
     assert job.id not in services.scheduler._source_cache
 
 
-def _scheduler(services: AppServices) -> SchedulerService:
+def _scheduler(services: Harness) -> SchedulerService:
     return services.scheduler
 
 
 async def test_the_admin_queue_snapshot_is_the_only_heavy_read(
-    services: AppServices, monkeypatch: pytest.MonkeyPatch
+    services: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The inspector loads aggregates on purpose; it must stay admin-only."""
     await _seed_jobs(services, 3)
@@ -235,7 +235,7 @@ async def test_the_admin_queue_snapshot_is_the_only_heavy_read(
     assert snapshot.jobs
     # Documented exception: the queue inspector shows every chunk of every job,
     # which no summary can carry.
-    assert counting["jobs.list"] == 1
+    assert counting["jobs.list_all"] == 1
     assert counting["jobs.summaries_all"] <= 2
 
 

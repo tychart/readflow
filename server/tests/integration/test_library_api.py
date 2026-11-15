@@ -26,16 +26,16 @@ async def _create_folder(client, name: str, parent_id: str | None = None):
 async def _render_chunks(services, job_id: str, count: int = 2):
     for index in range(count):
         start = index * 5
-        chunk = await services.job_manager.add_planned_chunk(
+        chunk = await services.jobs.add_planned_chunk(
             job_id, ChunkPlan(text=f"chunk {index}", char_start=start, char_end=start + 5)
         )
-        await services.job_manager.mark_chunk_written(
+        await services.jobs.mark_chunk_written(
             chunk,
             duration_seconds=10.0,
             segment_path=f"/tmp/{index}.m4s",
             wav_path=f"/tmp/{index}.wav",
         )
-    await services.job_manager.finish_planning(job_id)
+    await services.jobs.finish_planning(job_id)
 
 
 @pytest.mark.asyncio

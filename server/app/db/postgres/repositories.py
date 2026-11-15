@@ -337,6 +337,12 @@ class PostgresJobRepository:
             query = query.where(schema.jobs.c.deleted_at.is_(None))
         return [job_summary_from_row(row) for row in _rows(await self._session.execute(query))]
 
+    async def list_all(self, *, include_deleted: bool = False) -> list[Job]:
+        query = sa.select(schema.jobs)
+        if not include_deleted:
+            query = query.where(schema.jobs.c.deleted_at.is_(None))
+        return await self._load_many(query)
+
     async def source_text(self, user_id: str, job_id: str) -> str:
         owned = (
             await self._session.execute(
@@ -368,6 +374,16 @@ class PostgresJobRepository:
         )
         self._identity.pop(job_id, None)
         self._snapshots.pop(job_id, None)
+
+    async def exists(self, user_id: str, job_id: str) -> bool:
+        result = await self._session.execute(
+            sa.select(schema.jobs.c.id).where(
+                schema.jobs.c.id == job_id,
+                schema.jobs.c.user_id == user_id,
+                schema.jobs.c.deleted_at.is_(None),
+            )
+        )
+        return result.scalar() is not None
 
     async def next_position(self, user_id: str, folder_id: str | None) -> int:
         query = sa.select(sa.func.max(schema.jobs.c.position)).where(

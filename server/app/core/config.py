@@ -124,6 +124,27 @@ class Settings(BaseSettings):
     # 64 MiB covers full-length books (War and Peace is ~3 MiB of text) with
     # plenty of headroom while still bounding in-memory jobs.
     max_source_bytes: int = 64 * 1024 * 1024
+    # ── Auth and sessions ──────────────────────────────────────────────────
+    # auto: Secure only when the request arrived over HTTPS (honours
+    # X-Forwarded-Proto). always/never force it, for odd proxy setups.
+    cookie_secure: Literal["auto", "always", "never"] = "auto"
+    # Extra origins allowed to make state-changing requests: comma separated
+    # scheme://host[:port]. The request's own Host is always allowed.
+    allowed_origins: str = ""
+    # Hostname the app is served on behind a reverse proxy (dev/proxy only). It
+    # is accepted as an `Origin` host alongside `allowed_origins`.
+    host_url: str = ""
+    # 30 days absolute, 7 days idle. A session that is used every day still
+    # expires a month after login, which bounds the damage of a stolen token.
+    session_absolute_seconds: float = 30 * 24 * 60 * 60
+    session_idle_seconds: float = 7 * 24 * 60 * 60
+    # Failed logins before a (client, username) pair is locked out, and the
+    # window those failures are counted in.
+    login_throttle_failures: int = 5
+    login_throttle_window_seconds: float = 300.0
+    # Registrations are admin-only regardless; this exists so a deployment can
+    # refuse account creation outright.
+    allow_registration: bool = False
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     @property

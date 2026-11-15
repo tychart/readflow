@@ -268,7 +268,7 @@ class SchedulerService:
         while not self._stop_event.is_set():
             memory = await self._probe_memory_stats()
             try:
-                await self._hub.broadcast(
+                await self._hub.broadcast_to_admins(
                     WsEnvelope(
                         type="memory_stats",
                         payload={"memory": memory.model_dump() if memory else None},
@@ -392,7 +392,7 @@ class SchedulerService:
         # The admin views render `model_state` from this event, so an automatic
         # unload/reset has to be announced the same way the Admin endpoints
         # announce a manual one.
-        await self._hub.broadcast(
+        await self._hub.broadcast_to_admins(
             WsEnvelope(
                 type="model_state", payload={"state": self._model_manager.state}
             ).model_dump()
@@ -412,7 +412,7 @@ class SchedulerService:
         summaries = await self._job_manager.summaries_all()
         rendering = await self._job_manager.rendering_chunks()
         active_batch = self._active_batch(rendering, summaries)
-        await self._hub.broadcast(
+        await self._hub.broadcast_to_admins(
             WsEnvelope(
                 type="scheduler_state",
                 payload={
@@ -482,10 +482,11 @@ class SchedulerService:
             self._config.active_listener_timeout_seconds, summaries=summaries
         )
         for job in expired:
-            await self._hub.broadcast(
+            await self._hub.send_to_user(
+                job.user_id,
                 WsEnvelope(
                     type="job_updated", payload={"job": job_to_summary(job).model_dump()}
-                ).model_dump()
+                ).model_dump(),
             )
         return expired
 
@@ -908,7 +909,8 @@ class SchedulerService:
             # changed. Sending `job_to_detail` here meant re-serializing the whole
             # source text and every chunk record on each event: for a book that is
             # O(chunks x book size) of WebSocket traffic.
-            await self._hub.broadcast(
+            await self._hub.send_to_user(
+                job.user_id,
                 WsEnvelope(
                     type=message_type,
                     payload={
@@ -918,7 +920,7 @@ class SchedulerService:
                         "mime_type": self._chunk_mime_type,
                         "init_segment_url": f"/api/jobs/{job.id}/chunks/init",
                     },
-                ).model_dump()
+                ).model_dump(),
             )
 
         # The worker shrinks a batch when it hits an OOM and retries. Any chunk

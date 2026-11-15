@@ -136,9 +136,25 @@ class JobRepository(Protocol):
         """Next append position among the folder's live job children."""
         ...
 
+    async def exists(self, user_id: str, job_id: str) -> bool:
+        """True when this user owns a live job with this id.
+
+        The media routes need ownership without the aggregate: a segment fetch
+        must not load a book's chunk list just to authorise it.
+        """
+        ...
+
     # ── system scope (scheduler only; never reachable from a handler) ───────
 
     async def summaries_all(self, *, include_deleted: bool = False) -> list[JobSummary]: ...
+
+    async def list_all(self, *, include_deleted: bool = False) -> list[Job]:
+        """Every job aggregate, for the admin queue inspector only.
+
+        The one intentionally heavy system-scope read: it needs each job's full
+        chunk history, which no summary can carry.
+        """
+        ...
 
     async def get_any(self, job_id: str, *, include_deleted: bool = False) -> Job | None: ...
 

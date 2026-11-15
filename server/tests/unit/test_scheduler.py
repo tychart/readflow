@@ -14,26 +14,26 @@ async def _ranked(services):
 
 
 async def test_scheduler_prioritizes_active_listening_jobs_and_writes_media(services):
-    active = await services.job_manager.create_job(
+    active = await services.jobs.create_job(
         source_text="This active job should get rendered first. " * 8,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Active",
     )
-    passive = await services.job_manager.create_job(
+    passive = await services.jobs.create_job(
         source_text="This passive job can wait a bit. " * 8,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="howard",
         title="Passive",
     )
-    await services.job_manager.activate_job(active.id)
+    await services.jobs.activate_job(active.id)
 
     await services.scheduler.run_once()
 
-    active_after = await services.job_manager.get_job(active.id)
-    passive_after = await services.job_manager.get_job(passive.id)
+    active_after = await services.jobs.get_job(active.id)
+    passive_after = await services.jobs.get_job(passive.id)
 
     assert active_after.total_chunks_completed >= 1
     assert passive_after.total_chunks_completed == 0
@@ -42,14 +42,14 @@ async def test_scheduler_prioritizes_active_listening_jobs_and_writes_media(serv
 
 
 async def test_scheduler_reduces_batch_size_when_memory_is_high(services):
-    job = await services.job_manager.create_job(
+    job = await services.jobs.create_job(
         source_text=("alpha beta gamma delta. " * 80).strip(),
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="Large batch",
     )
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.vram_soft_limit_mb = 1
 
     async def fake_memory_stats():
@@ -75,22 +75,22 @@ async def test_scheduler_reduces_batch_size_when_memory_is_high(services):
 
 
 async def test_scheduler_batches_one_voice_at_a_time(services):
-    first = await services.job_manager.create_job(
+    first = await services.jobs.create_job(
         source_text="Short first job. " * 12,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="First",
     )
-    second = await services.job_manager.create_job(
+    second = await services.jobs.create_job(
         source_text="Short second job. " * 12,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="howard",
         title="Second",
     )
-    await services.job_manager.activate_job(first.id)
-    await services.job_manager.activate_job(second.id)
+    await services.jobs.activate_job(first.id)
+    await services.jobs.activate_job(second.id)
     services.settings.runtime.batch_candidates_small_model = [2, 1]
 
     captured_batches: list[list[str]] = []
@@ -122,7 +122,7 @@ async def test_scheduler_batches_one_voice_at_a_time(services):
 
 
 async def _create_job(services, *, title: str, voice_id: str = "suzy"):
-    return await services.job_manager.create_job(
+    return await services.jobs.create_job(
         source_text="Sentence one. Sentence two. Sentence three. " * 4,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
@@ -136,7 +136,7 @@ LARGE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 
 async def _create_model_job(services, *, title: str, model_id: str, voice_id: str = "suzy"):
-    return await services.job_manager.create_job(
+    return await services.jobs.create_job(
         source_text="Sentence one. Sentence two. Sentence three. " * 4,
         source_kind="text",
         model_id=model_id,
@@ -157,7 +157,7 @@ def _mark_model_resident(services, model_id: str, *, batches: int, voice_id: str
 
 async def _add_chunk(services, job, text: str):
     """Append one hand-made chunk (its span is irrelevant to these tests)."""
-    return await services.job_manager.add_planned_chunk(
+    return await services.jobs.add_planned_chunk(
         job.id,
         ChunkPlan(text=text, char_start=0, char_end=len(text)),
     )
@@ -182,13 +182,13 @@ async def test_priority_band_matrix(services):
     for active_listening, buffered, paused, expected in cases:
         job = await _create_job(services, title=f"band-{active_listening}-{buffered}-{paused}")
         if active_listening:
-            await services.job_manager.activate_job(job.id)
-        job = await services.job_manager.get_job(job.id)
+            await services.jobs.activate_job(job.id)
+        job = await services.jobs.get_job(job.id)
         job.is_active_listening = active_listening
         job.buffered_seconds = buffered
         if paused:
-            await services.job_manager.pause_job(job.id)
-        job = await services.job_manager.get_job(job.id)
+            await services.jobs.pause_job(job.id)
+        job = await services.jobs.get_job(job.id)
         assert services.scheduler._priority_band(job) == expected, (
             active_listening,
             buffered,
@@ -266,13 +266,13 @@ async def test_priority_info_labels_and_reasons(services):
     job = await _create_job(services, title="labels")
     chunk = await _add_chunk(services, job, "some text")
 
-    current = await services.job_manager.get_job(job.id)
+    current = await services.jobs.get_job(job.id)
     band, label, reason = services.scheduler._priority_info(current, chunk)
     assert (band, label) == (2, "Background")
     assert "no active listener" in reason
 
-    await services.job_manager.activate_job(job.id)
-    current = await services.job_manager.get_job(job.id)
+    await services.jobs.activate_job(job.id)
+    current = await services.jobs.get_job(job.id)
     current.buffered_seconds = 100.0
     band, label, reason = services.scheduler._priority_info(current, chunk)
     assert (band, label) == (1, "Filling")
@@ -289,8 +289,8 @@ async def test_priority_info_labels_and_reasons(services):
     assert (band, label) == (0, "Urgent")
     assert "3.5s buffered" in reason
 
-    await services.job_manager.pause_job(job.id)
-    current = await services.job_manager.get_job(job.id)
+    await services.jobs.pause_job(job.id)
+    current = await services.jobs.get_job(job.id)
     band, label, reason = services.scheduler._priority_info(current, chunk)
     assert (band, label) == (99, "Paused")
     assert "excluded" in reason
@@ -318,8 +318,8 @@ async def test_pending_chunks_for_inspection_filters_unschedulable(services):
     deprecated.deprecated = True
 
     result = services.scheduler._pending_chunks_for_inspection(
-        await services.job_manager.list_jobs(),
-        await services.job_manager.summaries_all(),
+        await services.jobs.list_jobs(),
+        await services.jobs.summaries_all(),
     )
     assert {id(chunk) for chunk in result} == {id(planned), id(queued), id(rendering)}
     assert id(old_plan) not in {id(chunk) for chunk in result}
@@ -328,8 +328,8 @@ async def test_pending_chunks_for_inspection_filters_unschedulable(services):
 async def test_pending_chunks_for_inspection_orders_by_priority(services):
     active = await _create_job(services, title="active")
     queued = await _create_job(services, title="queued", voice_id="howard")
-    await services.job_manager.activate_job(active.id)
-    _stored = await services.job_manager.get_job(active.id)
+    await services.jobs.activate_job(active.id)
+    _stored = await services.jobs.get_job(active.id)
     _stored.buffered_seconds = 0.0
 
     active_a = await _add_chunk(services, active, "aaa")
@@ -337,8 +337,8 @@ async def test_pending_chunks_for_inspection_orders_by_priority(services):
     queued_a = await _add_chunk(services, queued, "cccc")
 
     result = services.scheduler._pending_chunks_for_inspection(
-        await services.job_manager.list_jobs(),
-        await services.job_manager.summaries_all(),
+        await services.jobs.list_jobs(),
+        await services.jobs.summaries_all(),
     )
     assert result == [active_a, active_b, queued_a]
 
@@ -348,8 +348,8 @@ async def test_active_batch_is_none_when_idle(services):
     await _add_chunk(services, job, "idle chunk")
     assert (
         services.scheduler._active_batch(
-            await services.job_manager.rendering_chunks(),
-            await services.job_manager.summaries_all(),
+            await services.jobs.rendering_chunks(),
+            await services.jobs.summaries_all(),
         )
         is None
     )
@@ -360,14 +360,14 @@ async def test_active_batch_groups_rendering_chunks(services):
 
     job = await _create_job(services, title="rendering")
     chunks = [await _add_chunk(services, job, f"chunk {index}") for index in range(3)]
-    job = await services.job_manager.get_job(job.id)
+    job = await services.jobs.get_job(job.id)
     for chunk, updated_at in zip(chunks, (100.0, 102.0, 104.0), strict=True):
         chunk.status = ChunkStatus.RENDERING
         chunk.updated_at = updated_at
 
     batch = services.scheduler._active_batch(
-        await services.job_manager.rendering_chunks(),
-        await services.job_manager.summaries_all(),
+        await services.jobs.rendering_chunks(),
+        await services.jobs.summaries_all(),
     )
     assert batch is not None
     assert batch.chunk_count == 3
@@ -381,8 +381,8 @@ async def test_active_batch_groups_rendering_chunks(services):
 async def test_queue_snapshot_ranks_are_contiguous_and_priority_ordered(services):
     active = await _create_job(services, title="snapshot active")
     queued = await _create_job(services, title="snapshot queued", voice_id="howard")
-    await services.job_manager.activate_job(active.id)
-    _stored = await services.job_manager.get_job(active.id)
+    await services.jobs.activate_job(active.id)
+    _stored = await services.jobs.get_job(active.id)
     _stored.buffered_seconds = 0.0
 
     await _add_chunk(services, active, "active one")
@@ -423,7 +423,7 @@ async def test_queue_snapshot_includes_text_and_estimated_duration(services):
 async def test_queue_snapshot_lists_version_history(services):
     job = await _create_job(services, title="snapshot versions")
     await _add_chunk(services, job, "original text")
-    await services.job_manager.add_versioned_chunk(
+    await services.jobs.add_versioned_chunk(
         job.id,
         text="revised text",
         char_start=0,
@@ -463,13 +463,13 @@ async def test_queue_snapshot_queue_depth_matches_manager(services):
     await _add_chunk(services, job, "two")
 
     snapshot = await services.scheduler.queue_snapshot()
-    assert snapshot.queue_depth == await services.job_manager.queue_depth() == 2
+    assert snapshot.queue_depth == await services.jobs.queue_depth() == 2
 
 
 async def test_scheduler_broadcasts_active_batch_at_batch_start(services):
     job = await _create_job(services, title="broadcast")
-    await services.job_manager.activate_job(job.id)
-    _stored = await services.job_manager.get_job(job.id)
+    await services.jobs.activate_job(job.id)
+    _stored = await services.jobs.get_job(job.id)
     _stored.buffered_seconds = 0.0
 
     captured: list[dict] = []
@@ -489,7 +489,7 @@ async def test_scheduler_broadcasts_active_batch_at_batch_start(services):
             for chunk in chunks
         ]
 
-    services.hub.broadcast = capture
+    services.hub.broadcast_to_admins = capture
     services.worker.render_batch = noop_render
 
     await services.scheduler.run_once()
@@ -534,7 +534,7 @@ async def test_scheduler_requeues_chunks_dropped_by_partial_batch(services):
     services.worker.render_batch = partial_render
     await services.scheduler.run_once()
 
-    statuses = [chunk.status for chunk in (await services.job_manager.get_job(job.id)).chunks]
+    statuses = [chunk.status for chunk in (await services.jobs.get_job(job.id)).chunks]
     assert statuses == [ChunkStatus.WRITTEN, ChunkStatus.WRITTEN, ChunkStatus.PLANNED]
 
 
@@ -565,8 +565,8 @@ async def test_queue_snapshot_only_returns_schedulable_statuses(services):
     written = await _add_chunk(services, job, "written")
     # Go through the manager rather than poking `status` directly: the stored
     # rollups are the queue depth, and only the manager writes them.
-    await services.job_manager.mark_chunk_rendering(rendering)
-    await services.job_manager.mark_chunk_written(
+    await services.jobs.mark_chunk_rendering(rendering)
+    await services.jobs.mark_chunk_written(
         written,
         duration_seconds=1.0,
         segment_path="/tmp/1.m4s",
@@ -669,7 +669,7 @@ async def test_queue_snapshot_truncates_large_jobs_but_keeps_pending(services, m
 async def test_plan_ahead_window_controls_planning(services):
     from app.jobs.models import ChunkStatus
 
-    job = await services.job_manager.create_job(
+    job = await services.jobs.create_job(
         source_text="A sufficiently long sentence for planning. " * 200,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
@@ -678,14 +678,14 @@ async def test_plan_ahead_window_controls_planning(services):
     )
     services.settings.runtime.plan_ahead_chunks = 3
 
-    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
+    await services.scheduler._ensure_planned_chunks(await services.jobs.summaries_all())
 
     planned = [chunk for chunk in job.chunks if chunk.status == ChunkStatus.PLANNED]
     assert len(planned) == 3
 
 
 async def _long_planning_job(services, *, title: str):
-    return await services.job_manager.create_job(
+    return await services.jobs.create_job(
         source_text="A sufficiently long sentence for planning. " * 200,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
@@ -697,7 +697,7 @@ async def _long_planning_job(services, *, title: str):
 async def _planned_count(services, job_id: str) -> int:
     from app.jobs.models import ChunkStatus
 
-    job = await services.job_manager.get_job(job_id)
+    job = await services.jobs.get_job(job_id)
     return sum(1 for chunk in job.chunks if chunk.status == ChunkStatus.PLANNED)
 
 
@@ -709,38 +709,38 @@ async def test_comfortable_buffer_does_not_stop_planning(services):
     idle until the listener caught up (or, for a closed tab, forever).
     """
     job = await _long_planning_job(services, title="render past the buffer")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.plan_ahead_chunks = 3
-    _stored = await services.job_manager.get_job(job.id)
+    _stored = await services.jobs.get_job(job.id)
     _stored.buffered_seconds = 10_000.0
 
-    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
+    await services.scheduler._ensure_planned_chunks(await services.jobs.summaries_all())
 
     assert await _planned_count(services, job.id) == 3
 
 
 async def test_render_ahead_cap_is_opt_in_and_render_to_end_overrides_it(services):
     job = await _long_planning_job(services, title="lookahead cap")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.plan_ahead_chunks = 3
     services.settings.runtime.render_ahead_seconds = 300
-    _stored = await services.job_manager.get_job(job.id)
+    _stored = await services.jobs.get_job(job.id)
     _stored.buffered_seconds = 400.0
 
-    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
+    await services.scheduler._ensure_planned_chunks(await services.jobs.summaries_all())
     assert await _planned_count(services, job.id) == 0
 
-    await services.job_manager.set_render_to_end(job.id)
-    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
+    await services.jobs.set_render_to_end(job.id)
+    await services.scheduler._ensure_planned_chunks(await services.jobs.summaries_all())
     assert await _planned_count(services, job.id) == 3
 
 
 async def test_pause_still_stops_planning_even_when_render_to_end_is_set(services):
     job = await _long_planning_job(services, title="paused wins")
-    await services.job_manager.set_render_to_end(job.id)
-    await services.job_manager.pause_job(job.id)
+    await services.jobs.set_render_to_end(job.id)
+    await services.jobs.pause_job(job.id)
 
-    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
+    await services.scheduler._ensure_planned_chunks(await services.jobs.summaries_all())
 
     assert await _planned_count(services, job.id) == 0
 
@@ -750,20 +750,20 @@ async def test_paused_job_does_not_dispatch_its_planned_chunks(services):
     from app.jobs.models import ChunkStatus
 
     job = await _long_planning_job(services, title="pause holds")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     await services.scheduler.run_once()
 
-    await services.job_manager.pause_job(job.id)
+    await services.jobs.pause_job(job.id)
     written_before = sum(
         1
-        for chunk in (await services.job_manager.get_job(job.id)).chunks
+        for chunk in (await services.jobs.get_job(job.id)).chunks
         if chunk.status == ChunkStatus.WRITTEN
     )
 
     for _ in range(3):
         await services.scheduler.run_once()
 
-    current = await services.job_manager.get_job(job.id)
+    current = await services.jobs.get_job(job.id)
     written_after = sum(1 for chunk in current.chunks if chunk.status == ChunkStatus.WRITTEN)
     assert written_after == written_before
     assert current.status == JobStatus.PAUSED
@@ -772,13 +772,13 @@ async def test_paused_job_does_not_dispatch_its_planned_chunks(services):
 async def test_stale_listener_expires_back_to_background_priority(services):
     """A closed tab used to keep its job in the urgent band forever."""
     job = await _long_planning_job(services, title="closed tab")
-    await services.job_manager.activate_job(job.id)
-    current = await services.job_manager.get_job(job.id)
+    await services.jobs.activate_job(job.id)
+    current = await services.jobs.get_job(job.id)
     current.playback_state.last_event_at = time() - 120.0
 
     await services.scheduler.run_once()
 
-    current = await services.job_manager.get_job(job.id)
+    current = await services.jobs.get_job(job.id)
     assert current.is_active_listening is False
     assert current.status == JobStatus.QUEUED
     assert services.scheduler._priority_band(current) == 2
@@ -786,15 +786,15 @@ async def test_stale_listener_expires_back_to_background_priority(services):
 
 async def test_playback_report_reactivates_an_expired_listener(services):
     job = await _long_planning_job(services, title="came back")
-    await services.job_manager.activate_job(job.id)
-    _stored = await services.job_manager.get_job(job.id)
+    await services.jobs.activate_job(job.id)
+    _stored = await services.jobs.get_job(job.id)
     _stored.playback_state.last_event_at = time() - 120.0
     await services.scheduler.run_once()
-    assert (await services.job_manager.get_job(job.id)).is_active_listening is False
+    assert (await services.jobs.get_job(job.id)).is_active_listening is False
 
     await services.progress.record(job.id, position_seconds=5.0, is_playing=True)
 
-    current = await services.job_manager.get_job(job.id)
+    current = await services.jobs.get_job(job.id)
     assert current.is_active_listening is True
     assert current.status == JobStatus.PLAYING
     assert services.scheduler._priority_band(current) == 0
@@ -806,7 +806,7 @@ async def test_buffer_seconds_use_job_timeline_coordinates(services):
     job = await _create_job(services, title="coordinates")
     for index in range(3):
         chunk = await _add_chunk(services, job, f"chunk {index}")
-        await services.job_manager.mark_chunk_written(
+        await services.jobs.mark_chunk_written(
             chunk,
             duration_seconds=10.0,
             segment_path=f"/tmp/{index}.m4s",
@@ -815,7 +815,7 @@ async def test_buffer_seconds_use_job_timeline_coordinates(services):
 
     await services.progress.record(job.id, position_seconds=25.0, is_playing=True)
 
-    current = await services.job_manager.get_job(job.id)
+    current = await services.jobs.get_job(job.id)
     assert current.buffered_seconds == 5.0
     assert current.completed_seconds == 25.0
 
@@ -847,7 +847,7 @@ async def test_batch_failure_retries_within_budget_then_skips_chunk(services):
 
     job = await _create_job(services, title="retry budget")
     services.settings.runtime.batch_candidates_small_model = [1]
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
 
     async def always_fails(model_id, batch):
         raise RuntimeError("ffmpeg exploded")
@@ -855,7 +855,7 @@ async def test_batch_failure_retries_within_budget_then_skips_chunk(services):
     services.worker.render_batch = always_fails  # type: ignore[method-assign]
 
     await services.scheduler.run_once()
-    chunk = (await services.job_manager.get_job(job.id)).chunks[0]
+    chunk = (await services.jobs.get_job(job.id)).chunks[0]
     assert chunk.status == ChunkStatus.PLANNED
     assert chunk.attempts == 1
 
@@ -866,7 +866,7 @@ async def test_batch_failure_retries_within_budget_then_skips_chunk(services):
     # Third failure exhausts the budget: only the chunk is abandoned.
     await services.scheduler.run_once()
     assert chunk.status == ChunkStatus.FAILED
-    assert (await services.job_manager.get_job(job.id)).status != "failed"
+    assert (await services.jobs.get_job(job.id)).status != "failed"
 
 
 async def test_synthesis_timeout_flags_model_error_and_pauses_dispatch(services):
@@ -874,7 +874,7 @@ async def test_synthesis_timeout_flags_model_error_and_pauses_dispatch(services)
     from app.jobs.models import ChunkStatus, ModelState
 
     job = await _create_job(services, title="timeout")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.synthesis_timeout_seconds = 0.01
     calls = {"count": 0}
 
@@ -889,7 +889,7 @@ async def test_synthesis_timeout_flags_model_error_and_pauses_dispatch(services)
 
     assert services.model_manager.state == ModelState.ERROR
     assert services.model_manager.last_error is not None
-    chunk = (await services.job_manager.get_job(job.id)).chunks[0]
+    chunk = (await services.jobs.get_job(job.id)).chunks[0]
     assert chunk.status == ChunkStatus.PLANNED
     assert chunk.attempts == 1
 
@@ -906,7 +906,7 @@ async def test_synthesis_timeout_flags_model_error_and_pauses_dispatch(services)
 
 
 async def _long_job(services, *, title: str, voice_id: str = "suzy"):
-    return await services.job_manager.create_job(
+    return await services.jobs.create_job(
         source_text="A sufficiently long sentence for planning. " * 200,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
@@ -952,7 +952,7 @@ async def test_same_priority_jobs_get_equal_turns(services):
     await _long_job(services, title="job B")
     services.settings.runtime.plan_ahead_chunks = 3
 
-    await services.scheduler._ensure_planned_chunks(await services.job_manager.summaries_all())
+    await services.scheduler._ensure_planned_chunks(await services.jobs.summaries_all())
     ranked, _jobs_by_id = await _ranked(services)
 
     indices = [chunk.index for chunk in ranked]
@@ -1000,7 +1000,7 @@ def test_batch_size_uses_measured_per_chunk_cost_against_soft_limit(services):
 async def test_scheduler_learns_per_chunk_vram_cost(services):
     job = await _create_job(services, title="vram learn")
     await _add_chunk(services, job, "manual chunk")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.batch_candidates_small_model = [2]
 
     async def fake_memory_stats():
@@ -1040,7 +1040,7 @@ async def test_scheduler_learns_per_chunk_vram_cost(services):
 
 async def test_hard_vram_limit_pauses_dispatch_and_warns_once(services):
     job = await _create_job(services, title="hard limit")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.vram_hard_limit_mb = 100
 
     async def over_hard_limit():
@@ -1082,7 +1082,7 @@ async def test_hard_vram_limit_pauses_dispatch_and_warns_once(services):
     ]
     assert len(warnings) == 1
     # The scheduler is still alive and the queue still holds the work.
-    assert await services.job_manager.queue_depth() >= 1
+    assert await services.jobs.queue_depth() >= 1
 
 
 async def test_idle_unload_is_skipped_while_work_is_pending(services):
@@ -1124,7 +1124,7 @@ async def test_run_once_keeps_model_loaded_while_work_is_pending(services):
     await services.scheduler.run_once()
 
     assert services.model_manager.state == ModelState.WARM_IDLE
-    assert await services.job_manager.queue_depth() >= 1
+    assert await services.jobs.queue_depth() >= 1
 
 
 async def test_oom_halves_the_batch_until_it_fits(services):
@@ -1133,48 +1133,48 @@ async def test_oom_halves_the_batch_until_it_fits(services):
     The worker must keep shrinking (not just once) so an 8-chunk batch still
     renders, and the chunks it dropped must be requeued rather than stuck.
     """
-    job = await services.job_manager.create_job(
+    job = await services.jobs.create_job(
         source_text="A sentence long enough for a chunk. " * 300,
         source_kind="text",
         model_id=services.settings.runtime.default_model_id,
         voice_id="suzy",
         title="oom shrink",
     )
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.plan_ahead_chunks = 16
     services.settings.runtime.batch_candidates_small_model = [8]
 
     await services.scheduler.run_once()
 
-    assert 0 < (await services.job_manager.get_job(job.id)).total_chunks_completed < 8
+    assert 0 < (await services.jobs.get_job(job.id)).total_chunks_completed < 8
     assert services.telemetry.snapshot()["oom_count"] >= 1
-    assert await services.job_manager.queue_depth() >= 1
+    assert await services.jobs.queue_depth() >= 1
 
 
 async def test_filling_listener_outranks_background_work(services):
     """A listener inside the 60s..300s window is band 1; background is band 2."""
     listener = await _create_job(services, title="filling listener")
     background = await _create_job(services, title="background", voice_id="howard")
-    await services.job_manager.activate_job(listener.id)
+    await services.jobs.activate_job(listener.id)
 
-    listener = await services.job_manager.get_job(listener.id)
+    listener = await services.jobs.get_job(listener.id)
     listener.buffered_seconds = 100.0
 
     assert services.scheduler._priority_band(listener) == 1
-    assert services.scheduler._priority_band(await services.job_manager.get_job(background.id)) == 2
+    assert services.scheduler._priority_band(await services.jobs.get_job(background.id)) == 2
 
 
 async def test_fully_buffered_listener_shares_band_with_background(services):
     """At/above the comfortable buffer the listener drops into the background band."""
     listener = await _create_job(services, title="fully buffered listener")
     background = await _create_job(services, title="background two", voice_id="howard")
-    await services.job_manager.activate_job(listener.id)
+    await services.jobs.activate_job(listener.id)
 
-    listener = await services.job_manager.get_job(listener.id)
+    listener = await services.jobs.get_job(listener.id)
     listener.buffered_seconds = 1000.0
 
     assert services.scheduler._priority_band(listener) == 2
-    assert services.scheduler._priority_band(await services.job_manager.get_job(background.id)) == 2
+    assert services.scheduler._priority_band(await services.jobs.get_job(background.id)) == 2
 
 
 # ── Model / voice residency ─────────────────────────────────────────
@@ -1216,8 +1216,8 @@ async def test_urgent_listener_on_another_model_preempts_at_boundary(services):
     large = await _create_model_job(services, title="large", model_id=LARGE_MODEL)
     await _add_chunk(services, small, "a")
     await _add_chunk(services, large, "b")
-    await services.job_manager.activate_job(large.id)
-    _stored = await services.job_manager.get_job(large.id)
+    await services.jobs.activate_job(large.id)
+    _stored = await services.jobs.get_job(large.id)
     _stored.buffered_seconds = 0.0
     _mark_model_resident(
         services, SMALL_MODEL, batches=services.settings.runtime.model_residency_batches
@@ -1236,8 +1236,8 @@ async def test_urgent_listener_waits_until_the_rotation_window(services):
     large = await _create_model_job(services, title="large", model_id=LARGE_MODEL)
     await _add_chunk(services, small, "a")
     await _add_chunk(services, large, "b")
-    await services.job_manager.activate_job(large.id)
-    _stored = await services.job_manager.get_job(large.id)
+    await services.jobs.activate_job(large.id)
+    _stored = await services.jobs.get_job(large.id)
     _stored.buffered_seconds = 0.0
     _mark_model_resident(services, SMALL_MODEL, batches=1)
 
@@ -1253,8 +1253,8 @@ async def test_resident_urgent_listener_keeps_the_gpu(services):
     large = await _create_model_job(services, title="large", model_id=LARGE_MODEL)
     await _add_chunk(services, small, "a")
     await _add_chunk(services, large, "b")
-    await services.job_manager.activate_job(small.id)
-    _stored = await services.job_manager.get_job(small.id)
+    await services.jobs.activate_job(small.id)
+    _stored = await services.jobs.get_job(small.id)
     _stored.buffered_seconds = 0.0
     _mark_model_resident(services, SMALL_MODEL, batches=1)
 
@@ -1301,7 +1301,7 @@ def test_residency_snapshot_clears_when_model_is_unloaded(services):
 
 async def test_missing_gpu_counters_pause_dispatch_and_recovery_resumes_it(services, monkeypatch):
     job = await _create_job(services, title="memory query failure")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     snapshot = MemoryStats(
         device="cuda:0",
         ram_total_mb=32000,
@@ -1395,7 +1395,7 @@ async def test_reclaimable_allocator_pool_does_not_pause_dispatch(services):
     allocated. The scheduler must keep dispatching.
     """
     job = await _create_job(services, title="cache above hard limit")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.vram_hard_limit_mb = 11000
     services.model_manager.memory_stats = _returning_stats(_live_vram_stats())  # type: ignore[method-assign]
 
@@ -1444,7 +1444,7 @@ def test_batch_size_is_bounded_by_real_headroom(services):
 async def test_dispatch_skips_the_tick_when_the_memory_probe_hangs(services):
     """An unbounded probe would freeze the whole scheduling loop."""
     job = await _create_job(services, title="probe hangs")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
 
     async def hangs() -> MemoryStats:
         await asyncio.sleep(60)
@@ -1457,13 +1457,13 @@ async def test_dispatch_skips_the_tick_when_the_memory_probe_hangs(services):
 
     assert services.scheduler._warning is not None
     assert "memory statistics unavailable" in services.scheduler._warning.lower()
-    assert await services.job_manager.queue_depth() >= 1
+    assert await services.jobs.queue_depth() >= 1
 
 
 async def test_blocked_dispatch_unloads_the_model_after_the_stall_window(services):
     """The deadlock breaker: give the VRAM back, then let the next tick reload."""
     job = await _create_job(services, title="stall recovery")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.vram_hard_limit_mb = 100
     services.settings.runtime.dispatch_stall_seconds = 0.01
     services.model_manager.memory_stats = _returning_stats(  # type: ignore[method-assign]
@@ -1503,7 +1503,7 @@ async def test_blocked_dispatch_unloads_the_model_after_the_stall_window(service
 async def test_recovery_backs_off_before_trying_again(services):
     """Unloading and reloading a model is expensive; do not thrash it."""
     job = await _create_job(services, title="backoff")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.vram_hard_limit_mb = 100
     services.settings.runtime.dispatch_stall_seconds = 50.0
     services.model_manager.memory_stats = _returning_stats(  # type: ignore[method-assign]
@@ -1539,7 +1539,7 @@ async def test_recovery_backs_off_before_trying_again(services):
 async def test_errored_provider_is_reset_automatically(services):
     """A timed-out call must not need a human click to recover."""
     job = await _create_job(services, title="errored provider")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.dispatch_stall_seconds = 50.0
     services.model_manager.mark_error("Synthesis timed out after 300s")
 
@@ -1571,7 +1571,7 @@ async def test_errored_provider_with_nothing_queued_is_left_alone(services):
 
 async def test_a_dispatched_batch_clears_the_stall_clock(services):
     job = await _create_job(services, title="stall clock")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.dispatch_stall_seconds = 50.0
     services.settings.runtime.vram_hard_limit_mb = 100
     services.model_manager.memory_stats = _returning_stats(  # type: ignore[method-assign]
@@ -1600,7 +1600,7 @@ async def test_a_model_that_cannot_load_does_not_burn_chunk_attempts(services):
     from app.synthesis.provider import ModelVRAMError
 
     job = await _create_job(services, title="no vram")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.batch_candidates_small_model = [1]
 
     async def no_vram(model_id, batch):
@@ -1611,10 +1611,10 @@ async def test_a_model_that_cannot_load_does_not_burn_chunk_attempts(services):
     for _ in range(3):
         await services.scheduler.run_once()
 
-    chunk = (await services.job_manager.get_job(job.id)).chunks[0]
+    chunk = (await services.jobs.get_job(job.id)).chunks[0]
     assert chunk.status == ChunkStatus.PLANNED
     assert chunk.attempts == 0
-    assert (await services.job_manager.get_job(job.id)).status != "rendering"
+    assert (await services.jobs.get_job(job.id)).status != "rendering"
     assert services.scheduler._blocked_since is not None
     assert "not enough vram" in (services.scheduler._warning or "").lower()
 
@@ -1626,7 +1626,7 @@ async def test_a_jittering_warning_records_one_event_per_cause(services):
     tick while blocked, which flushed the rest of the admin event log.
     """
     job = await _create_job(services, title="jittering warning")
-    await services.job_manager.activate_job(job.id)
+    await services.jobs.activate_job(job.id)
     services.settings.runtime.vram_hard_limit_mb = 5000
     readings = iter(range(5300, 5400))
 

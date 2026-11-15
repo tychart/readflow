@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
@@ -14,10 +14,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
 from starlette.websockets import WebSocketDisconnect
 
+from app.api.deps import current_admin, session_token, user_services
 from app.api.library import build_library_router
 from app.api.mappers import job_detail_response, job_summaries_response
 from app.core.config import RuntimeConfig
 from app.core.services import AppServices
+from app.core.user_services import UserServices, build_user_services
+from app.db.models import User
 from app.jobs.models import JobStatus
 from app.media.download_formats import (
     DEFAULT_DOWNLOAD_FORMAT,
@@ -184,9 +187,7 @@ async def _resolve_job_source_text(form: FormData, *, max_source_bytes: int) -> 
     return text, "text"
 
 
-async def handle_socket_message(
-    app_services: AppServices, message: str
-) -> dict[str, object] | None:
+async def handle_socket_message(user: UserServices, message: str) -> dict[str, object] | None:
     """Apply one client WebSocket message, returning an optional reply.
 
     Extracted from the endpoint so the message handlers are testable without a
@@ -211,7 +212,7 @@ async def handle_socket_message(
                 # One command owns a playback report: it folds the position into
                 # the job (scheduler buffering) and the heard marks into progress,
                 # in one transaction. The HTTP /progress route calls the same one.
-                await app_services.progress.record(
+                await user.progress.record(
                     str(job_id),
                     position_seconds=float(payload.get("current_time_seconds", 0.0)),
                     is_playing=bool(payload.get("is_playing", True)),
@@ -219,6 +220,17 @@ async def handle_socket_message(
             except KeyError:
                 pass  # stale job id, ignore silently
     return None
+
+
+async def _require_owned(user: UserServices, job_id: str) -> None:
+    """404 unless the caller owns the job.
+
+    Media URLs are fetched by the browser's media stack, so they cannot carry a
+    CSRF token; the session cookie plus this ownership check is what makes them
+    safe. It is a single indexed lookup, not an aggregate load.
+    """
+    if not await user.jobs.owns(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
 
 
 def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
@@ -256,12 +268,10 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         return sanitized[:80] or "readflow-job"
 
     @router.get("/jobs", response_model=list[JobSummaryResponse])
-    async def list_jobs(app_services: AppServices = Depends(services)) -> list[JobSummaryResponse]:
+    async def list_jobs(user: UserServices = Depends(user_services)) -> list[JobSummaryResponse]:
         # Summaries, not aggregates: the list shows status and derived progress,
         # so it must not materialise every chunk (or the source text) per job.
-        return await job_summaries_response(
-            app_services, await app_services.job_manager.summaries()
-        )
+        return await job_summaries_response(user, await user.jobs.summaries())
 
     @router.post(
         "/jobs",
@@ -271,6 +281,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def create_job(
         request: Request,
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> CreateJobResponse:
         max_source_bytes = app_services.settings.max_source_bytes
         form = await _read_job_form(request, max_source_bytes)
@@ -290,7 +301,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         )
         _reject_unsupported_model(selected_model)
         try:
-            job = await app_services.job_manager.create_job(
+            job = await user.jobs.create_job(
                 source_text=payload_text,
                 source_kind=source_kind,
                 model_id=selected_model,
@@ -302,7 +313,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = await job_detail_response(app_services, job)
+        detail = await job_detail_response(user, job)
         # Streamed job payloads carry the summary only. `source_text` is static
         # per job and is fetched over HTTP, so broadcasting it (megabytes for a
         # book) on every job event would be pure overhead.
@@ -310,26 +321,28 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             type="job_created", payload={"job": job_to_summary(job.summary()).model_dump()}
         )
         app_services.telemetry.record_event("job_created", {"job_id": job.id})
-        await app_services.hub.broadcast(envelope.model_dump())
+        await app_services.hub.send_to_user(job.user_id, envelope.model_dump())
         return CreateJobResponse(job=detail)
 
     @router.get("/jobs/{job_id}", response_model=JobDetailResponse)
     async def get_job(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobDetailResponse:
         try:
-            return await job_detail_response(
-                app_services, await app_services.job_manager.get_job(job_id)
-            )
+            return await job_detail_response(user, await user.jobs.get_job(job_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get("/jobs/{job_id}/manifest", response_model=JobManifestResponse)
     async def get_manifest(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobManifestResponse:
         try:
-            job = await app_services.job_manager.get_job(job_id)
+            job = await user.jobs.get_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         init_path = app_services.media_store.init_segment_path(job_id)
@@ -349,10 +362,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         chunk_index: int,
         request: ChunkReprocessRequest,
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobDetailResponse:
         """Reprocess a specific chunk, optionally with new text/voice."""
         try:
-            job = await app_services.job_manager.get_job(job_id)
+            job = await user.jobs.get_job(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Job not found") from None
 
@@ -372,7 +386,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
         # `add_versioned_chunk` also revives a completed/failed job: a reprocess
         # is real work the reader has to be told about.
-        job = await app_services.job_manager.add_versioned_chunk(
+        job = await user.jobs.add_versioned_chunk(
             job_id,
             text=text,
             char_start=chunk.char_start,
@@ -381,9 +395,10 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             parent_index=chunk_index,
         )
 
-        detail = await job_detail_response(app_services, job)
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+        detail = await job_detail_response(user, job)
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump(),
         )
         return JobDetailResponse(**detail.model_dump())
 
@@ -396,17 +411,16 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         chunk_index: int,
         request: ChunkVersionRequest,
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobDetailResponse:
         """Set the active version for a chunk index."""
         try:
-            job = await app_services.job_manager.get_job(job_id)
+            job = await user.jobs.get_job(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Job not found") from None
 
         try:
-            job = await app_services.job_manager.set_active_chunk_version(
-                job_id, chunk_index, request.version
-            )
+            job = await user.jobs.set_active_chunk_version(job_id, chunk_index, request.version)
         except KeyError:
             # The manager refuses a version it does not have; that used to be
             # stored as-is and left the reader on the wrong take.
@@ -414,16 +428,20 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                 status_code=404, detail=f"No version {request.version} for chunk {chunk_index}"
             ) from None
 
-        detail = await job_detail_response(app_services, job)
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+        detail = await job_detail_response(user, job)
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump(),
         )
         return JobDetailResponse(**detail.model_dump())
 
     @router.get("/jobs/{job_id}/chunks/init")
     async def get_init_segment(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> FileResponse:
+        await _require_owned(user, job_id)
         path = app_services.media_store.init_segment_path(job_id)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Init segment not ready")
@@ -435,6 +453,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         chunk_index: int,
         v: int = Query(default=0, ge=0),
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> FileResponse:
         """Serve one chunk take.
 
@@ -443,6 +462,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         switching the active take has to serve that take's audio (ignoring the
         parameter served whichever file happened to share the index).
         """
+        await _require_owned(user, job_id)
         path = app_services.media_store.segment_path(job_id, chunk_index, v)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Chunk not ready")
@@ -454,7 +474,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         chunk_index: int,
         v: int = Query(default=0, ge=0),
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> FileResponse:
+        await _require_owned(user, job_id)
         path = app_services.media_store.peaks_path(job_id, chunk_index, v)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Chunk peaks not ready")
@@ -467,13 +489,14 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             default=DEFAULT_DOWNLOAD_FORMAT, alias="format"
         ),
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> FileResponse:
         try:
-            job = await app_services.job_manager.get_job(job_id)
+            job = await user.jobs.get_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        wav_paths = await app_services.job_manager.exportable_wav_paths(job)
+        wav_paths = await user.jobs.exportable_wav_paths(job)
         if not wav_paths:
             raise HTTPException(status_code=409, detail="No contiguous rendered audio is ready")
 
@@ -500,43 +523,52 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
     @router.post("/jobs/{job_id}/activate", response_model=JobSummaryResponse)
     async def activate_job(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobSummaryResponse:
         try:
-            job = await app_services.job_manager.activate_job(job_id)
+            job = await user.jobs.activate_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump(),
         )
         return summary
 
     @router.post("/jobs/{job_id}/pause", response_model=JobSummaryResponse)
     async def pause_job(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobSummaryResponse:
         try:
-            job = await app_services.job_manager.pause_job(job_id)
+            job = await user.jobs.pause_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump(),
         )
         return summary
 
     @router.post("/jobs/{job_id}/resume", response_model=JobSummaryResponse)
     async def resume_job(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobSummaryResponse:
         try:
-            job = await app_services.job_manager.resume_job(job_id)
+            job = await user.jobs.resume_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump(),
         )
         return summary
 
@@ -545,20 +577,22 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str,
         request: RenderToEndRequest | None = None,
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobSummaryResponse:
         """Lift the scheduler's lookahead cap for one job ("render the rest now").
 
         Pausing still stops rendering; this only ignores `render_ahead_seconds`.
         """
         try:
-            job = await app_services.job_manager.set_render_to_end(
+            job = await user.jobs.set_render_to_end(
                 job_id, True if request is None else request.enabled
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summary = job_to_summary(job.summary())
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump(),
         )
         return summary
 
@@ -567,6 +601,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         job_id: str,
         request: UpdateVoiceRequest,
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> JobDetailResponse:
         """Change the voice for chunks that are still pending.
 
@@ -576,27 +611,36 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         """
         try:
             app_services.voice_registry.get_voice(request.voice_id)
-            job = await app_services.job_manager.set_voice(
+            job = await user.jobs.set_voice(
                 job_id, request.voice_id, rerender_written=request.rerender_written
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        detail = await job_detail_response(app_services, job)
-        await app_services.hub.broadcast(
-            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
+        detail = await job_detail_response(user, job)
+        await app_services.hub.send_to_user(
+            job.user_id,
+            WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump(),
         )
         return detail
 
     @router.delete("/jobs/{job_id}", status_code=204)
-    async def delete_job(job_id: str, app_services: AppServices = Depends(services)) -> None:
-        await app_services.job_manager.delete_job(job_id)
+    async def delete_job(
+        job_id: str,
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
+    ) -> None:
+        await user.jobs.delete_job(job_id)
         app_services.media_store.remove_job(job_id)
         # The scheduler caches canonical source text per job; a deleted job must
         # not leave its text behind.
         app_services.scheduler.forget_source(job_id)
 
     @router.get("/voices", response_model=list[VoiceResponse])
-    async def list_voices(app_services: AppServices = Depends(services)) -> list[VoiceResponse]:
+    async def list_voices(
+        app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
+    ) -> list[VoiceResponse]:
+        del user
         return [
             VoiceResponse(
                 id=voice.id, display_name=voice.display_name, description=voice.description
@@ -607,19 +651,21 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     @router.get("/preferences", response_model=UserPreferencesResponse)
     async def get_preferences(
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> UserPreferencesResponse:
         """The user's remembered create-job model/voice.
 
         `null` fields mean nothing has been chosen yet, so the create form falls
         back to the resident (GPU) model/voice and then the app defaults.
         """
-        preferences = await app_services.preferences.get()
+        preferences = await user.preferences.get()
         return UserPreferencesResponse(model_id=preferences.model_id, voice_id=preferences.voice_id)
 
     @router.put("/preferences", response_model=UserPreferencesResponse)
     async def update_preferences(
         request: UserPreferencesUpdateRequest,
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> UserPreferencesResponse:
         """Remember the model/voice just picked, so the next job starts there."""
         _reject_unsupported_model(request.model_id)
@@ -627,7 +673,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             app_services.voice_registry.get_voice(request.voice_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        preferences = await app_services.preferences.remember(
+        preferences = await user.preferences.remember(
             model_id=request.model_id, voice_id=request.voice_id
         )
         return UserPreferencesResponse(model_id=preferences.model_id, voice_id=preferences.voice_id)
@@ -635,6 +681,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     @router.get("/status", response_model=RuntimeStatusResponse)
     async def get_runtime_status(
         app_services: AppServices = Depends(services),
+        user: UserServices = Depends(user_services),
     ) -> RuntimeStatusResponse:
         """Public snapshot of what the GPU is committed to.
 
@@ -654,6 +701,8 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     @router.get("/admin/config", response_model=AdminConfigResponse)
     async def get_admin_config(
         app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
+        user: UserServices = Depends(user_services),
     ) -> AdminConfigResponse:
         return admin_config_response(app_services)
 
@@ -661,6 +710,8 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     async def update_admin_config(
         request: AdminConfigUpdateRequest,
         app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
+        user: UserServices = Depends(user_services),
     ) -> AdminConfigResponse:
         runtime = app_services.settings.runtime
         updates = request.model_dump(exclude_none=True)
@@ -687,7 +738,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             if field_name == "device":
                 app_services.model_manager.set_device(str(value))
         config = admin_config_response(app_services)
-        await app_services.hub.broadcast(
+        await app_services.hub.broadcast_to_admins(
             WsEnvelope(type="admin_config_updated", payload=config.model_dump()).model_dump()
         )
         return config
@@ -695,7 +746,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     @router.get("/admin/queue", response_model=AdminQueueResponse)
     async def get_admin_queue(
         app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
     ) -> AdminQueueResponse:
+        del admin
         """Return the live synthesis queue for the admin inspector.
 
         Ordering, priority bands, and the predicted next batch come from the
@@ -710,14 +763,20 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         return await app_services.scheduler.queue_snapshot()
 
     @router.get("/admin/state", response_model=AdminStateResponse)
-    async def get_admin_state(app_services: AppServices = Depends(services)) -> AdminStateResponse:
+    async def get_admin_state(
+        app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
+    ) -> AdminStateResponse:
+        del admin
         config = admin_config_response(app_services)
+        # Admin views describe the whole machine, so they read the scheduler's
+        # system scope; they still never return chunk or source text.
         scheduler = SchedulerStateResponse(
-            queue_depth=await app_services.job_manager.queue_depth(),
+            queue_depth=await app_services.scheduler_jobs.queue_depth(),
             batch_candidates=app_services.settings.runtime.batch_candidates_small_model,
             active_batch=app_services.scheduler.active_batch(
-                await app_services.job_manager.rendering_chunks(),
-                await app_services.job_manager.summaries_all(),
+                await app_services.scheduler_jobs.rendering_chunks(),
+                await app_services.scheduler_jobs.summaries_all(),
             ),
             vram_per_chunk_mb=app_services.scheduler.vram_per_chunk_mb,
             **app_services.scheduler.residency_snapshot(),
@@ -736,7 +795,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         )
 
     @router.post("/admin/model/warm", response_model=dict[str, str])
-    async def warm_model(app_services: AppServices = Depends(services)) -> dict[str, str]:
+    async def warm_model(
+        app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
+    ) -> dict[str, str]:
+        del admin
         timeout = app_services.settings.runtime.model_load_timeout_seconds
         try:
             # Bounded like the scheduler's load path: a hung load must not hang
@@ -749,20 +812,20 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             )
         except TimeoutError as exc:
             app_services.model_manager.mark_error(f"Model load timed out after {timeout:.0f}s")
-            await app_services.hub.broadcast(
+            await app_services.hub.broadcast_to_admins(
                 WsEnvelope(
                     type="model_state", payload={"state": app_services.model_manager.state}
                 ).model_dump()
             )
             raise HTTPException(status_code=504, detail="Model load timed out") from exc
         except ModelVRAMError as exc:
-            await app_services.hub.broadcast(
+            await app_services.hub.broadcast_to_admins(
                 WsEnvelope(
                     type="model_state", payload={"state": app_services.model_manager.state}
                 ).model_dump()
             )
             raise HTTPException(status_code=507, detail=str(exc)) from exc
-        await app_services.hub.broadcast(
+        await app_services.hub.broadcast_to_admins(
             WsEnvelope(
                 type="model_state", payload={"state": app_services.model_manager.state}
             ).model_dump()
@@ -770,9 +833,13 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         return {"status": "warm"}
 
     @router.post("/admin/model/evict", response_model=dict[str, str])
-    async def evict_model(app_services: AppServices = Depends(services)) -> dict[str, str]:
+    async def evict_model(
+        app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
+    ) -> dict[str, str]:
+        del admin
         await app_services.model_manager.unload()
-        await app_services.hub.broadcast(
+        await app_services.hub.broadcast_to_admins(
             WsEnvelope(
                 type="model_state", payload={"state": app_services.model_manager.state}
             ).model_dump()
@@ -780,7 +847,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         return {"status": "evicted"}
 
     @router.post("/admin/model/reset", response_model=dict[str, str])
-    async def reset_model(app_services: AppServices = Depends(services)) -> dict[str, str]:
+    async def reset_model(
+        app_services: AppServices = Depends(services),
+        admin: User = Depends(current_admin),
+    ) -> dict[str, str]:
+        del admin
         """Recover from an errored or hung provider without a server restart.
 
         This is the manual escape hatch for the circuit breaker: when a load or
@@ -789,7 +860,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         cached model state, then broadcasts the new (unloaded) state.
         """
         await app_services.model_manager.reset_provider()
-        await app_services.hub.broadcast(
+        await app_services.hub.broadcast_to_admins(
             WsEnvelope(
                 type="model_state", payload={"state": app_services.model_manager.state}
             ).model_dump()
@@ -799,16 +870,27 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     @router.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         app_services = get_services()
-        await app_services.hub.connect(websocket)
+        # The handshake is authenticated from the session cookie, exactly like an
+        # HTTP request. An unauthenticated socket is closed with 1008 (policy
+        # violation) before the client can subscribe to anything.
+        resolved = await app_services.auth.resolve(session_token(websocket))
+        if resolved is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        user = build_user_services(app_services, resolved.user)
+        await app_services.hub.connect(
+            websocket, user_id=resolved.user.id, is_admin=resolved.user.is_admin
+        )
         try:
-            await websocket.send_text(
-                json.dumps(
-                    WsEnvelope(
-                        type="telemetry",
-                        payload={"telemetry": app_services.telemetry.snapshot()},
-                    ).model_dump()
+            if resolved.user.is_admin:
+                await websocket.send_text(
+                    json.dumps(
+                        WsEnvelope(
+                            type="telemetry",
+                            payload={"telemetry": app_services.telemetry.snapshot()},
+                        ).model_dump()
+                    )
                 )
-            )
             while True:
                 try:
                     message = await websocket.receive_text()
@@ -820,7 +902,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                     await websocket.send_text(json.dumps({"type": "pong", "payload": {}}))
                     continue
 
-                reply = await handle_socket_message(app_services, message)
+                reply = await handle_socket_message(user, message)
                 if reply is not None:
                     await websocket.send_text(json.dumps(reply))
         finally:

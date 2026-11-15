@@ -50,14 +50,37 @@ class JobManager:
     the queries are already per-user.
     """
 
-    def __init__(self, database: Database, *, user_id: str = DEFAULT_USER_ID) -> None:
+    def __init__(self, database: Database, *, user_id: str | None = DEFAULT_USER_ID) -> None:
         self._db = database
+        # `None` means system scope: the scheduler, which serves every user's
+        # jobs because one GPU does. A request handler is never constructed with
+        # None (see `app.core.user_services`).
         self._user_id = user_id
+
+    @property
+    def _owner(self) -> str:
+        """The user this manager is bound to, for user-scoped operations.
+
+        Raises for the system-scoped manager, so a scheduler path that tries to
+        create or delete an owner's job fails loudly instead of writing a row
+        with a null owner.
+        """
+        if self._user_id is None:
+            raise RuntimeError("This operation needs a user-scoped JobManager")
+        return self._user_id
 
     # ── reads ───────────────────────────────────────────────────────────────
 
+    async def _load_job(
+        self, uow: UnitOfWork, job_id: str, *, include_deleted: bool = False
+    ) -> Job | None:
+        """Load a job in this manager's scope (system scope sees every user)."""
+        if self._user_id is None:
+            return await uow.jobs.get_any(job_id, include_deleted=include_deleted)
+        return await uow.jobs.get(self._user_id, job_id, include_deleted=include_deleted)
+
     async def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
-        job = await uow.jobs.get(self._user_id, job_id)
+        job = await self._load_job(uow, job_id)
         if job is None:
             raise KeyError(f"Unknown job '{job_id}'")
         return job
@@ -69,7 +92,7 @@ class JobManager:
         back; writing its audio keeps a restored job consistent. A purged job is
         genuinely gone and still raises.
         """
-        job = await uow.jobs.get(self._user_id, job_id, include_deleted=True)
+        job = await self._load_job(uow, job_id, include_deleted=True)
         if job is None:
             raise KeyError(f"Unknown job '{job_id}'")
         return job
@@ -91,13 +114,23 @@ class JobManager:
 
     async def list_jobs(self) -> list[Job]:
         async with self._db.transaction() as uow:
-            jobs = await uow.jobs.list(self._user_id)
+            if self._user_id is None:
+                jobs = await uow.jobs.list_all()
+            else:
+                jobs = await uow.jobs.list(self._user_id)
         return sorted(jobs, key=lambda job: job.submitted_at, reverse=True)
 
-    async def summaries(self) -> list[JobSummary]:
-        """Flat projections of every live job, without chunks or source text."""
+    async def list_all_jobs(self) -> list[Job]:
+        """Every job aggregate, system scope (admin queue inspector only)."""
         async with self._db.transaction() as uow:
-            return await uow.jobs.summaries(self._user_id)
+            return await uow.jobs.list_all()
+
+    async def summaries(self) -> list[JobSummary]:
+        """Flat projections of this scope's live jobs, without chunks or text."""
+        async with self._db.transaction() as uow:
+            if self._user_id is None:
+                return await uow.jobs.summaries_all()
+            return await uow.jobs.summaries(self._owner)
 
     # ── system scope (scheduler only; never reachable from a handler) ───────
 
@@ -127,6 +160,13 @@ class JobManager:
         async with self._db.transaction() as uow:
             return await uow.jobs.source_text_any(job_id)
 
+    async def owns(self, job_id: str) -> bool:
+        """True when this scope can see the job. A cheap media-route guard."""
+        async with self._db.transaction() as uow:
+            if self._user_id is None:
+                return await uow.jobs.get_any(job_id) is not None
+            return await uow.jobs.exists(self._owner, job_id)
+
     async def get_job(self, job_id: str) -> Job:
         async with self._db.transaction() as uow:
             return await self._require_job(uow, job_id)
@@ -134,7 +174,7 @@ class JobManager:
     async def source_text(self, job_id: str) -> str:
         """The canonical (already normalized) source text of one job."""
         async with self._db.transaction() as uow:
-            return await uow.jobs.source_text(self._user_id, job_id)
+            return await uow.jobs.source_text(self._owner, job_id)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -150,10 +190,12 @@ class JobManager:
         folder_id: str | None = None,
     ) -> Job:
         """Create a job, appended to the end of its folder's manual order."""
+        if self._user_id is None:
+            raise RuntimeError("A job needs an owner; create it in user scope")
         normalized_text = normalize_source_text(source_text)
         now = utc_now()
         async with self._db.transaction() as uow:
-            if folder_id is not None and await uow.folders.get(self._user_id, folder_id) is None:
+            if folder_id is not None and await uow.folders.get(self._owner, folder_id) is None:
                 raise KeyError(f"Unknown folder '{folder_id}'")
             job = Job(
                 id=str(uuid4()),
@@ -165,7 +207,7 @@ class JobManager:
                 language=language,
                 user_id=self._user_id,
                 folder_id=folder_id,
-                position=await uow.jobs.next_position(self._user_id, folder_id),
+                position=await uow.jobs.next_position(self._owner, folder_id),
                 submitted_at=now,
                 updated_at=now,
             )
@@ -176,7 +218,7 @@ class JobManager:
 
     async def delete_job(self, job_id: str) -> None:
         async with self._db.transaction() as uow:
-            await uow.jobs.delete(self._user_id, job_id)
+            await uow.jobs.delete(self._owner, job_id)
 
     async def activate_job(self, job_id: str) -> Job:
         """Record that someone is listening to this job.
@@ -257,7 +299,7 @@ class JobManager:
             if now - summary.playback_state.last_event_at <= timeout_seconds:
                 continue
             async with self._db.transaction() as uow:
-                job = await uow.jobs.get(self._user_id, summary.id)
+                job = await self._load_job(uow, summary.id)
                 if job is None:
                     continue
                 job.is_active_listening = False

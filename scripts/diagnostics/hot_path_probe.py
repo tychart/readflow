@@ -47,6 +47,8 @@ if str(SERVER_DIR) not in sys.path:
 from app.core.config import RuntimeConfig, Settings  # noqa: E402
 from app.core.services import AppServices, build_services  # noqa: E402
 from app.db.memory import MemoryDatabase  # noqa: E402
+from app.core.identity import DEFAULT_USER_ID  # noqa: E402
+from app.jobs.manager import JobManager  # noqa: E402
 from app.jobs.models import ChunkRecord, Job, JobSummary  # noqa: E402
 
 # Rough per-chunk bookkeeping cost (ids, paths, timestamps, status). Kept
@@ -142,8 +144,7 @@ class CountingRepository:
             return sum(job_bytes(job) for job in result or ())
         if method in _CHUNK_LIST_METHODS:
             return sum(
-                len(chunk.text.encode("utf-8")) + CHUNK_OVERHEAD_BYTES
-                for chunk in result or ()
+                len(chunk.text.encode("utf-8")) + CHUNK_OVERHEAD_BYTES for chunk in result or ()
             )
         if method in {"summaries", "summaries_all"}:
             return sum(summary_bytes(summary) for summary in result or ())
@@ -209,8 +210,10 @@ async def build_fixture(
 
     text = "The quick brown fox jumps over the lazy dog. " * (source_chars // 45 + 1)
     text = text[:source_chars]
+    # The probe acts as one user (the seeded in-memory account).
+    user_jobs = JobManager(counting, user_id=DEFAULT_USER_ID)
     for index in range(job_count):
-        await services.job_manager.create_job(
+        await user_jobs.create_job(
             source_text=f"Probe job {index}\n\n{text}",
             source_kind="text",
             model_id=settings.runtime.default_model_id,

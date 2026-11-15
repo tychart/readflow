@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.core.services import AppServices
+from app.core.user_services import UserServices
 from app.jobs.models import Job, JobSummary
 from app.library.playback import (
     next_job_in_folder,
@@ -35,26 +35,26 @@ from app.schemas.library import (
 )
 
 
-async def job_summary_response(services: AppServices, job: JobSummary) -> JobSummaryResponse:
+async def job_summary_response(services: UserServices, job: JobSummary) -> JobSummaryResponse:
     return job_to_summary(job, progress=await services.progress.view(job))
 
 
 async def job_summaries_response(
-    services: AppServices, jobs: Iterable[JobSummary]
+    services: UserServices, jobs: Iterable[JobSummary]
 ) -> list[JobSummaryResponse]:
     jobs = list(jobs)
     views = await services.progress.views(jobs)
     return [job_to_summary(job, progress=views.get(job.id)) for job in jobs]
 
 
-async def job_detail_response(services: AppServices, job: Job) -> JobDetailResponse:
+async def job_detail_response(services: UserServices, job: Job) -> JobDetailResponse:
     """One job's full reader payload, including its canonical source text.
 
     This is the only read that materialises the source text, and it is the only
     one that needs folder neighbours; both are fetched here so the route stays a
     translator.
     """
-    siblings = await services.job_manager.summaries()
+    siblings = await services.jobs.summaries()
     path = await services.library.folder_path(job.folder_id)
     previous = previous_job_in_folder(siblings, job)
     following = next_job_in_folder(siblings, job)
@@ -65,7 +65,7 @@ async def job_detail_response(services: AppServices, job: Job) -> JobDetailRespo
     )
     return job_to_detail(
         job,
-        source_text=await services.job_manager.source_text(job.id),
+        source_text=await services.jobs.source_text(job.id),
         progress=await services.progress.view(job),
         folder_path=[FolderBriefResponse(id=folder.id, name=folder.name) for folder in path],
         previous_job_id=previous.id if previous is not None else None,
@@ -78,13 +78,13 @@ async def job_detail_response(services: AppServices, job: Job) -> JobDetailRespo
 
 
 async def library_job_response(
-    services: AppServices, job: JobSummary, views: dict[str, ProgressView]
+    services: UserServices, job: JobSummary, views: dict[str, ProgressView]
 ) -> LibraryJobResponse:
     summary = job_to_summary(job, progress=views.get(job.id))
     return LibraryJobResponse(**summary.model_dump(), position=job.position)
 
 
-async def library_response(services: AppServices) -> LibraryResponse:
+async def library_response(services: UserServices) -> LibraryResponse:
     """One consistent snapshot for the library page.
 
     Folder counts and progress are computed here, not in React: the aggregate

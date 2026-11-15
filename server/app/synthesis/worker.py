@@ -54,7 +54,7 @@ class SynthesisWorker:
         self._hub = hub
 
     async def _broadcast_model_state(self) -> None:
-        await self._hub.broadcast(
+        await self._hub.broadcast_to_admins(
             WsEnvelope(
                 type="model_state",
                 payload={"state": self._model_manager.state},

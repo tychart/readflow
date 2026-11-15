@@ -31,8 +31,10 @@ from app.users.preferences import UserPreferencesService
 
 SERVICES = (JobManager, LibraryService, ProgressService, UserPreferencesService)
 
-# Routes that are deliberately not part of the API surface.
-PUBLIC_ROUTES = {"/health", "/api/ws"}
+# Trivial accessors that do no I/O and have nothing to await. Everything else
+# must be a coroutine: a sync dependency would run in a threadpool and cannot
+# await the (fully async) storage seam.
+SYNC_DEPENDENCIES = {"get_app_services"}
 
 
 def _public_functions(owner: type) -> list[tuple[str, object]]:
@@ -61,8 +63,9 @@ def test_every_route_dependency_is_a_coroutine() -> None:
     def walk(dependant) -> list[str]:
         found = []
         for dependency in dependant.dependencies:
-            if not inspect.iscoroutinefunction(dependency.call):
-                found.append(getattr(dependency.call, "__name__", repr(dependency.call)))
+            name = getattr(dependency.call, "__name__", repr(dependency.call))
+            if not inspect.iscoroutinefunction(dependency.call) and name not in SYNC_DEPENDENCIES:
+                found.append(name)
             found.extend(walk(dependency))
         return found
 

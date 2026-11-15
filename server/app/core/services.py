@@ -3,17 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.auth.service import AuthService
+from app.auth.throttle import LoginThrottle
 from app.chunking.planner import ChunkPlanner
 from app.core.config import Settings
 from app.core.hub import WebSocketHub
-from app.core.identity import DEFAULT_USER_ID
 from app.db.memory import MemoryDatabase
-from app.db.models import User
 from app.db.postgres import PostgresDatabase
 from app.db.protocols import Database
 from app.jobs.manager import JobManager
-from app.library.progress_service import ProgressService
-from app.library.service import LibraryService
 from app.media.store import MediaStore
 from app.scheduler.service import SchedulerService
 from app.scheduler.source_cache import SourceTextCache
@@ -21,21 +19,27 @@ from app.synthesis.model_manager import ModelManager
 from app.synthesis.provider import FakeQwenProvider, QwenProvider, SynthesisProvider
 from app.synthesis.worker import SynthesisWorker
 from app.telemetry.service import TelemetryService
-from app.users.preferences import UserPreferencesService
 from app.voices.registry import VoiceRegistry
 
 
 @dataclass(slots=True)
 class AppServices:
+    """The process-wide, system-scoped service graph.
+
+    There is deliberately no `job_manager`/`library`/`progress` here: those are
+    per-user scopes, built per request by `app.core.user_services`. What lives
+    here is what one machine owns — the database, the scheduler, the GPU, the
+    files, the event hub — plus `scheduler_jobs` and `auth`, which are
+    system-scoped by nature.
+    """
+
     settings: Settings
     # Storage seam. Services depend on the protocol, never on the in-memory
     # implementation, so a SQL adapter is a one-line construction change here.
     database: Database
-    current_user: User
-    job_manager: JobManager
-    library: LibraryService
-    progress: ProgressService
-    preferences: UserPreferencesService
+    auth: AuthService
+    # The scheduler's job manager: `user_id=None` means "every user's jobs".
+    scheduler_jobs: JobManager
     planner: ChunkPlanner
     media_store: MediaStore
     telemetry: TelemetryService
@@ -62,15 +66,16 @@ async def build_services(
         database = (
             PostgresDatabase(settings.database_url) if settings.database_url else MemoryDatabase()
         )
-    current_user = await database.get_user(DEFAULT_USER_ID)
-    if current_user is None:  # pragma: no cover - the adapter seeds it
-        raise RuntimeError("The database did not seed a default user")
-    job_manager = JobManager(database)
-    library = LibraryService(database)
-    preferences = UserPreferencesService(database)
-    progress = ProgressService(
+    # System scope: the scheduler serves every user's jobs because one GPU does.
+    # Per-user scopes are built per request (app.core.user_services).
+    scheduler_jobs = JobManager(database, user_id=None)
+    auth = AuthService(
         database,
-        estimated_chars_per_second=settings.runtime.estimated_chars_per_second,
+        settings,
+        LoginThrottle(
+            failures_before_lockout=settings.login_throttle_failures,
+            window_seconds=settings.login_throttle_window_seconds,
+        ),
     )
     planner = ChunkPlanner(settings.runtime)
     media_store = MediaStore(settings)
@@ -102,7 +107,7 @@ async def build_services(
     scheduler = SchedulerService(
         config=settings.runtime,
         chunk_mime_type=settings.chunk_mime_type,
-        job_manager=job_manager,
+        job_manager=scheduler_jobs,
         planner=planner,
         worker=worker,
         model_manager=model_manager,
@@ -113,11 +118,8 @@ async def build_services(
     return AppServices(
         settings=settings,
         database=database,
-        current_user=current_user,
-        job_manager=job_manager,
-        library=library,
-        progress=progress,
-        preferences=preferences,
+        auth=auth,
+        scheduler_jobs=scheduler_jobs,
         planner=planner,
         media_store=media_store,
         telemetry=telemetry,

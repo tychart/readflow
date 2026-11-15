@@ -23,7 +23,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from app.core.identity import DEFAULT_USER_DISPLAY_NAME, DEFAULT_USER_ID
+from app.core.identity import (
+    DEFAULT_USER_DISPLAY_NAME,
+    DEFAULT_USER_ID,
+    DEFAULT_USER_PASSWORD_HASH,
+    DEFAULT_USER_USERNAME,
+)
 from app.core.time import utc_now
 from app.db.models import Session, User
 from app.db.protocols import (
@@ -289,6 +294,9 @@ class MemoryJobRepository:
             if include_deleted or job.deleted_at is None
         ]
 
+    async def list_all(self, *, include_deleted: bool = False) -> list[Job]:
+        return [job for job in self._table.values() if include_deleted or job.deleted_at is None]
+
     async def source_text(self, user_id: str, job_id: str) -> str:
         job = await self.get(user_id, job_id, include_deleted=True)
         if job is None:
@@ -306,6 +314,9 @@ class MemoryJobRepository:
         if job is not None:
             self._table.delete(job_id)
             await self._sources.delete(job_id)
+
+    async def exists(self, user_id: str, job_id: str) -> bool:
+        return await self.get(user_id, job_id) is not None
 
     async def next_position(self, user_id: str, folder_id: str | None) -> int:
         jobs = await self.list(user_id)
@@ -491,13 +502,22 @@ class MemoryDatabase:
         return None
 
     def _seed_default_user(self) -> User:
+        """The in-memory development account (see `app.core.identity`).
+
+        It is an admin with a documented development password, so `dev.sh
+        --memory` and the test suite can log in without a setup flow. The
+        Postgres adapter never seeds anything.
+        """
         existing = self._users.get(DEFAULT_USER_ID)
         if existing is not None:
             return existing
         user = User(
             id=DEFAULT_USER_ID,
-            username=DEFAULT_USER_ID,
+            username=DEFAULT_USER_USERNAME,
             display_name=DEFAULT_USER_DISPLAY_NAME,
+            password_hash=DEFAULT_USER_PASSWORD_HASH,
+            is_admin=True,
+            is_active=True,
             created_at=utc_now(),
         )
         self._users[user.id] = user
