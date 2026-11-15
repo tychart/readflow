@@ -41,6 +41,7 @@ import { setReaderTitle } from "../../state/reader-title";
 import { useAppStore } from "../../state/store";
 import type {
   Chunk,
+  DownloadFormatName,
   JobDetail,
   JobManifest,
   JobProgress,
@@ -994,28 +995,31 @@ export function ReaderPage() {
     setPlaybackRate(settings.playbackRate);
   }, [setPlaybackRate, settings.playbackRate]);
 
-  const handleDownload = useCallback(async () => {
-    if (!job || downloadableChunks.length === 0) return;
-    setDownloadError(null);
-    setIsDownloading(true);
-    try {
-      const { blob, filename } = await api.downloadJobAudio(job.id);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (downloadFailure) {
-      setDownloadError(
-        downloadFailure instanceof Error
-          ? downloadFailure.message
-          : "Unable to download rendered audio",
-      );
-    } finally {
-      setIsDownloading(false);
-    }
-  }, [downloadableChunks.length, job]);
+  const handleDownload = useCallback(
+    async (format: DownloadFormatName) => {
+      if (!job || downloadableChunks.length === 0) return;
+      setDownloadError(null);
+      setIsDownloading(true);
+      try {
+        const { blob, filename } = await api.downloadJobAudio(job.id, format);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(url);
+      } catch (downloadFailure) {
+        setDownloadError(
+          downloadFailure instanceof Error
+            ? downloadFailure.message
+            : "Unable to download rendered audio",
+        );
+      } finally {
+        setIsDownloading(false);
+      }
+    },
+    [downloadableChunks.length, job],
+  );
 
   /** Manual "render the rest of this job now" — ignores a configured lookahead cap.
    *  It never un-pauses a paused job: pause stays the only intentional stop. */

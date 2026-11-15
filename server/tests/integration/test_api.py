@@ -461,6 +461,86 @@ async def test_download_job_audio_returns_full_m4a_for_completed_job(client, ser
     assert len(response.content) > 0
 
 
+# Container signatures, so a test asserts real encoded audio rather than just
+# "some bytes came back" (ffmpeg happily writes an empty file on a bad arg).
+_DOWNLOAD_MAGIC = {
+    "m4a": b"ftyp",
+    "mp3": b"ID3",
+    "opus": b"OggS",
+    "flac": b"fLaC",
+    "wav": b"RIFF",
+}
+
+
+@pytest.mark.parametrize(
+    ("download_format", "media_type", "extension"),
+    [
+        ("m4a", "audio/mp4", "m4a"),
+        ("mp3", "audio/mpeg", "mp3"),
+        ("opus", "audio/ogg", "opus"),
+        ("flac", "audio/flac", "flac"),
+        ("wav", "audio/wav", "wav"),
+    ],
+)
+async def test_download_job_audio_encodes_every_offered_format(
+    client, services, download_format: str, media_type: str, extension: str
+):
+    job = services.job_manager.create_job(
+        source_text="Format download.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title=f"Format {download_format}",
+    )
+    _seed_written_chunk(services, job, 0)
+    job.planner_cursor.offset = -1
+
+    response = await client.get(f"/api/jobs/{job.id}/download?format={download_format}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(media_type)
+    disposition = response.headers["content-disposition"]
+    assert f'filename="format-{download_format}' in disposition
+    assert disposition.endswith(f'.{extension}"')
+    assert len(response.content) > 0
+    assert _DOWNLOAD_MAGIC[download_format] in response.content[:16]
+
+
+async def test_download_job_audio_defaults_to_m4a_when_no_format_is_given(client, services):
+    job = services.job_manager.create_job(
+        source_text="Default format download.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Default format",
+    )
+    _seed_written_chunk(services, job, 0)
+    _seed_written_chunk(services, job, 1)
+    services.job_manager.finish_planning(job.id)
+
+    response = await client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mp4")
+    assert 'filename="default-format.m4a"' in response.headers["content-disposition"]
+
+
+async def test_download_job_audio_rejects_an_unknown_format(client, services):
+    job = services.job_manager.create_job(
+        source_text="Unknown format download.",
+        source_kind="text",
+        model_id=services.settings.runtime.default_model_id,
+        voice_id="suzy",
+        title="Unknown format",
+    )
+    _seed_written_chunk(services, job, 0)
+    job.planner_cursor.offset = -1
+
+    response = await client.get(f"/api/jobs/{job.id}/download?format=ogg")
+
+    assert response.status_code == 422
+
+
 async def test_download_job_audio_returns_partial_contiguous_audio_for_in_progress_job(
     client, services
 ):

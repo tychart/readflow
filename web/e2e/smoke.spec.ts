@@ -839,6 +839,57 @@ test("reader settings hide the per-chunk jump controls", async ({ page }) => {
   await expect(page.getByTestId("shortcut-guide")).toBeVisible();
 });
 
+test("the download control offers every encoding and keeps its panel on screen", async ({
+  page,
+}) => {
+  // Phone width is the stress case: the panel is 288px wide, and it is
+  // portalled out of the playbar's metadata row (which clips its own content
+  // so it can collapse on scroll).
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.route("**/api/jobs/job-1", async (route) => {
+    await route.fulfill({ json: buildJob(2, "queued") });
+  });
+  await page.route("**/api/jobs/job-1/manifest", async (route) => {
+    await route.fulfill({ json: buildManifest(2) });
+  });
+  await page.route("**/api/jobs/job-1/chunks/**", async (route) => {
+    await route.fulfill({ body: "abc" });
+  });
+  await page.route("**/api/jobs/job-1/download**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "audio/flac",
+        "content-disposition": 'attachment; filename="playwright-job.flac"',
+      },
+      body: "flac-bytes",
+    });
+  });
+
+  await page.goto("/jobs/job-1");
+  await page.getByRole("button", { name: "Choose download format" }).click();
+
+  const panel = page.getByTestId("download-format-panel");
+  await expect(panel).toBeVisible();
+  for (const label of ["M4A (AAC)", "MP3", "Opus", "FLAC", "WAV"]) {
+    await expect(panel.getByText(label, { exact: true })).toBeVisible();
+  }
+
+  const box = await panel.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(844);
+
+  const requested = page.waitForRequest(
+    "**/api/jobs/job-1/download?format=flac",
+  );
+  await panel.getByRole("button", { name: /FLAC/ }).click();
+  await requested;
+  await expect(panel).toBeHidden();
+});
+
 test("phone widths get a bottom dock and keep the top bar as an overview", async ({
   page,
 }) => {

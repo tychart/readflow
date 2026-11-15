@@ -1918,6 +1918,43 @@ Temp storage is under:
 
 There is no retention cleanup daemon yet.
 
+### Download formats
+
+`GET /api/jobs/{job_id}/download?format=…` exports the rendered run in one of
+`m4a` (default), `mp3`, `opus`, `flac` or `wav`. The query value is a `Literal`,
+so an unknown encoding is a 422 rather than an ffmpeg failure.
+
+- **`server/app/media/download_formats.py` is the only place that knows an
+  encoding's ffmpeg arguments, file extension and media type.** The route reads
+  the extension/type for the `FileResponse` and the store appends the codec args
+  to the same `ffmpeg` invocation, so they cannot disagree. Adding a format is a
+  new table entry — no new branch anywhere.
+- **Every format is one generation from the same lossless per-chunk WAVs**, so
+  none of them compounds loss. `wav` is the untouched model output (offered for
+  debugging; a book is many gigabytes), `flac` is lossless at
+  `-compression_level 12` (the maximum — the user explicitly chose the smaller
+  file over encode speed), and the three lossy formats are single-pass encodes.
+- `opus` is Ogg/Opus; ffmpeg resamples 24 kHz TTS to Opus's native 48 kHz, which
+  is expected rather than a bug.
+- The export is still **one** ffmpeg run, on a worker thread
+  (`asyncio.to_thread`), under `EXPORT_TIMEOUT_SECONDS`. A format choice does not
+  change the concurrency story, and FLAC/MP3 encode faster than AAC.
+- The reader control is `web/src/components/DownloadButton.tsx`: a split button
+  (main button = the default format, caret = "Download as…"). Its panel is
+  **portalled to `<body>`** with fixed positioning from
+  `lib/download-menu.ts`, because the playbar's metadata row sets
+  `overflow: hidden` so it can collapse on scroll — an inline popover was
+  clipped to its first row. The panel closes on Escape, an outside press, page
+  scroll and resize (`DownloadButton.test.tsx` and `download-menu.test.ts` pin
+  those behaviours and the placement math).
+- `web/src/lib/download-formats.ts` holds the menu's labels/hints and must list
+  the formats in the same order as the server table.
+- Downloads still go through `fetch` → blob → anchor click, so the whole file is
+  held in browser memory (unchanged from the m4a-only implementation). That is
+  fine for chapter-sized jobs; if someone reports the tab dying on a book-sized
+  WAV, the fix is to make the button a plain anchor to the endpoint (letting the
+  browser stream to disk) rather than to bolt more state onto this control.
+
 ## Frontend Behavior and Current Caveat
 
 Frontend uses relative API URLs:
@@ -2544,7 +2581,7 @@ Reader page:
 - reader settings (playback speed, motion, conveyor, jump buttons, window size) persisted per device,
   in a phone bottom sheet that closes on a downward swipe
 - a phone bottom dock with the transport and conveyor in the thumb zone
-- allow download of rendered contiguous audio
+- allow download of rendered contiguous audio as m4a, mp3, opus, flac or wav
 
 Admin page:
 

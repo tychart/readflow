@@ -6,7 +6,9 @@ import {
   resolveShowSpinner,
 } from "../features/reader/transport";
 import { formatClock, formatSpeed } from "../lib/format";
+import type { DownloadFormatName } from "../types/api";
 import type { TimelineSlotData } from "../types/timeline";
+import { DownloadButton } from "./DownloadButton";
 import { TransportControls } from "./TransportControls";
 import { WaveformTimeline } from "./WaveformTimeline";
 
@@ -61,8 +63,8 @@ export interface PlaybarProps {
   onSkip: (deltaSeconds: number) => void;
   /** Seek targeting a specific chunk at an offset within it. */
   onSeekToChunk: (chunkIndex: number, seekSeconds: number) => void;
-  /** Trigger audio download. */
-  onDownload: () => void;
+  /** Trigger an audio download in the given encoding. */
+  onDownload: (format: DownloadFormatName) => void;
   isDownloading?: boolean;
   /** Total number of chunks in the job (for display). */
   totalChunks: number;
@@ -361,57 +363,12 @@ export function Playbar({
             <span> chunks</span>
           </span>
 
-          {/* Download button */}
-          <button
-            aria-label={
-              isDownloadComplete
-                ? "Download full audio"
-                : canDownload
-                  ? "Download rendered audio"
-                  : "Download not available"
-            }
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
-              canDownload
-                ? "border-[var(--line)] text-[var(--ink-secondary)] hover:border-[var(--amber)] hover:text-[var(--amber)]"
-                : "cursor-not-allowed border-[var(--line)] text-[var(--slate)] opacity-50"
-            }`}
-            disabled={!canDownload || isDownloading}
-            onClick={onDownload}
-            title={
-              isDownloadComplete
-                ? "Download complete audio file"
-                : canDownload
-                  ? "Download rendered audio so far"
-                  : "No audio data available yet"
-            }
-            type="button"
-          >
-            {isDownloading ? (
-              <>
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
-                Preparing…
-              </>
-            ) : (
-              <>
-                {/* Download icon */}
-                <svg
-                  aria-hidden="true"
-                  className="h-3 w-3"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" x2="12" y1="15" y2="3" />
-                </svg>
-                {isDownloadComplete ? "Full audio" : "Download"}
-              </>
-            )}
-          </button>
+          <DownloadButton
+            canDownload={canDownload}
+            isComplete={isDownloadComplete}
+            isDownloading={isDownloading}
+            onDownload={onDownload}
+          />
         </div>
       </div>
     </div>

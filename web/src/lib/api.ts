@@ -2,6 +2,7 @@ import type {
   AdminConfig,
   AdminQueue,
   AdminState,
+  DownloadFormatName,
   JobDetail,
   JobManifest,
   JobSummary,
@@ -304,13 +305,17 @@ export const api = {
     ),
 
   /** Downloads the rendered audio for a job. */
-  downloadJobAudio: async (jobId: string) => {
-    const response = await fetch(apiPath(`/jobs/${jobId}/download`));
+  downloadJobAudio: async (
+    jobId: string,
+    format: DownloadFormatName = "m4a",
+  ) => {
+    const path = apiPath(`/jobs/${jobId}/download?format=${format}`);
+    const response = await fetch(path);
     if (!response.ok) {
       const detail = await readErrorDetail(response);
       throw new ApiError(
         detail ?? `Request failed: ${response.status}`,
-        apiPath(`/jobs/${jobId}/download`),
+        path,
         response.status,
       );
     }
@@ -318,7 +323,7 @@ export const api = {
       blob: await response.blob(),
       filename: parseDownloadFilename(
         response.headers.get("content-disposition"),
-        `readflow-job-${jobId}.m4a`,
+        `readflow-job-${jobId}.${format}`,
       ),
     };
   },

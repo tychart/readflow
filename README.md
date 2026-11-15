@@ -717,6 +717,7 @@ Key HTTP endpoints:
 - `POST /api/jobs/{job_id}/render-to-end` (per-job lookahead-cap override)
 - `POST /api/jobs/{job_id}/voice`
 - `POST /api/jobs/{job_id}/playback`
+- `GET /api/jobs/{job_id}/download?format=m4a|mp3|opus|flac|wav` (default `m4a`)
 - `GET /api/voices`
 - `GET /api/admin/state`
 - `POST /api/admin/config`

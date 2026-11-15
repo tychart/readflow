@@ -32,6 +32,12 @@ export interface Chunk {
 
 export type ReadStatus = "unread" | "in_progress" | "read";
 
+/**
+ * Encodings offered when downloading a job's rendered audio. The server owns
+ * what each one means (codec, bitrate, container); this list only names them.
+ */
+export type DownloadFormatName = "m4a" | "mp3" | "opus" | "flac" | "wav";
+
 /** Server-derived listening state; never computed in the client. */
 export interface JobProgress {
   fraction: number;

@@ -19,6 +19,11 @@ from app.api.mappers import job_detail_response, job_summaries_response
 from app.core.config import RuntimeConfig
 from app.core.services import AppServices
 from app.jobs.models import JobStatus
+from app.media.download_formats import (
+    DEFAULT_DOWNLOAD_FORMAT,
+    DOWNLOAD_FORMATS,
+    DownloadFormatName,
+)
 from app.schemas.api import (
     AdminConfigResponse,
     AdminConfigUpdateRequest,
@@ -413,7 +418,11 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
     @router.get("/jobs/{job_id}/download")
     async def download_job_audio(
-        job_id: str, app_services: AppServices = Depends(services)
+        job_id: str,
+        download_format: DownloadFormatName = Query(
+            default=DEFAULT_DOWNLOAD_FORMAT, alias="format"
+        ),
+        app_services: AppServices = Depends(services),
     ) -> FileResponse:
         try:
             job = app_services.job_manager.get_job(job_id)
@@ -424,10 +433,12 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         if not wav_paths:
             raise HTTPException(status_code=409, detail="No contiguous rendered audio is ready")
 
+        export_format = DOWNLOAD_FORMATS[download_format]
+
         # Concatenating and re-encoding a whole book is seconds of ffmpeg work;
         # keep it off the event loop so the reader and live ticks stay responsive.
         export_path = await asyncio.to_thread(
-            app_services.media_store.build_export_file, job_id, wav_paths
+            app_services.media_store.build_export_file, job_id, wav_paths, export_format
         )
         is_full_export = (
             job.status == JobStatus.COMPLETED and len(wav_paths) == job.total_chunks_emitted
@@ -438,8 +449,8 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
         return FileResponse(
             export_path,
-            media_type="audio/mp4",
-            filename=f"{filename}.m4a",
+            media_type=export_format.media_type,
+            filename=f"{filename}.{export_format.extension}",
             background=BackgroundTask(export_path.unlink, missing_ok=True),
         )
 

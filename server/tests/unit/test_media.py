@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from app.core.config import Settings
+from app.media.download_formats import DEFAULT_DOWNLOAD_FORMAT, DOWNLOAD_FORMATS
 from app.media.store import MediaStore
 
 
@@ -117,3 +118,23 @@ def test_each_take_gets_its_own_files(settings: Settings) -> None:
         assert store.peaks_path("job-1", 0, version=1).exists()
     finally:
         store.remove_job("job-1")
+
+
+def test_download_formats_declare_one_consistent_encoding_each() -> None:
+    """The export table is the only source of extension, mime type and args.
+
+    A mismatch here is what would make a download arrive with the wrong
+    filename or content type, so the table has to stay internally consistent.
+    """
+    for name, download_format in DOWNLOAD_FORMATS.items():
+        assert download_format.extension == name
+        assert download_format.media_type.startswith("audio/")
+        assert download_format.codec_args[0] == "-c:a"
+        assert len(download_format.codec_args) > 1
+    assert DEFAULT_DOWNLOAD_FORMAT in DOWNLOAD_FORMATS
+
+
+def test_flac_downloads_use_maximum_compression() -> None:
+    """The user asked for the best FLAC ratio (level 12) over encode speed."""
+    args = DOWNLOAD_FORMATS["flac"].codec_args
+    assert args[args.index("-compression_level") + 1] == "12"

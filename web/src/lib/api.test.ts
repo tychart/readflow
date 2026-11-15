@@ -73,3 +73,40 @@ test("getAdminQueue requests the admin queue endpoint", async () => {
     expect.any(Object),
   );
 });
+
+test("downloadJobAudio asks for the requested encoding", async () => {
+  const blob = new Blob([new Uint8Array([1, 2, 3])]);
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    blob: async () => blob,
+    headers: new Headers({
+      "content-disposition": 'attachment; filename="my-book.flac"',
+    }),
+  }));
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+  const result = await api.downloadJobAudio("job-1", "flac");
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/jobs/job-1/download?format=flac",
+  );
+  expect(result.filename).toBe("my-book.flac");
+  expect(result.blob).toBe(blob);
+});
+
+test("downloadJobAudio defaults to m4a", async () => {
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    blob: async () => new Blob([]),
+    headers: new Headers(),
+  }));
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+  const result = await api.downloadJobAudio("job-1");
+
+  expect(fetchMock).toHaveBeenCalledWith("/api/jobs/job-1/download?format=m4a");
+  // No Content-Disposition: fall back to the requested encoding's extension.
+  expect(result.filename).toBe("readflow-job-job-1.m4a");
+});

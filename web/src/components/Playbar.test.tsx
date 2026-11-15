@@ -122,8 +122,12 @@ describe("Playbar timeline and metadata", () => {
     expect(screen.getByText("chunks").parentElement).toHaveTextContent(
       "3/3 chunks",
     );
+    // The exact name: the format caret next to it also contains "download".
     expect(
-      screen.getByRole("button", { name: /download/i }),
+      screen.getByRole("button", { name: "Download rendered audio" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Choose download format" }),
     ).toBeInTheDocument();
   });
 

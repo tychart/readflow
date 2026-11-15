@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import Settings
+from app.media.download_formats import DownloadFormat
 from app.media.mp4 import split_fragmented_mp4
 from app.media.peaks import compute_peaks
 
@@ -96,7 +97,10 @@ class MediaStore:
             duration_seconds=duration,
         )
 
-    def build_export_file(self, job_id: str, wav_paths: list[str]) -> Path:
+    def build_export_file(
+        self, job_id: str, wav_paths: list[str], download_format: DownloadFormat
+    ) -> Path:
+        """Concatenate the job's WAVs and re-encode them into one file."""
         if not wav_paths:
             raise ValueError("At least one WAV path is required to build an export")
 
@@ -113,7 +117,7 @@ class MediaStore:
                 concat_file.write(f"file '{self._escape_concat_path(wav_path)}'\n")
 
         with tempfile.NamedTemporaryFile(
-            suffix=".m4a",
+            suffix=f".{download_format.extension}",
             prefix="export-",
             dir=job_dir,
             delete=False,
@@ -121,7 +125,7 @@ class MediaStore:
             export_path = Path(export_file.name)
 
         try:
-            self._run_export_ffmpeg(concat_path, export_path)
+            self._run_export_ffmpeg(concat_path, export_path, download_format)
             return export_path
         finally:
             concat_path.unlink(missing_ok=True)
@@ -165,7 +169,9 @@ class MediaStore:
             mp4_path.unlink(missing_ok=True)
             raise
 
-    def _run_export_ffmpeg(self, concat_path: Path, output_path: Path) -> None:
+    def _run_export_ffmpeg(
+        self, concat_path: Path, output_path: Path, download_format: DownloadFormat
+    ) -> None:
         command = [
             "ffmpeg",
             "-y",
@@ -179,12 +185,7 @@ class MediaStore:
             "-i",
             str(concat_path),
             "-vn",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-movflags",
-            "+faststart",
+            *download_format.codec_args,
             str(output_path),
         ]
         try:
