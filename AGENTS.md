@@ -604,6 +604,16 @@ are derived server-side (see “Library domain”). The client's job is narrower
   `reader-model.ts` owns the rule (start for a finished job, resume otherwise;
   an unfinished job's "known duration" is only the rendered part of a longer
   document, so being near it means nothing).
+- **The restore effect always re-establishes the anchor, including when the job
+  opens from the top.** The anchor is job-scoped, and the store's `openJob`
+  reset does not survive the commit that adopts the incoming detail: the
+  `setSource` effect declared above it still writes the *outgoing* job's anchor
+  index in that same commit. Because chunk indexes exist in every job, that
+  stale index is accepted, so auto-advance used to open the next job on whatever
+  chunk the previous one ended on (listening to the last chunk of section 1
+  started section 2 at its last chunk). The restore effect is declared last and
+  is the single owner of the anchor for a new document — do not turn its
+  `savedPosition <= 1` case back into an early `return`.
 - Heard ✓ marks come from `job.progress.heard_chunks` (memoized into a Set), not
   from playback position. The block's dimmed "played" styling still follows the
   playhead; the ✓ is the persisted truth.

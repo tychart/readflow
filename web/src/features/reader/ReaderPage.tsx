@@ -303,6 +303,14 @@ export function ReaderPage() {
   // The anchor and the pending seek are set together; the player applies the
   // seek once the rebuilt stream covers it. A finished job starts over instead
   // of resuming at its own end (see `resumePositionSeconds`).
+  //
+  // The anchor is *always* re-established here, including when the job opens
+  // from the top. It is job-scoped state that the store cannot reset for this
+  // render: `openJob` clears it when the incoming detail lands, but the effect
+  // declared above (`setSource`) still writes the outgoing job's index in the
+  // same commit. Chunk indexes exist in both jobs, so leaving it alone made
+  // auto-advance open the next job on whatever chunk the previous one ended
+  // on. This effect is declared last, so it owns the anchor for a new document.
   const restoredPositionForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!job || activeChunks.length === 0) return;
@@ -313,11 +321,12 @@ export function ReaderPage() {
       knownDurationSeconds,
       isJobTerminal,
     );
-    if (savedPosition <= 1) return;
-    const index = chunkIndexAtSeconds(activeChunks, savedPosition);
-    if (index === null) return;
-    setPlaybackAnchorIndex(index);
-    setSeekOverride(savedPosition);
+    const index =
+      savedPosition > 1
+        ? chunkIndexAtSeconds(activeChunks, savedPosition)
+        : null;
+    setPlaybackAnchorIndex(index ?? activeChunks[0]?.index ?? 0);
+    if (index !== null) setSeekOverride(savedPosition);
   }, [
     activeChunks,
     isJobTerminal,

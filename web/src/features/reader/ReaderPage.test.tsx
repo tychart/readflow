@@ -2839,6 +2839,103 @@ test("autoplay follows the route's job, not the detail still on screen", async (
   expect(calls).toContain("POST /api/jobs/job-2/activate");
 });
 
+test("auto-advance opens the next job at its first chunk", async () => {
+  seedStore();
+  const user = userEvent.setup();
+  // Both books have the same chunk count on purpose: the outgoing job's anchor
+  // index (its last chunk) exists in the incoming job too, so a stale anchor is
+  // accepted instead of being corrected by the "that index does not exist"
+  // guard. That is how auto-advance used to open the next book on its last
+  // chunk and end instantly.
+  const jobOne = {
+    ...buildReaderJobWithChunks(listeningChunks(), "completed"),
+    id: "job-1",
+    title: "First book",
+    next_job_id: "job-2",
+    progress: {
+      fraction: 0.67,
+      read_status: "in_progress" as const,
+      heard_chunks: [0, 1],
+      remaining_seconds: 4,
+      position_seconds: 8,
+    },
+  };
+  const jobTwo = {
+    ...buildReaderJobWithChunks(
+      listeningChunks().map((chunk) => ({
+        ...chunk,
+        segment_url: `/api/jobs/job-2/chunks/${chunk.index}`,
+      })),
+      "completed",
+    ),
+    id: "job-2",
+    title: "Second book",
+    previous_job_id: "job-1",
+    progress: {
+      fraction: 0,
+      read_status: "unread" as const,
+      heard_chunks: [],
+      remaining_seconds: 12,
+      position_seconds: 0,
+    },
+  };
+
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => jobOne };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return {
+        ok: true,
+        json: async () => buildManifestFromChunks(listeningChunks()),
+      };
+    }
+    if (url.endsWith("/api/jobs/job-2")) {
+      return { ok: true, json: async () => jobTwo };
+    }
+    if (url.endsWith("/api/jobs/job-2/manifest")) {
+      return {
+        ok: true,
+        json: async () => buildManifestFromChunks(jobTwo.chunks),
+      };
+    }
+    if (url.endsWith("/activate")) {
+      return { ok: true, json: async () => jobTwo };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  renderReader(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route
+          element={
+            <>
+              <ReaderPage />
+              <NavigateProbe to="/jobs/job-2?play=1" />
+            </>
+          }
+          path="/jobs/:jobId"
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("First book");
+  // Resuming at 8s anchors playback on the last chunk.
+  await waitFor(() => expect(usePlayerStore.getState().anchorIndex).toBe(2));
+
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  await screen.findByText("Second book");
+
+  await waitFor(() => expect(usePlayerStore.getState().job?.id).toBe("job-2"));
+  await waitFor(() => expect(usePlayerStore.getState().playIntent).toBe(true));
+  expect(usePlayerStore.getState().anchorIndex).toBe(0);
+  expect(usePlayerStore.getState().anchorOffsetSeconds).toBe(0);
+  expect(usePlayerStore.getState().pendingSeekJobSeconds).toBeNull();
+});
+
 test("starts a job at the top of the page", async () => {
   seedStore();
   mockListeningJob({
