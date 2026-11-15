@@ -45,8 +45,17 @@ class AppServices:
     hub: WebSocketHub
 
 
-def build_services(settings: Settings, base_dir: Path) -> AppServices:
-    database: Database = MemoryDatabase()
+def build_services(
+    settings: Settings, base_dir: Path, *, database: Database | None = None
+) -> AppServices:
+    """Construct the whole service graph once per process.
+
+    `database` is injectable so a test (or the diagnostics probe) can wrap the
+    adapter in a counter, and so the Postgres adapter can be selected without
+    touching every constructor.
+    """
+    if database is None:
+        database = MemoryDatabase()
     current_user = database.get_user(DEFAULT_USER_ID)
     if current_user is None:  # pragma: no cover - the adapter seeds it
         raise RuntimeError("The database did not seed a default user")

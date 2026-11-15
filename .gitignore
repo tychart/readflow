@@ -29,3 +29,6 @@ plans/
 
 # Local machine settings (compose overrides, dev HOST_URL, tokens).
 .env
+
+# Backup dumps (scripts/backup.sh).
+backups/

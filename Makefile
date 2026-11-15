@@ -1,7 +1,8 @@
 SHELL := /bin/bash
 UV_CACHE_DIR := /tmp/readflow-uv-cache
 
-.PHONY: install dev test-web test-server test-e2e test lint lint-fix typecheck test-real-model \
+.PHONY: install dev test-web test-server test-e2e test test-fast test-db lint lint-fix typecheck test-real-model \
+        db-up db-down db-reset migrate probe \
         cuda-install docker-build docker-build-flash docker-build-cpu docker-build-all \
         docker-run docker-run-cpu docker-logs docker-down docker-smoke docker-clean
 
@@ -30,6 +31,70 @@ test-e2e:
 	cd web && bun run test:e2e
 
 test: test-web test-server
+
+# Server tests without the coverage harness: the fast loop while iterating.
+test-fast:
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pytest --no-cov -q
+
+# ── Database ──────────────────────────────────
+# A local Postgres for development and the adapter contract suite. The dev
+# database (`readflow`) and the throwaway test database (`readflow_test`) live
+# in one container and one named volume; nothing is published beyond loopback.
+PG_CONTAINER ?= readflow-dev-pg
+PG_VOLUME ?= readflow-dev-pgdata
+PG_PORT ?= 5432
+PG_USER ?= readflow
+PG_PASSWORD ?= readflow
+PG_IMAGE ?= docker.io/library/postgres:18
+PG_URL ?= postgresql+psycopg://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/readflow
+TEST_PG_URL ?= postgresql+psycopg://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/readflow_test
+
+# `test-db` runs the adapter contract suite against real Postgres (it skips
+# itself when READFLOW_TEST_DATABASE_URL is unset).
+test-db:
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) READFLOW_TEST_DATABASE_URL=$(TEST_PG_URL) uv run pytest
+
+# Alembic arrives with the Postgres adapter; until then this explains itself
+# instead of failing with "No such file: alembic.ini".
+migrate:
+	@if [ -f server/alembic.ini ]; then \
+		cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run alembic upgrade head; \
+	else \
+		echo "alembic.ini not present yet (migrations land with the Postgres adapter)"; \
+	fi
+
+db-up:
+	@$(ENGINE) ps volume inspect $(PG_VOLUME) >/dev/null 2>&1 || $(ENGINE) volume create $(PG_VOLUME) >/dev/null
+	@$(ENGINE) ps container inspect $(PG_CONTAINER) >/dev/null 2>&1 && { \
+		echo "$(PG_CONTAINER) already exists"; \
+		$(ENGINE) ps start $(PG_CONTAINER) >/dev/null; \
+	} || $(ENGINE) run -d --name $(PG_CONTAINER) \
+		-e POSTGRES_USER=$(PG_USER) -e POSTGRES_PASSWORD=$(PG_PASSWORD) \
+		-e POSTGRES_DB=readflow -e POSTGRES_INITDB_ARGS="--data-checksums" \
+		-v $(PG_VOLUME):/var/lib/postgresql/data \
+		-p 127.0.0.1:$(PG_PORT):5432 $(PG_IMAGE) >/dev/null
+	@printf 'waiting for postgres'
+	@until $(ENGINE) exec $(PG_CONTAINER) pg_isready -U $(PG_USER) -d readflow >/dev/null 2>&1; do \
+		printf '.'; sleep 0.5; \
+	done; echo ' ready'
+	@$(ENGINE) exec $(PG_CONTAINER) psql -U $(PG_USER) -d readflow -tAc \
+		"SELECT 1 FROM pg_database WHERE datname='readflow_test'" | grep -q 1 || \
+		$(ENGINE) exec $(PG_CONTAINER) createdb -U $(PG_USER) readflow_test
+	@echo "DATABASE_URL=$(PG_URL)"
+
+db-down:
+	-$(ENGINE) stop $(PG_CONTAINER)
+
+db-reset:
+	@$(ENGINE) exec $(PG_CONTAINER) psql -U $(PG_USER) -d postgres -c \
+		"DROP DATABASE IF EXISTS readflow WITH (FORCE); DROP DATABASE IF EXISTS readflow_test WITH (FORCE);"
+	@$(ENGINE) exec $(PG_CONTAINER) psql -U $(PG_USER) -d postgres -c \
+		"CREATE DATABASE readflow; CREATE DATABASE readflow_test;"
+	@$(MAKE) --no-print-directory migrate
+
+# Read-model measurement harness (see docs/plan-postgres-auth.md).
+probe:
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run python ../scripts/diagnostics/hot_path_probe.py $(ARGS)
 
 # Biome owns formatting + linting for web/ (biome.jsonc at the repo root);
 # ruff owns the same for server/.
