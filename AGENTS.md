@@ -46,16 +46,22 @@ This is **not** designed as a distributed inference platform.
 These came directly from the user and should be preserved unless the user changes direction.
 
 - Single repo with `server/` and `web/`
-- No database
-- No auth
-- No accounts
+- **Postgres** for accounts, jobs, folders, progress, trash and sessions; the
+  in-memory adapter remains for tests and `dev.sh --memory`
+- **Username + password accounts** (argon2id, server-side sessions). No email,
+  no self-service registration: the first admin is created at `/setup` and every
+  other account is admin-created
+- Rendered audio on a volume, kept until the user purges it
 - No Redis/Celery
 - No distributed queue
 - No multi-worker GPU contention
-- No persistent jobs across restart
+- Jobs persist across restart; chunks that were mid-render are requeued at
+  startup instead of being lost
 - No user-uploaded voices in v1
 - No automatic transcription in v1
 - No model switching mid-job in v1
+- Deliberately **not** built: 2FA, email reset, OAuth/OIDC, JWT, an ORM, an
+  audit log, deleting users (disable instead)
 - Backend owns chunking and scheduling
 - Frontend stays thin and reactive
 - Dynamic batching is core behavior, not a later optimization
@@ -160,6 +166,8 @@ repo/
     vitest.config.ts
   scripts/
     dev.sh
+    backup.sh
+  deploy/quadlet/     # podman units + README (pg/api/web, backup timer)
   .github/workflows/ci.yml
   .vscode/settings.json      # Biome as formatter (committed, machine-independent)
   biome.jsonc                # the only JS/TS/JSON/YAML lint + format config
@@ -270,11 +278,16 @@ Key files:
 
 - `server/app/core/app.py`
 - `server/app/core/services.py`
-- `server/app/core/identity.py` (seeded default user id; auth seam)
+- `server/app/core/user_services.py` (the per-request user scope)
+- `server/app/core/time.py` (the one clock and wire format)
+- `server/app/core/identity.py` (in-memory development account)
 - `server/app/core/hub.py` (WebSocketHub)
 - `server/app/api/router.py`
 - `server/app/db/protocols.py` (Database / UnitOfWork / repository protocols)
 - `server/app/db/memory.py` (the in-memory adapter)
+- `server/app/db/postgres/` (the Postgres adapter: database.py, repositories.py, mapping.py)
+- `server/app/db/schema.py` (SQLAlchemy Core metadata; Alembic's source of truth)
+- `server/app/auth/` (passwords, sessions, throttle, cookies, AuthService)
 - `server/app/library/` (folders, ordering, progress, trash, playback order)
 - `server/app/users/preferences.py` (remembered create-job model/voice)
 - `server/app/api/library.py` (library/trash/progress endpoints)
@@ -299,46 +312,168 @@ Core services:
 - `TelemetryService`
 - `WebSocketHub`
 
-### Storage layer (`server/app/db`) — the database seam
+### Storage layer (`server/app/db`) — the async database seam
 
-Everything that will eventually live in PostgreSQL is reached through one
-boundary, and nothing above it imports a concrete adapter:
+Everything persistent is reached through one boundary, and nothing above it
+imports a concrete adapter:
 
-- **`app/db/protocols.py`** — the `Database` / `UnitOfWork` protocols and one
-  repository protocol per entity (`users`, `jobs`, …).
-- **`app/db/memory.py`** — `MemoryDatabase`, the only adapter today. It is a
-  small database, not a dict wrapper: a users table, a user-scoped job table,
-  explicit `add`/`save`/`delete`, and transactions that journal structural
-  writes so an exception undoes them. Reads are identity-mapped, which is what
-  lets a service load a job, mutate it, and save it.
-- **`app/core/services.py`** constructs the adapter once and injects it. Swapping
-  in a SQL adapter is a change in that function plus a new module.
+- **`app/db/protocols.py`** — `Database` / `UnitOfWork` plus one repository
+  protocol per entity. Every repository method is a **coroutine**; `UnitOfWork`
+  is an async context manager. `Database.transaction()` stays a plain call that
+  returns one, so call sites read `async with db.transaction() as uow:`.
+- **`app/db/memory.py`** — `MemoryDatabase`, the dev/test adapter. A small
+  database, not a dict wrapper: explicit `add`/`save`/`delete`, transactions
+  that journal structural writes so an exception undoes them, identity-mapped
+  reads. It seeds one documented development admin (`local` /
+  `readflow-local-dev`) so `dev.sh --memory` and the tests can log in; the
+  Postgres adapter seeds nothing.
+- **`app/db/postgres/`** — the production adapter (SQLAlchemy Core, no ORM
+  entities). `database.py` (async engine, psycopg3, UTC pinned per connection,
+  one session per unit of work), `repositories.py` (one statement or two per
+  call), `mapping.py` (row <-> domain, the JSONB key conversion, and the chunk
+  dirty diff).
+- **`app/db/schema.py`** — SQLAlchemy Core `MetaData`, the single source of
+  truth Alembic autogenerates from. Instants are `timestamptz`; durations and
+  positions are `double precision`; `active_chunk_version` and `heard` are JSONB.
+- **`app/core/services.py`** constructs the adapter once (`DATABASE_URL` means
+  Postgres, no URL means memory) and injects it.
 
 Rules that are load-bearing:
 
-- **`JobManager` is the only code that touches job storage.** Every public
-  method opens one `with self._db.transaction() as uow:`, loads the aggregate
-  with `uow.jobs.get(user_id, job_id)`, applies the rule, and calls
-  `uow.jobs.save(job)` after any mutation. Tests that "just mutate the object"
-  work because reads are identity-mapped, but the `save()` is what makes the
-  same code correct against a real database — do not drop it when adding a
-  method.
+- **`JobManager` is the only code that touches job storage.** Every public method
+  opens one transaction, loads the aggregate with `uow.jobs.get(user_id, job_id)`
+  (or `get_any` in system scope), applies the rule, and calls `uow.jobs.save(job)`
+  after any mutation. A missing `save()` is invisible in memory and lost in
+  Postgres — `tests/contract/` runs the same suite against both adapters.
+- **Explicit writes, and `add()` snapshots.** `add()` persists the values it is
+  given, so a row must be finished *before* it is added; mutating it afterwards
+  needs a `save()`. `ProgressService._ensure` returns an unsaved row for exactly
+  this reason (a real bug: the in-memory adapter hid it and Postgres dropped the
+  heard marks).
 - **Ownership is enforced at the repository boundary.** Lookups are
-  `(user_id, job_id)`; another user's job is indistinguishable from a missing
-  one. `Job.user_id` is populated from the seeded local user
-  (`app/core/identity.py`) until authentication exists, and `JobManager` takes a
-  `user_id` so call sites already speak per-user.
-- **A `Job` is one aggregate**: the job row and its `ChunkRecord` list are loaded
-  and saved together. The adapter decides how that is stored (one table now, a
-  child table with diffed writes later); call sites do not change.
-- **Explicit writes.** The in-memory adapter shares instances, so an unsaved
-  edit is visible in memory and would be lost in Postgres. `tests/unit/test_db.py`
-  pins the contract (user scoping, identity per transaction, structural
-  rollback, `save`-on-mutation) and is the definition a SQL adapter must
-  satisfy — add the new adapter to its `ADAPTER_FACTORIES` list.
-- **Validate before mutating.** In-memory rollback covers structural writes
-  (`add`/`delete`), not half-applied attribute edits. The existing services
-  follow this pattern already.
+  `(user_id, id)`; another user's row is indistinguishable from a missing one.
+  System-scope reads (`get_any`, `summaries_all`, `planned_chunks`,
+  `rendering_chunks`, `list_all`, `source_text_any`) exist only for the
+  scheduler and the admin inspector.
+- **A `Job` is one aggregate**: the job row and its `ChunkRecord` list load and
+  save together. Chunks are append-only; a superseded take is `deprecated`,
+  never deleted. `save()` diffs the mutable chunk fields (`mapping.changed_chunks`)
+  and writes only the rows that moved.
+- **The source text is its own row** (`job_sources`). The aggregate carries
+  `source_char_count` only, which is why listing jobs never materialises a book.
+  The scheduler caches the text (`app/scheduler/source_cache.py`, bounded by
+  `READFLOW_SOURCE_CACHE_CHARS`) and `forget_source()` on delete/purge.
+- **Stored rollups, one writer.** `total_chunks_completed`,
+  `contiguous_written_seconds`, `written_seconds`, `last_written_index`,
+  `unfinished_chunks`, `unwritten_chars` and `pending_chunks` are computed over
+  **live takes only** by `Job.recompute_derived()`, called through
+  `JobManager._refresh_derived()` (which also re-derives the progress row's
+  `heard_seconds`). Nothing else may write them.
+- **`JobSummary` cannot drift.** It is a frozen flat projection built from
+  `SUMMARY_FIELDS`; `tests/unit/test_summary.py` asserts the tuple matches the
+  dataclass and that every derived answer agrees with the aggregate's.
+- **The adapters are held to one contract** (`tests/contract/`): user scoping,
+  identity per transaction, structural rollback, summaries == aggregates, source
+  isolation, JSONB integer keys, UTC instants. Add a new adapter to
+  `ADAPTER_FACTORIES` and it must pass unchanged.
+- **Migrations are checked, not assumed.** `alembic upgrade head` is idempotent
+  and `alembic check` reports no drift against `schema.py`;
+  `tests/contract/test_migrations.py` runs both against a real database.
+
+### Accounts, sessions and request scope (`server/app/auth`, `app/core/user_services.py`)
+
+Three scopes, and they must not blur:
+
+- **System scope** — the scheduler and the worker, one per process. Sees every
+  user's jobs because one GPU serves the machine. `JobManager(database, user_id=None)`;
+  its `_owner` property raises if a user-scoped operation is attempted there.
+- **User scope** — `UserServices` (jobs, library, progress, preferences), built
+  per request by `build_user_services()` and bound to the authenticated user.
+  Handlers depend on it (`Depends(user_services)`), never on `JobManager`
+  directly. `AppServices` has no user-scoped service, so crossing the boundary is
+  a type error rather than a convention.
+- **Content scope** — source text and chunk text belong to their owner. Admin
+  APIs read plumbing (status, counts, priority), never content.
+
+Auth rules:
+
+- argon2id (`pwdlib`), min 12 characters, `verify_and_update` rehashes on login;
+  an unknown user verifies against a dummy hash so timing cannot enumerate.
+- Setup is allowed once and re-checks emptiness inside the transaction; the
+  first user is an admin, every other account is admin-created.
+- Sessions are rows: `sha256(token)` stored, 30-day absolute, 7-day idle,
+  `last_seen_at` refreshed at most once a minute. Login rotates. Logout, password
+  change and disabling a user delete rows — there is no denylist because the row
+  *is* the list.
+- The cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` when the request is
+  HTTPS (`X-Forwarded-Proto`) or `READFLOW_COOKIE_SECURE=always`.
+- Login is throttled per `(client, username)` in process (5 failures / 5 min,
+  exponential up to 15 min). Single instance only, documented as such.
+- CSRF: a state-changing request with an `Origin` header must match the request
+  host or `READFLOW_ALLOWED_ORIGINS`/`HOST_URL`. A missing `Origin` (curl, tests)
+  is allowed; SameSite=Lax is the primary defence.
+- Media routes (`chunks/init`, `chunks/{i}`, `peaks`) are owner-checked with one
+  indexed lookup (`JobManager.owns`), not an aggregate load.
+- Admin endpoints are gated twice: the `/api/admin/*` router requires
+  `current_admin` (403), and the frontend hides the tab **and** re-checks inside
+  `AuthGate` (`AdminOnly`) — the first render happens before the session
+  resolves, so checking in the route element bounced admins to the library.
+
+Tests: `tests/unit/test_passwords.py`, `test_throttle.py`, `test_auth_service.py`,
+`tests/integration/test_auth_api.py` (including a generated 401 matrix over
+`app.routes`), `test_admin_api.py`, `test_ws_routing.py`, and
+`tests/unit/test_api_async.py` (structural: every route handler, dependency and
+public service method is a coroutine).
+
+### Live event routing (`server/app/core/hub.py`)
+
+The hub is the only place that decides *who* receives an event; call sites only
+say who owns it.
+
+| event | recipients |
+|---|---|
+| `job_created`, `job_updated`, `chunk_ready`, `job_completed` | the job's owner |
+| `job_progress`, `library_changed` | the job's owner |
+| `scheduler_state`, `memory_stats`, `model_state` | admins |
+| `telemetry`, `admin_config_updated` | admins |
+
+- `connect(websocket, user_id=…, is_admin=…)` needs a session: the WS handshake
+  resolves the cookie and closes **1008** without one. The client treats 1008 as
+  "signed out" and stops reconnecting.
+- `disconnect_user(user_id)` closes a user's live sockets when the account is
+  disabled or its password reset.
+- Every send is bounded (`BROADCAST_TIMEOUT_SECONDS`) and delivered
+  concurrently, so one stalled viewer cannot freeze the scheduling tick.
+
+### Time (`server/app/core/time.py`)
+
+One clock, one wire format:
+
+- instants are epoch floats in the domain, `timestamptz` in Postgres, and
+  **ISO-8601 with an explicit `Z`** on the wire (`to_iso` is the only formatter);
+- durations and positions are plain floats and never timestamps;
+- `time.monotonic()` stays for stalls/backoff/throttles and is never persisted;
+- nothing outside `app/core/time.py` calls `time.time()`;
+- the browser renders instants with `web/src/lib/time.ts`
+  (`formatDateTime`/`formatAgeSeconds`/`formatAgeSince`) in the viewer's own zone.
+
+### Backups, dev modes and deployment
+
+- `scripts/backup.sh` writes `pg_dump -Fc` into `$BACKUP_DIR` (0600, UTC
+  timestamp name), keeps the newest `$BACKUP_RETENTION`, supports `--compose` to
+  dump through the running container, and never puts the password in argv. The
+  same dump is admin-only at `GET /api/admin/backup` (503 when pg_dump is
+  missing). Restore: `pg_restore --clean --if-exists -d readflow <file>.dump`.
+- `scripts/dev.sh` uses `DATABASE_URL` from `.env` (loopback default), starts and
+  migrates a `readflow-dev-pg` container when nothing is listening, reports the
+  database in `status`, and `--memory` runs the in-memory adapter (explicitly
+  unsetting `DATABASE_URL`). `stop --with-db` removes the container.
+- `compose.yml` / `compose.cpu.yml` run `pg` + `api` + `web`; Postgres has no
+  published port, its volume is at `/var/lib/postgresql` (Postgres 18 layout),
+  and rendered audio lives on a `media` volume via `READFLOW_MEDIA_DIR`. The api
+  entrypoint runs `alembic upgrade head` before serving.
+- `deploy/quadlet/` has podman systemd units (pg/api/web + a backup timer) and an
+  install README.
 
 ### Library domain (`server/app/library`)
 
@@ -404,9 +539,12 @@ progress view and folder context. Important shapes:
   `POST /api/folders/{id}/delete-only`, `GET /api/trash`,
   `POST /api/trash/restore|purge`.
 - `POST /api/jobs/{id}/progress` — `{position_seconds, is_playing,
-  heard_chunk_indexes}`; the heard list is additive. This supersedes the old
-  playback ping for progress purposes, but `/playback` still records the
-  position for compatibility and scheduler buffering.
+  heard_chunk_indexes}`; the heard list is additive. This is the **only**
+  playback command: `ProgressService.record` folds the position into the job
+  (scheduler buffering) and the heard marks into progress in one transaction.
+  `POST /jobs/{id}/playback` was deleted; the WS `playback_sync` message calls
+  the same command. Media URLs (`chunks/init`, `chunks/{i}`, `peaks`) are
+  owner-checked and rely on the cookie, so they do not need a CSRF token.
 - `POST /api/jobs/{id}/read` (`{read, from_chunk?}`) and
   `POST /api/jobs/{id}/chunks/{index}/heard` (`{heard}`).
 - Every library mutation broadcasts `library_changed` (an invalidation signal,
@@ -2062,7 +2200,13 @@ What they mean:
 
 Important files:
 
-- `server/tests/conftest.py`
+- `server/tests/conftest.py` (fixtures: `app_services` = process scope,
+  `services` = the user scope plus read-only access to the graph, `client`
+  authenticated as the seeded dev account, `anonymous_client` for the auth tests)
+- `server/tests/contract/` (both adapters, migrations, whole-app-on-Postgres)
+- `server/tests/properties/` (Hypothesis: the chunk dirty diff)
+- `server/tests/integration/test_auth_api.py`, `test_admin_api.py`,
+  `test_ws_routing.py`, `test_query_budget.py`
 - `server/tests/integration/test_api.py`
 - `server/tests/integration/test_real_model.py`
 - `server/tests/unit/test_provider.py`
@@ -2524,7 +2668,38 @@ The main timeline exposes chunk sliders. The conveyor handles gestures at strip
 level; its canvas is decorative (aria-hidden). Do not add a second interactive
 slider list inside it.
 
+### 14. Auth, storage and deployment sharp edges
+
+- **`add()` snapshots its values.** Finish a row before adding it; a mutation
+  after `add()` is invisible in memory and lost in Postgres. The progress row
+  does exactly this (`_ensure` returns an unsaved row, `_persist` writes once).
+- **Do not query storage from a sort key, generator expression or comparator.**
+  The repositories are coroutines, so the scheduler reads `summaries_all()` /
+  `planned_chunks()` / `rendering_chunks()` once and threads the snapshot
+  through (`Mapping[str, FolderJob]`). `tests/integration/test_query_budget.py`
+  fails if an aggregate load creeps back onto the tick path.
+- **`JobManager(database, user_id=None)` is system scope.** Its user-scoped
+  operations raise through `_owner`; do not "helpfully" let a handler build one.
+- **JSONB keys are strings, the domain's are ints.** `mapping.py` converts in
+  both directions; a missed conversion silently drops heard marks.
+- **A missing `Origin` header is allowed** (curl, tests). Do not tighten the CSRF
+  check to require it, and do not break the Vite proxy: `HOST_URL` and
+  `READFLOW_ALLOWED_ORIGINS` exist for exactly that.
+- **`pg_dump` lives in the image, not on the dev host.** The admin backup
+  endpoint answers 503 with a clear message when it is absent; use
+  `scripts/backup.sh --compose` to dump through the container.
+- **`route.route` paths in the 401 matrix are generated**, so a new endpoint
+  without auth fails `test_every_non_public_route_requires_a_session`. Keep
+  `/api/auth/logout` in its public allowlist (it is deliberately idempotent).
+
 ## Current User-Facing Pages
+
+Auth pages (unauthenticated):
+
+- `/setup` — first-run: create the administrator. Only reachable while the
+  install has no accounts (the server answers 409 afterwards).
+- `/login` — username/password; the server's generic error is shown verbatim,
+  `next` returns to the requested page, and an off-site `next` is refused.
 
 Library page (`/`, `/library/:folderId`):
 
@@ -2585,8 +2760,9 @@ Reader page:
 
 Admin page:
 
-- two tabs: **Overview** (config knobs, model warm/evict, telemetry, memory) and
-  **Queue** (the live synthesis queue inspector)
+- three tabs: **Overview** (config knobs, model warm/evict, telemetry, memory),
+  **Queue** (the live synthesis queue inspector) and **Users** (create accounts,
+  toggle admin, reset a password, disable/enable, download a database backup)
 - change runtime knobs
 - warm model
 - evict model
@@ -3300,15 +3476,17 @@ When making changes, use this checklist.
 
 Likely next steps, unless the user changes direction:
 
-1. persist jobs and chunk metadata
-2. add temp media cleanup/retention
-3. improve admin telemetry depth
-4. continue hardening reader/player edge cases (the conveyor and phone dock are
+1. media retention: rendered audio is kept until purged, and nothing prunes
+   `/tmp/<temp_dir_name>` or the `media` volume yet
+2. improve admin telemetry depth
+3. continue hardening reader/player edge cases (the conveyor and phone dock are
    the newest surfaces; gesture feel and small-screen layouts are the likeliest
    places for the next bug)
-5. expand deployment story for a single-host install (two GHCR images + `compose.yml`
-   are in place; multi-arch flash builds, image signing, and cleanup remain)
-6. add a better documented GPU validation workflow
+4. single-host deployment polish (three GHCR images + `compose.yml` and quadlet
+   units are in place; multi-arch flash builds, image signing and cleanup remain)
+5. a better documented GPU validation workflow
+6. auth niceties that were deliberately deferred: 2FA, email reset, an active
+   session list, an audit log
 
 ## Bottom Line for Future Agents
 

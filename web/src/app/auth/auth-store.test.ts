@@ -85,3 +85,22 @@ describe("the auth store", () => {
     unsubscribe();
   });
 });
+
+describe("a stale status payload", () => {
+  it("cannot sign out a session that just logged in", () => {
+    applyAuthStatus(authStatusFor(TEST_USER));
+
+    // The gate's mount-time fetch can resolve after the login request.
+    applyAuthStatus(authStatusFor(null));
+
+    expect(getAuthState().phase).toBe("authenticated");
+  });
+
+  it("still reports setup when the install is empty", () => {
+    applyAuthStatus(authStatusFor(TEST_USER));
+
+    applyAuthStatus({ needs_setup: true, authenticated: false, user: null });
+
+    expect(getAuthState().phase).toBe("setup");
+  });
+});

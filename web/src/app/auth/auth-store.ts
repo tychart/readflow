@@ -40,8 +40,23 @@ export function subscribeAuth(listener: () => void): () => void {
   };
 }
 
-/** Apply a status payload from the server (login, setup, refresh). */
+/**
+ * Apply a status payload from the server (login, setup, refresh).
+ *
+ * An *anonymous* payload never downgrades an authenticated session: the gate
+ * fetches `/auth/status` on mount, and a slow response can land after a login
+ * and log the user straight back out (that was a real bug — the deep-link flow
+ * bounced). Only `clearAuth()` (401, logout, a 1008 socket close) signs a user
+ * out, and a genuine "session expired" reload starts from `loading` again.
+ */
 export function applyAuthStatus(status: AuthStatus): void {
+  if (
+    !status.authenticated &&
+    !status.needs_setup &&
+    state.phase === "authenticated"
+  ) {
+    return;
+  }
   if (status.needs_setup) {
     emit({ phase: "setup", user: null, needsSetup: true });
     return;
