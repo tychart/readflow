@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from time import monotonic, time
+from time import monotonic
 from typing import NamedTuple, TypedDict
 
 from app.chunking.estimate import estimated_speech_seconds
 from app.chunking.planner import ChunkPlanner
 from app.core.config import RuntimeConfig
 from app.core.hub import WebSocketHub
+from app.core.time import to_iso, utc_now
 from app.jobs.manager import JobManager
 from app.jobs.models import (
     PENDING_CHUNK_STATUSES,
@@ -63,7 +64,7 @@ class SchedulerLiveness(TypedDict):
     """Live health of the scheduling loop, surfaced in the admin views."""
 
     running: bool
-    last_tick_at: float | None
+    last_tick_at: str | None
     last_error: str | None
     consecutive_errors: int
     warning: str | None
@@ -144,7 +145,7 @@ class SchedulerService:
     def liveness_snapshot(self) -> SchedulerLiveness:
         return {
             "running": self._running,
-            "last_tick_at": self._last_tick_at,
+            "last_tick_at": None if self._last_tick_at is None else to_iso(self._last_tick_at),
             "last_error": self._last_error,
             "consecutive_errors": self._consecutive_errors,
             "warning": self._warning,
@@ -270,7 +271,7 @@ class SchedulerService:
                 break
 
     async def run_once(self) -> None:
-        self._last_tick_at = time()
+        self._last_tick_at = utc_now()
         await self._expire_stale_listeners()
         self._refresh_up_next()
         self._ensure_planned_chunks()
@@ -402,8 +403,11 @@ class SchedulerService:
                 continue
             if job.planner_cursor.exhausted:
                 continue
+            # The source text is its own row. It is read only for a job that is
+            # actually planning, and only once per tick (phase 3 adds a cache).
+            source_text = self._job_manager.source_text(job.id)
             while self._needs_more_planning(job):
-                plan = self._planner.plan_next(job.source_text, job.planner_cursor.offset)
+                plan = self._planner.plan_next(source_text, job.planner_cursor.offset)
                 if plan is None:
                     # Nothing left to cut: record it so completion can settle
                     # and nobody asks this job for more work again.
@@ -445,7 +449,7 @@ class SchedulerService:
         for job in expired:
             await self._hub.broadcast(
                 WsEnvelope(
-                    type="job_updated", payload={"job": job_to_summary(job).model_dump()}
+                    type="job_updated", payload={"job": job_to_summary(job.summary()).model_dump()}
                 ).model_dump()
             )
 
@@ -838,7 +842,7 @@ class SchedulerService:
                 WsEnvelope(
                     type=message_type,
                     payload={
-                        "job": job_to_summary(job).model_dump(),
+                        "job": job_to_summary(job.summary()).model_dump(),
                         "chunk": chunk_to_response(job, chunk).model_dump(),
                         "chunk_index": chunk.index,
                         "mime_type": self._chunk_mime_type,
@@ -1043,7 +1047,7 @@ class SchedulerService:
             model_id=group.model_id,
             language=group.language,
             voice_id=group.voice_id,
-            started_at=min(chunk.updated_at for chunk in chunks),
+            started_at=to_iso(min(chunk.updated_at for chunk in chunks)),
         )
 
     def _batch_summary(self, batch: list[ChunkRecord]) -> QueueBatch | None:
@@ -1064,7 +1068,7 @@ class SchedulerService:
         offset = job.planner_cursor.offset
         if offset < 0:
             return 0
-        return max(0, len(job.source_text) - offset)
+        return max(0, job.source_char_count - offset)
 
     def _limit_chunks(
         self, active: list[ChunkRecord], pending: list[ChunkRecord]
@@ -1126,8 +1130,8 @@ class SchedulerService:
             is_pending=chunk.status in PENDING_CHUNK_STATUSES,
             is_rendering=chunk.status == ChunkStatus.RENDERING,
             in_next_batch=(chunk.job_id, chunk.index, chunk.version) in next_batch_ids,
-            created_at=chunk.created_at,
-            updated_at=chunk.updated_at,
+            created_at=to_iso(chunk.created_at),
+            updated_at=to_iso(chunk.updated_at),
             error=chunk.error,
             versions=[
                 QueueChunkVersionResponse(
@@ -1210,7 +1214,7 @@ class SchedulerService:
         }
 
         return AdminQueueResponse(
-            generated_at=time(),
+            generated_at=to_iso(utc_now()),
             queue_depth=self._job_manager.queue_depth(),
             active_batch=self._active_batch(),
             next_batch=self._batch_summary(next_batch),

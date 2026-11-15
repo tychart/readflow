@@ -56,10 +56,13 @@ const MODEL_STATE_COLORS: Record<string, { dot: string; pulse?: boolean }> = {
   error: { dot: "bg-rose-500" },
 };
 
-/** Human-readable age of the scheduler's last tick. */
-function formatTickAge(timestamp: number | null | undefined): string {
-  if (!timestamp) return "never";
-  const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp));
+/** Human-readable age of the scheduler's last tick (an ISO instant). */
+function formatTickAge(iso: string | null | undefined): string {
+  if (!iso) return "never";
+  const seconds = Math.max(
+    0,
+    Math.round((Date.now() - Date.parse(iso)) / 1000),
+  );
   if (seconds < 2) return "just now";
   if (seconds < 60) return `${seconds}s ago`;
   return `${Math.round(seconds / 60)}m ago`;

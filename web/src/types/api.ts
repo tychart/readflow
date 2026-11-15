@@ -133,7 +133,8 @@ export interface TrashEntry {
   name: string;
   parent_id: string | null;
   job_count: number;
-  created_at: number;
+  /** ISO-8601 instant with an explicit `Z`; render with `lib/time`. */
+  created_at: string;
 }
 
 export interface LibraryItemRef {
@@ -195,7 +196,8 @@ export interface QueueBatch {
   model_id: string | null;
   language: string | null;
   voice_id: string | null;
-  started_at: number | null;
+  /** ISO-8601 instant with an explicit `Z`, or null for a predicted batch. */
+  started_at: string | null;
 }
 
 /** One pending chunk plus the scheduler facts behind its ordering. */
@@ -228,8 +230,9 @@ export interface QueueChunk {
   is_pending: boolean;
   is_rendering: boolean;
   in_next_batch: boolean;
-  created_at: number;
-  updated_at: number;
+  /** ISO-8601 instants with an explicit `Z`; render with `lib/time`. */
+  created_at: string;
+  updated_at: string;
   error: string | null;
   versions: QueueChunkVersion[];
 }
@@ -262,7 +265,8 @@ export interface QueueJobGroup {
 }
 
 export interface AdminQueue {
-  generated_at: number;
+  /** ISO-8601 instant with an explicit `Z`. */
+  generated_at: string;
   queue_depth: number;
   active_batch: QueueBatch | null;
   next_batch: QueueBatch | null;
@@ -276,7 +280,8 @@ export interface SchedulerState {
   active_batch?: QueueBatch | null;
   /** Liveness of the scheduling loop; a stale tick or error means it is stuck. */
   running?: boolean;
-  last_tick_at?: number | null;
+  /** ISO-8601 instant with an explicit `Z`. */
+  last_tick_at?: string | null;
   last_error?: string | null;
   consecutive_errors?: number;
   /** Set while dispatch is intentionally paused (e.g. the VRAM hard limit). */

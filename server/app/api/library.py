@@ -10,15 +10,15 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.mappers import library_response
+from app.api.mappers import job_summary_response, library_response
 from app.core.services import AppServices
+from app.core.time import to_iso
 from app.jobs.models import Job
 from app.library.models import Folder, TrashEntry
 from app.library.tree import LibraryError, LibraryItem, descendant_folder_ids
 from app.schemas.api import (
     JobSummaryResponse,
     WsEnvelope,
-    job_to_summary,
     progress_to_response,
 )
 from app.schemas.library import (
@@ -71,7 +71,7 @@ def _trash_response(entry: TrashEntry) -> TrashEntryResponse:
         name=entry.name,
         parent_id=entry.parent_id,
         job_count=entry.job_count,
-        created_at=entry.created_at,
+        created_at=to_iso(entry.created_at),
     )
 
 
@@ -131,7 +131,7 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         except (KeyError, LibraryError) as exc:
             raise _http_error(exc) from exc
         await _broadcast_library(app_services, "job_updated")
-        return job_to_summary(job, progress=app_services.progress.view(job))
+        return job_summary_response(app_services, job.summary())
 
     # ── ordering and bulk operations ────────────────────────────────────────
 
@@ -239,12 +239,10 @@ def build_library_router(get_services: Callable[[], AppServices]) -> APIRouter:
         app_services: AppServices = Depends(services),
     ) -> ProgressUpdateResponse:
         try:
-            app_services.job_manager.update_playback(
-                job_id, request.position_seconds, request.is_playing
-            )
             job, progress = app_services.progress.record(
                 job_id,
                 position_seconds=request.position_seconds,
+                is_playing=request.is_playing,
                 heard_chunk_indexes=request.heard_chunk_indexes,
             )
         except KeyError as exc:

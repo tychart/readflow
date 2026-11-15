@@ -35,7 +35,6 @@ from app.schemas.api import (
     JobDetailResponse,
     JobManifestResponse,
     JobSummaryResponse,
-    PlaybackUpdateRequest,
     RenderToEndRequest,
     RuntimeStatusResponse,
     SchedulerStateResponse,
@@ -185,6 +184,43 @@ async def _resolve_job_source_text(form: FormData, *, max_source_bytes: int) -> 
     return text, "text"
 
 
+async def handle_socket_message(
+    app_services: AppServices, message: str
+) -> dict[str, object] | None:
+    """Apply one client WebSocket message, returning an optional reply.
+
+    Extracted from the endpoint so the message handlers are testable without a
+    socket server, and so the endpoint stays a transport loop.
+    """
+    try:
+        data = json.loads(message)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    msg_type = data.get("type")
+    payload = data.get("payload") or {}
+    if not isinstance(payload, dict):
+        return None
+
+    if msg_type == "playback_sync":
+        job_id = payload.get("job_id", "")
+        if job_id:
+            try:
+                # One command owns a playback report: it folds the position into
+                # the job (scheduler buffering) and the heard marks into progress,
+                # in one transaction. The HTTP /progress route calls the same one.
+                app_services.progress.record(
+                    str(job_id),
+                    position_seconds=float(payload.get("current_time_seconds", 0.0)),
+                    is_playing=bool(payload.get("is_playing", True)),
+                )
+            except KeyError:
+                pass  # stale job id, ignore silently
+    return None
+
+
 def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
     router = APIRouter(prefix="/api")
 
@@ -221,7 +257,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
 
     @router.get("/jobs", response_model=list[JobSummaryResponse])
     async def list_jobs(app_services: AppServices = Depends(services)) -> list[JobSummaryResponse]:
-        return job_summaries_response(app_services, app_services.job_manager.list_jobs())
+        # Summaries, not aggregates: the list shows status and derived progress,
+        # so it must not materialise every chunk (or the source text) per job.
+        return job_summaries_response(app_services, app_services.job_manager.summaries())
 
     @router.post(
         "/jobs",
@@ -266,7 +304,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
         # Streamed job payloads carry the summary only. `source_text` is static
         # per job and is fetched over HTTP, so broadcasting it (megabytes for a
         # book) on every job event would be pure overhead.
-        envelope = WsEnvelope(type="job_created", payload={"job": job_to_summary(job).model_dump()})
+        envelope = WsEnvelope(
+            type="job_created", payload={"job": job_to_summary(job.summary()).model_dump()}
+        )
         app_services.telemetry.record_event("job_created", {"job_id": job.id})
         await app_services.hub.broadcast(envelope.model_dump())
         return CreateJobResponse(job=detail)
@@ -462,7 +502,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             job = app_services.job_manager.activate_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        summary = job_to_summary(job)
+        summary = job_to_summary(job.summary())
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
@@ -476,7 +516,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             job = app_services.job_manager.pause_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        summary = job_to_summary(job)
+        summary = job_to_summary(job.summary())
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
@@ -490,7 +530,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             job = app_services.job_manager.resume_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        summary = job_to_summary(job)
+        summary = job_to_summary(job.summary())
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
@@ -512,7 +552,7 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        summary = job_to_summary(job)
+        summary = job_to_summary(job.summary())
         await app_services.hub.broadcast(
             WsEnvelope(type="job_updated", payload={"job": summary.model_dump()}).model_dump()
         )
@@ -542,26 +582,6 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
             WsEnvelope(type="job_updated", payload={"job": detail.model_dump()}).model_dump()
         )
         return detail
-
-    @router.post("/jobs/{job_id}/playback", response_model=JobDetailResponse)
-    async def update_playback(
-        job_id: str,
-        request: PlaybackUpdateRequest,
-        app_services: AppServices = Depends(services),
-    ) -> JobDetailResponse:
-        try:
-            job = app_services.job_manager.update_playback(
-                job_id,
-                current_time_seconds=request.current_time_seconds,
-                is_playing=request.is_playing,
-            )
-            # The playback ping still owns scheduler buffering state, but the
-            # position is listening progress and must survive a reload even
-            # before the reader starts reporting heard chunks.
-            app_services.progress.record(job_id, position_seconds=request.current_time_seconds)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return job_detail_response(app_services, job)
 
     @router.delete("/jobs/{job_id}", status_code=204)
     async def delete_job(job_id: str, app_services: AppServices = Depends(services)) -> None:
@@ -788,28 +808,9 @@ def build_router(get_services: Callable[[], AppServices]) -> APIRouter:
                     await websocket.send_text(json.dumps({"type": "pong", "payload": {}}))
                     continue
 
-                # JSON-typed messages
-                try:
-                    data = json.loads(message)
-                except json.JSONDecodeError:
-                    continue
-
-                msg_type = data.get("type")
-                payload = data.get("payload", {})
-
-                if msg_type == "playback_sync":
-                    job_id = payload.get("job_id", "")
-                    if job_id:
-                        try:
-                            position_seconds = payload.get("current_time_seconds", 0.0)
-                            app_services.job_manager.update_playback(
-                                job_id,
-                                current_time_seconds=position_seconds,
-                                is_playing=payload.get("is_playing", True),
-                            )
-                            app_services.progress.record(job_id, position_seconds=position_seconds)
-                        except KeyError:
-                            pass  # stale job id, ignore silently
+                reply = await handle_socket_message(app_services, message)
+                if reply is not None:
+                    await websocket.send_text(json.dumps(reply))
         finally:
             await app_services.hub.disconnect(websocket)
 

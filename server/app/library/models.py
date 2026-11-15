@@ -10,9 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from time import time
 
 from app.core.identity import DEFAULT_USER_ID
+from app.core.time import utc_now
+from app.jobs.models import Job, JobSummary
+
+# A job as the library sees it: either the full aggregate or its flat summary.
+# Ordering and playback helpers accept both, so a caller never loads chunks it
+# will not use. A union (not a protocol) because both are concrete, and because
+# `JobSummary` is frozen — a mutable protocol member would not accept it.
+FolderJob = Job | JobSummary
 
 
 class TrashKind(StrEnum):
@@ -36,8 +43,8 @@ class Folder:
     # Manual order among siblings. Jobs and folders have separate sequences
     # because the UI always renders folders first.
     position: int = 0
-    created_at: float = field(default_factory=time)
-    updated_at: float = field(default_factory=time)
+    created_at: float = field(default_factory=utc_now)
+    updated_at: float = field(default_factory=utc_now)
     # Soft delete. `trash_entry_id` groups a whole subtree under one trash entry
     # so restoring a folder restores everything that was inside it.
     deleted_at: float | None = None
@@ -55,6 +62,10 @@ class JobProgress:
     - `audio_epoch` is the job epoch the heard marks belong to. A full re-render
       bumps the job's epoch, so the old marks stop counting without deleting
       them (and the client re-reports as it listens again).
+    - `heard_seconds` is the duration of the takes that are *currently* valid
+      heard marks. It is stored, not derived, so the remaining-audio estimate
+      needs no chunk access; `ProgressService` and the chunk-write path are its
+      only writers.
     """
 
     user_id: str
@@ -62,7 +73,8 @@ class JobProgress:
     position_seconds: float = 0.0
     audio_epoch: int = 0
     heard: dict[int, int] = field(default_factory=dict)
-    updated_at: float = field(default_factory=time)
+    heard_seconds: float = 0.0
+    updated_at: float = field(default_factory=utc_now)
 
 
 @dataclass(slots=True)
@@ -77,4 +89,4 @@ class TrashEntry:
     # Where the root lived, so Restore can put it back. None = root library.
     parent_id: str | None = None
     job_count: int = 0
-    created_at: float = field(default_factory=time)
+    created_at: float = field(default_factory=utc_now)

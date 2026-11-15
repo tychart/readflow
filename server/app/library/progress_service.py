@@ -2,19 +2,26 @@
 
 The client reports what it actually played; the server stores it keyed by chunk
 version and derives everything else. No read status is ever sent by the client.
+
+`record` is the single entry point for a playback report: one transaction that
+folds the position into the job (`Job.apply_playback_report`) and the heard marks
+into the progress row. Both the HTTP `/progress` route and the WebSocket
+`playback_sync` message call it, so the two cannot drift.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from time import time
 
 from app.core.identity import DEFAULT_USER_ID
+from app.core.time import utc_now
 from app.db.protocols import Database, UnitOfWork
 from app.jobs.models import ChunkStatus, Job
 from app.library.models import JobProgress
 from app.library.progress import (
+    ProgressSource,
     ProgressView,
+    heard_seconds,
     progress_view,
     valid_heard,
 )
@@ -34,18 +41,18 @@ class ProgressService:
 
     # ── reads ───────────────────────────────────────────────────────────────
 
-    def views(self, jobs: Iterable[Job]) -> dict[str, ProgressView]:
+    def views(self, jobs: Iterable[ProgressSource]) -> dict[str, ProgressView]:
         jobs = list(jobs)
         with self._db.transaction() as uow:
             rows = {row.job_id: row for row in uow.progress.list(self._user_id)}
         return {job.id: self._view(job, rows.get(job.id)) for job in jobs}
 
-    def view(self, job: Job) -> ProgressView:
+    def view(self, job: ProgressSource) -> ProgressView:
         with self._db.transaction() as uow:
             row = uow.progress.get(self._user_id, job.id)
         return self._view(job, row)
 
-    def _view(self, job: Job, progress: JobProgress | None) -> ProgressView:
+    def _view(self, job: ProgressSource, progress: JobProgress | None) -> ProgressView:
         return progress_view(job, progress, estimated_chars_per_second=self._chars_per_second)
 
     # ── playback reports ────────────────────────────────────────────────────
@@ -55,9 +62,10 @@ class ProgressService:
         job_id: str,
         *,
         position_seconds: float,
+        is_playing: bool = True,
         heard_chunk_indexes: Iterable[int] = (),
     ) -> tuple[Job, JobProgress]:
-        """Store a position report and union any newly heard chunks.
+        """Store one playback report: position, listener intent and heard marks.
 
         `heard_chunk_indexes` is additive on purpose: the client only reports
         what it has heard since the last flush, so a dropped report cannot lose
@@ -65,22 +73,26 @@ class ProgressService:
         the time, which invalidates them automatically if the chunk is
         reprocessed later.
         """
-        now = time()
+        now = utc_now()
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
-            progress = self._ensure(uow, job)
+            progress, created = self._ensure(uow, job)
             if progress.audio_epoch != job.audio_epoch:
                 # A full re-render replaced the audio; old heard marks describe
                 # a take that no longer exists.
                 progress.heard.clear()
                 progress.audio_epoch = job.audio_epoch
+            job.apply_playback_report(position_seconds, is_playing, now)
             progress.position_seconds = max(0.0, position_seconds)
             for index in heard_chunk_indexes:
                 version = job.active_chunk_version.get(index)
                 if version is not None:
                     progress.heard[index] = version
+            progress.heard_seconds = heard_seconds(job, progress)
             progress.updated_at = now
-            uow.progress.save(progress)
+            if not created:
+                uow.progress.save(progress)
+            uow.jobs.save(job)
             return job, progress
 
     # ── manual marks ────────────────────────────────────────────────────────
@@ -108,8 +120,8 @@ class ProgressService:
     def _apply_mark(
         self, uow: UnitOfWork, job: Job, *, read: bool, from_chunk: int | None
     ) -> JobProgress:
-        now = time()
-        progress = self._ensure(uow, job)
+        now = utc_now()
+        progress, created = self._ensure(uow, job)
         if progress.audio_epoch != job.audio_epoch:
             progress.heard.clear()
             progress.audio_epoch = job.audio_epoch
@@ -135,15 +147,17 @@ class ProgressService:
                     progress.position_seconds = min(progress.position_seconds, chunk.start_seconds)
             else:
                 progress.position_seconds = 0.0
+        progress.heard_seconds = heard_seconds(job, progress)
         progress.updated_at = now
-        uow.progress.save(progress)
+        if not created:
+            uow.progress.save(progress)
         return progress
 
     def mark_chunk(self, job_id: str, chunk_index: int, *, heard: bool) -> tuple[Job, JobProgress]:
-        now = time()
+        now = utc_now()
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
-            progress = self._ensure(uow, job)
+            progress, created = self._ensure(uow, job)
             if progress.audio_epoch != job.audio_epoch:
                 progress.heard.clear()
                 progress.audio_epoch = job.audio_epoch
@@ -154,23 +168,31 @@ class ProgressService:
                 progress.heard[chunk_index] = version
             else:
                 progress.heard.pop(chunk_index, None)
+            progress.heard_seconds = heard_seconds(job, progress)
             progress.updated_at = now
-            uow.progress.save(progress)
+            if not created:
+                uow.progress.save(progress)
             return job, progress
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
-    def _ensure(self, uow: UnitOfWork, job: Job) -> JobProgress:
+    def _ensure(self, uow: UnitOfWork, job: Job) -> tuple[JobProgress, bool]:
+        """The job's progress row, inserted on first use.
+
+        Returns the row and whether it was just created, so a fresh row is only
+        `add`ed once and an existing one is only `save`d once.
+        """
         progress = uow.progress.get(self._user_id, job.id)
-        if progress is None:
-            progress = JobProgress(
-                user_id=self._user_id,
-                job_id=job.id,
-                audio_epoch=job.audio_epoch,
-                updated_at=time(),
-            )
-            uow.progress.add(progress)
-        return progress
+        if progress is not None:
+            return progress, False
+        progress = JobProgress(
+            user_id=self._user_id,
+            job_id=job.id,
+            audio_epoch=job.audio_epoch,
+            updated_at=utc_now(),
+        )
+        uow.progress.add(progress)
+        return progress, True
 
     def _require_job(self, uow: UnitOfWork, job_id: str) -> Job:
         job = uow.jobs.get(self._user_id, job_id)

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useAppBootstrap } from "../../hooks/useAppBootstrap";
 import { api } from "../../lib/api";
+import { formatDateTime } from "../../lib/time";
 import { useAppStore } from "../../state/store";
 import type { TrashEntry } from "../../types/api";
 
@@ -137,7 +138,7 @@ export function TrashPage() {
                   {entry.kind === "folder"
                     ? `Folder${entry.job_count ? ` · ${entry.job_count} jobs` : ""}`
                     : "Job"}{" "}
-                  · deleted {new Date(entry.created_at * 1000).toLocaleString()}
+                  · deleted {formatDateTime(entry.created_at)}
                 </div>
               </div>
               <button

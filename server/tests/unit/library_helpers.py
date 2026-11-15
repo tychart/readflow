@@ -5,6 +5,8 @@ Not a `test_*` module on purpose: pytest must not collect it.
 
 from __future__ import annotations
 
+from app.chunking.planner import ChunkPlan
+from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
 from app.library.models import Folder
 
@@ -52,7 +54,7 @@ def build_job(
         id=job_id,
         title=title or job_id,
         source_kind="text",
-        source_text="One. Two. Three.",
+        source_char_count=len("One. Two. Three."),
         model_id=MODEL,
         voice_id="suzy",
         user_id=user_id,
@@ -66,6 +68,9 @@ def build_job(
     job.active_chunk_version = {chunk.index: chunk.version for chunk in chunks}
     job.planner_cursor.offset = -1 if planner_exhausted else 0
     job.planner_cursor.chunks_emitted = len(chunks)
+    # Rollups are the manager's job in production; a fixture has to make the
+    # aggregate consistent the same way so derived-progress tests are meaningful.
+    job.recompute_derived()
     if planner_exhausted and not job.has_unfinished_chunks() and chunks:
         job.status = JobStatus.COMPLETED
     return job
@@ -95,3 +100,61 @@ def layout(chunks: list[ChunkRecord]) -> None:
         chunk.start_seconds = running
         if chunk.status == ChunkStatus.WRITTEN:
             running += chunk.duration_seconds
+
+
+def build_messy_job(manager: JobManager) -> Job:
+    """A job with every shape the rollups have to survive.
+
+    Built through the real manager so the fixture exercises the same write paths
+    production uses:
+
+    - chunk 0 written
+    - chunk 1 written, then reprocessed (a second take becomes live)
+    - chunk 2 failed
+    - chunk 3 planned but never rendered (a gap in the playable run)
+    - the voice changed, so the pending chunk was re-pointed
+    """
+    job = manager.create_job(
+        source_text="alpha beta gamma delta epsilon zeta eta theta",
+        source_kind="text",
+        model_id=MODEL,
+        voice_id="suzy",
+        title="Messy",
+    )
+    chunks = [
+        manager.add_planned_chunk(
+            job.id,
+            ChunkPlan(text=f"chunk {index} text", char_start=index * 5, char_end=index * 5 + 5),
+        )
+        for index in range(4)
+    ]
+
+    manager.mark_chunk_written(
+        chunks[0], duration_seconds=10.0, segment_path="/tmp/0.m4s", wav_path="/tmp/0.wav"
+    )
+    manager.mark_chunk_written(
+        chunks[1], duration_seconds=7.5, segment_path="/tmp/1.m4s", wav_path="/tmp/1.wav"
+    )
+    # A reprocess appends a take and makes it live; the old take stays as history.
+    manager.add_versioned_chunk(
+        job.id,
+        text="chunk 1 rewritten",
+        char_start=5,
+        char_end=10,
+        voice_id="suzy",
+        parent_index=1,
+    )
+    rewritten = manager.get_job(job.id).active_chunk(1)
+    assert rewritten is not None
+    manager.mark_chunk_written(
+        rewritten,
+        duration_seconds=9.0,
+        segment_path="/tmp/1_v1.m4s",
+        wav_path="/tmp/1_v1.wav",
+    )
+    manager.mark_chunk_failed(chunks[2], "synthesis exploded")
+    # Switching the live take back bumps the audio epoch.
+    manager.set_active_chunk_version(job.id, 1, 0)
+    # A voice change re-points work that has not rendered yet.
+    manager.set_voice(job.id, "howard")
+    return manager.get_job(job.id)

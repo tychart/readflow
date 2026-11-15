@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.jobs.models import ChunkRecord, Job
+from app.jobs.models import ChunkRecord, Job, JobSummary
 from app.library.progress import ProgressView
 from app.telemetry.memory import MemoryStats as AdminMemoryStats
 
@@ -202,7 +202,8 @@ class QueueBatch(BaseModel):
     model_id: str | None = None
     language: str | None = None
     voice_id: str | None = None
-    started_at: float | None = None
+    # ISO-8601 instant (`...Z`); only set for the batch in flight.
+    started_at: str | None = None
 
 
 class SchedulerStateResponse(BaseModel):
@@ -223,7 +224,8 @@ class SchedulerStateResponse(BaseModel):
     # Liveness. `running=False`, a stale `last_tick_at`, or a non-empty
     # `last_error` are what make a silently stalled scheduler visible.
     running: bool = False
-    last_tick_at: float | None = None
+    # ISO-8601 instant (`...Z`).
+    last_tick_at: str | None = None
     last_error: str | None = None
     consecutive_errors: int = 0
     # Set while dispatch is intentionally paused (e.g. the VRAM hard limit).
@@ -274,8 +276,9 @@ class QueueChunkResponse(BaseModel):
     is_pending: bool
     is_rendering: bool
     in_next_batch: bool
-    created_at: float
-    updated_at: float
+    # ISO-8601 instants (`...Z`).
+    created_at: str
+    updated_at: str
     error: str | None = None
     versions: list[QueueChunkVersionResponse] = Field(default_factory=list)
 
@@ -305,7 +308,8 @@ class QueueJobGroup(BaseModel):
 
 
 class AdminQueueResponse(BaseModel):
-    generated_at: float
+    # ISO-8601 instant (`...Z`).
+    generated_at: str
     queue_depth: int
     active_batch: QueueBatch | None = None
     next_batch: QueueBatch | None = None
@@ -391,7 +395,7 @@ def progress_to_response(view: ProgressView) -> JobProgressResponse:
     )
 
 
-def job_to_summary(job: Job, *, progress: ProgressView | None = None) -> JobSummaryResponse:
+def job_to_summary(job: JobSummary, *, progress: ProgressView | None = None) -> JobSummaryResponse:
     return JobSummaryResponse(
         id=job.id,
         title=job.title,
@@ -412,6 +416,7 @@ def job_to_summary(job: Job, *, progress: ProgressView | None = None) -> JobSumm
 def job_to_detail(
     job: Job,
     *,
+    source_text: str,
     progress: ProgressView | None = None,
     folder_path: list[FolderBriefResponse] | None = None,
     previous_job_id: str | None = None,
@@ -422,9 +427,9 @@ def job_to_detail(
     next_job_title: str | None = None,
 ) -> JobDetailResponse:
     return JobDetailResponse(
-        **job_to_summary(job, progress=progress).model_dump(),
+        **job_to_summary(job.summary(), progress=progress).model_dump(),
         source_kind=job.source_kind,
-        source_text=job.source_text,
+        source_text=source_text,
         plan_version=job.plan_version,
         chunks=[
             chunk_to_response(job, chunk)

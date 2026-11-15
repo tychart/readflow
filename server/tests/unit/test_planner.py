@@ -108,12 +108,12 @@ def test_planner_is_pure_so_an_unused_plan_cannot_skip_text():
     )
     planner = _planner(120)
 
-    discarded = planner.plan_next(job.source_text, job.planner_cursor.offset)
+    discarded = planner.plan_next(manager.source_text(job.id), job.planner_cursor.offset)
     assert discarded is not None
     assert job.planner_cursor.offset == 0
     assert job.chunks == []
 
-    first = planner.plan_next(job.source_text, job.planner_cursor.offset)
+    first = planner.plan_next(manager.source_text(job.id), job.planner_cursor.offset)
     assert first is not None
     manager.add_planned_chunk(job.id, first)
 
@@ -131,7 +131,7 @@ def test_finish_planning_marks_the_cursor_exhausted():
         model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         voice_id="suzy",
     )
-    plan = _planner(700).plan_next(job.source_text, 0)
+    plan = _planner(700).plan_next(manager.source_text(job.id), 0)
     assert plan is not None
     manager.add_planned_chunk(job.id, plan)
 

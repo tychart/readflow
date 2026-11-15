@@ -183,7 +183,7 @@ describe("applyEvent — memory_stats", () => {
       model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
       language: "English",
       voice_id: "suzy",
-      started_at: 123.0,
+      started_at: "1970-01-01T00:02:03Z",
     };
 
     useAppStore.getState().applyEvent({

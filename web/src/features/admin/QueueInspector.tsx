@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../../lib/api";
+import { formatAgeSince } from "../../lib/time";
 import { useAppStore } from "../../state/store";
 import type {
   AdminQueue,
@@ -24,12 +25,8 @@ function formatSeconds(totalSeconds: number): string {
   return `${minutes}m ${Math.round(seconds % 60)}s`;
 }
 
-function formatAge(timestamp: number): string {
-  const seconds = Math.max(0, Date.now() / 1000 - timestamp);
-  if (seconds < 60) {
-    return `${seconds.toFixed(0)}s ago`;
-  }
-  return `${Math.floor(seconds / 60)}m ago`;
+function formatAge(iso: string): string {
+  return formatAgeSince(iso);
 }
 
 /* ── Small presentational pieces ──────────────────────────── */
@@ -458,9 +455,10 @@ export function QueueInspector() {
   const jobs = snapshot?.jobs ?? [];
   const activeBatch = snapshot?.active_batch ?? null;
   const nextBatch = snapshot?.next_batch ?? null;
+  // `started_at` is an ISO instant; the elapsed counter works in seconds.
   const elapsedSeconds =
     activeBatch?.started_at != null
-      ? Math.max(0, now - activeBatch.started_at)
+      ? Math.max(0, now - Date.parse(activeBatch.started_at) / 1000)
       : null;
 
   if (isLoading && !snapshot) {

@@ -6,11 +6,12 @@ from app.jobs.models import ChunkStatus
 from app.library.models import JobProgress
 from app.library.progress import (
     aggregate_fraction,
-    estimated_remaining_seconds,
+    heard_seconds,
     last_playable_index,
     progress_fraction,
     progress_view,
     read_status,
+    remaining_seconds,
     valid_heard,
 )
 from tests.unit.library_helpers import build_chunk, build_job, layout
@@ -109,11 +110,14 @@ def test_remaining_seconds_counts_written_planned_and_unplanned_text():
     ]
     layout(chunks)
     job = build_job("job", chunks, planner_exhausted=False)
-    job.source_text = "x" * 360
+    job.source_char_count = 360
     job.planner_cursor.offset = 180
+    job.recompute_derived()
 
     # Chunk 0 heard; chunk 1 estimated at 180/18 = 10s; remaining text 180/18.
-    assert estimated_remaining_seconds(job, {0}, estimated_chars_per_second=18.0) == 20.0
+    progress = _progress(job, {0})
+    progress.heard_seconds = heard_seconds(job, progress)
+    assert remaining_seconds(job, progress.heard_seconds, chars_per_second=18.0) == 20.0
 
 
 def test_progress_view_collects_everything_the_client_needs():

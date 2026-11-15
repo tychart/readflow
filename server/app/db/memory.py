@@ -22,19 +22,21 @@ not to emulate MVCC.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from time import time
 
 from app.core.identity import DEFAULT_USER_DISPLAY_NAME, DEFAULT_USER_ID
-from app.db.models import User
+from app.core.time import utc_now
+from app.db.models import Session, User
 from app.db.protocols import (
     FolderRepository,
     JobRepository,
+    JobSourceRepository,
     ProgressRepository,
+    SessionRepository,
     TrashRepository,
     UnitOfWork,
     UserRepository,
 )
-from app.jobs.models import Job
+from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus, JobSummary
 from app.library.models import Folder, JobProgress, TrashEntry
 
 Journal = list[Callable[[], None]]
@@ -110,8 +112,46 @@ class MemoryUserRepository:
     def get(self, user_id: str) -> User | None:
         return self._table.get(user_id)
 
+    def get_by_username(self, username: str) -> User | None:
+        # Unique in the real schema; the first match is enough here because the
+        # auth service checks for a duplicate before inserting.
+        wanted = username.strip().lower()
+        return next(
+            (user for user in self._table.values() if user.username.lower() == wanted),
+            None,
+        )
+
     def list(self) -> list[User]:
         return self._table.values()
+
+
+class MemorySessionRepository:
+    def __init__(self, rows: dict[object, Session], journal: Journal) -> None:
+        self._table: _RowTable[Session] = _RowTable(
+            rows, journal, key=lambda session: session.id, label="Session"
+        )
+
+    def add(self, session: Session) -> None:
+        self._table.add(session)
+
+    def save(self, session: Session) -> None:
+        self._table.save(session)
+
+    def get_by_token_hash(self, token_hash: bytes) -> Session | None:
+        return next(
+            (row for row in self._table.values() if row.token_hash == token_hash),
+            None,
+        )
+
+    def delete(self, session_id: str) -> None:
+        self._table.delete(session_id)
+
+    def delete_for_user(self, user_id: str) -> None:
+        for session in [row for row in self._table.values() if row.user_id == user_id]:
+            self._table.delete(session.id)
+
+    def list_for_user(self, user_id: str) -> list[Session]:
+        return [row for row in self._table.values() if row.user_id == user_id]
 
 
 class MemoryFolderRepository:
@@ -156,12 +196,54 @@ class MemoryFolderRepository:
         )
 
 
-class MemoryJobRepository:
-    def __init__(self, rows: dict[object, Job], journal: Journal) -> None:
-        self._table: _RowTable[Job] = _RowTable(rows, journal, key=lambda job: job.id, label="Job")
+class MemoryJobSourceRepository:
+    """The canonical source text, one row per job.
 
-    def add(self, job: Job) -> None:
+    Kept out of the `Job` aggregate so a list/summary read never materialises
+    it. `put` is an upsert (a job's text never changes after creation, but the
+    adapter should not care).
+    """
+
+    def __init__(self, rows: dict[object, str], journal: Journal) -> None:
+        self._rows = rows
+        self._journal = journal
+
+    def get(self, job_id: str) -> str | None:
+        return self._rows.get(job_id)
+
+    def put(self, job_id: str, text: str) -> None:
+        previous = self._rows.get(job_id)
+        self._rows[job_id] = text
+        self._journal.append(lambda: self._restore(job_id, previous))
+
+    def delete(self, job_id: str) -> None:
+        """Drop the row (the SQL adapter gets this from `ON DELETE CASCADE`)."""
+        previous = self._rows.pop(job_id, None)
+        if previous is not None:
+            self._journal.append(lambda: self._rows.__setitem__(job_id, previous))
+
+    def _restore(self, job_id: str, previous: str | None) -> None:
+        if previous is None:
+            self._rows.pop(job_id, None)
+        else:
+            self._rows[job_id] = previous
+
+
+class MemoryJobRepository:
+    def __init__(
+        self,
+        rows: dict[object, Job],
+        sources: MemoryJobSourceRepository,
+        journal: Journal,
+    ) -> None:
+        self._table: _RowTable[Job] = _RowTable(rows, journal, key=lambda job: job.id, label="Job")
+        # One implementation of the source row, shared with `uow.sources`, so an
+        # insert cannot write a row the source repository cannot see.
+        self._sources = sources
+
+    def add(self, job: Job, *, source_text: str) -> None:
         self._table.add(job)
+        self._sources.put(job.id, source_text)
 
     def save(self, job: Job) -> None:
         self._table.save(job)
@@ -176,6 +258,12 @@ class MemoryJobRepository:
             return None
         return job
 
+    def get_any(self, job_id: str, *, include_deleted: bool = False) -> Job | None:
+        job = self._table.get(job_id)
+        if job is None or (job.deleted_at is not None and not include_deleted):
+            return None
+        return job
+
     def list(self, user_id: str, *, include_deleted: bool = False) -> list[Job]:
         return [
             job
@@ -183,10 +271,37 @@ class MemoryJobRepository:
             if job.user_id == user_id and (include_deleted or job.deleted_at is None)
         ]
 
+    def summaries(self, user_id: str, *, include_deleted: bool = False) -> list[JobSummary]:
+        return [
+            job.summary()
+            for job in self._table.values()
+            if job.user_id == user_id and (include_deleted or job.deleted_at is None)
+        ]
+
+    def summaries_all(self, *, include_deleted: bool = False) -> list[JobSummary]:
+        return [
+            job.summary()
+            for job in self._table.values()
+            if include_deleted or job.deleted_at is None
+        ]
+
+    def source_text(self, user_id: str, job_id: str) -> str:
+        job = self.get(user_id, job_id, include_deleted=True)
+        if job is None:
+            raise KeyError(f"Unknown job '{job_id}'")
+        return self.source_text_any(job_id)
+
+    def source_text_any(self, job_id: str) -> str:
+        text = self._sources.get(job_id)
+        if text is None:
+            raise KeyError(f"Job '{job_id}' has no source text")
+        return text
+
     def delete(self, user_id: str, job_id: str) -> None:
         job = self.get(user_id, job_id, include_deleted=True)
         if job is not None:
             self._table.delete(job_id)
+            self._sources.delete(job_id)
 
     def next_position(self, user_id: str, folder_id: str | None) -> int:
         return (
@@ -196,6 +311,29 @@ class MemoryJobRepository:
             )
             + 1
         )
+
+    def planned_chunks(self) -> list[ChunkRecord]:
+        return self._system_chunks(ChunkStatus.PLANNED)
+
+    def rendering_chunks(self) -> list[ChunkRecord]:
+        return self._system_chunks(ChunkStatus.RENDERING)
+
+    def _system_chunks(self, status: ChunkStatus) -> list[ChunkRecord]:
+        """Live chunks in `status` across every job the scheduler may act on."""
+        chunks: list[ChunkRecord] = []
+        for job in self._table.values():
+            if job.deleted_at is not None:
+                continue
+            if status == ChunkStatus.PLANNED and job.status == JobStatus.PAUSED:
+                continue
+            chunks.extend(
+                chunk
+                for chunk in job.chunks
+                if chunk.status == status
+                and chunk.plan_version == job.plan_version
+                and not chunk.deprecated
+            )
+        return chunks
 
 
 class MemoryProgressRepository:
@@ -260,15 +398,20 @@ class MemoryUnitOfWork:
     def __init__(
         self,
         users: dict[object, User],
+        sessions: dict[object, Session],
         folders: dict[object, Folder],
         jobs: dict[object, Job],
+        sources: dict[object, str],
         progress: dict[object, JobProgress],
         trash: dict[object, TrashEntry],
     ) -> None:
         self._journal: Journal = []
         self.users: UserRepository = MemoryUserRepository(users, self._journal)
+        self.sessions: SessionRepository = MemorySessionRepository(sessions, self._journal)
         self.folders: FolderRepository = MemoryFolderRepository(folders, self._journal)
-        self.jobs: JobRepository = MemoryJobRepository(jobs, self._journal)
+        source_repository = MemoryJobSourceRepository(sources, self._journal)
+        self.sources: JobSourceRepository = source_repository
+        self.jobs: JobRepository = MemoryJobRepository(jobs, source_repository, self._journal)
         self.progress: ProgressRepository = MemoryProgressRepository(progress, self._journal)
         self.trash: TrashRepository = MemoryTrashRepository(trash, self._journal)
         self._closed = False
@@ -302,24 +445,44 @@ class MemoryDatabase:
     """The process-wide in-memory database.
 
     One instance is created per app process and shared by every service. It is
-    seeded with the single local user so `user_id`-scoped queries work before
-    authentication exists.
+    seeded with the single local user so `user_id`-scoped queries work in tests
+    and development without a login flow.
     """
 
     def __init__(self, *, seed: bool = True) -> None:
         self._users: dict[object, User] = {}
+        self._sessions: dict[object, Session] = {}
         self._folders: dict[object, Folder] = {}
         self._jobs: dict[object, Job] = {}
+        self._sources: dict[object, str] = {}
         self._progress: dict[object, JobProgress] = {}
         self._trash: dict[object, TrashEntry] = {}
         if seed:
             self.seed_default_user()
 
     def transaction(self) -> UnitOfWork:
-        return MemoryUnitOfWork(self._users, self._folders, self._jobs, self._progress, self._trash)
+        return MemoryUnitOfWork(
+            self._users,
+            self._sessions,
+            self._folders,
+            self._jobs,
+            self._sources,
+            self._progress,
+            self._trash,
+        )
 
     def get_user(self, user_id: str) -> User | None:
         return self._users.get(user_id)
+
+    def get_user_by_username(self, username: str) -> User | None:
+        wanted = username.strip().lower()
+        return next(
+            (user for user in self._users.values() if user.username.lower() == wanted),
+            None,
+        )
+
+    def close(self) -> None:
+        """Nothing to release for an in-memory database."""
 
     def seed_default_user(self) -> User:
         existing = self._users.get(DEFAULT_USER_ID)
@@ -327,8 +490,9 @@ class MemoryDatabase:
             return existing
         user = User(
             id=DEFAULT_USER_ID,
+            username=DEFAULT_USER_ID,
             display_name=DEFAULT_USER_DISPLAY_NAME,
-            created_at=time(),
+            created_at=utc_now(),
         )
         self._users[user.id] = user
         return user

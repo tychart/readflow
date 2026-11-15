@@ -438,7 +438,7 @@ it("restores trashed items", async () => {
               name: "Old job",
               parent_id: null,
               job_count: 1,
-              created_at: 1_700_000_000,
+              created_at: "2023-11-14T22:13:20Z",
             },
           ],
         };

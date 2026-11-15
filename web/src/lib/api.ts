@@ -185,20 +185,6 @@ export const api = {
       },
     ),
 
-  /** Updates playback position. */
-  updatePlayback: (
-    jobId: string,
-    currentTimeSeconds: number,
-    isPlaying: boolean,
-  ) =>
-    request<JobDetail>(apiPath(`/jobs/${jobId}/playback`), {
-      method: "POST",
-      body: JSON.stringify({
-        current_time_seconds: currentTimeSeconds,
-        is_playing: isPlaying,
-      }),
-    }),
-
   /* ── Library ──────────────────────────────────────────── */
 
   getLibrary: () => request<LibrarySnapshot>(apiPath("/library")),

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
-from time import time
 
+from app.core.time import utc_now
 from app.jobs.models import ModelState
 
 
@@ -26,7 +26,7 @@ class TelemetryService:
         self._oom_count = 0
 
     def record_event(self, event_type: str, payload: dict[str, object]) -> None:
-        self._recent_events.appendleft({"type": event_type, "payload": payload, "at": time()})
+        self._recent_events.appendleft({"type": event_type, "payload": payload, "at": utc_now()})
 
     def record_batch(
         self,
@@ -41,7 +41,7 @@ class TelemetryService:
                 duration_seconds=duration_seconds,
                 reserved_vram_mb=reserved_vram_mb,
                 allocated_vram_mb=allocated_vram_mb,
-                at=time(),
+                at=utc_now(),
             )
         )
 

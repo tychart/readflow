@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.jobs.models import Job
+from app.library.models import FolderJob
 
 
-def ordered_folder_jobs(jobs: Iterable[Job], folder_id: str) -> list[Job]:
+def ordered_folder_jobs(jobs: Iterable[FolderJob], folder_id: str) -> list[FolderJob]:
     """Live jobs directly inside `folder_id`, in manual order."""
     return sorted(
         (job for job in jobs if job.folder_id == folder_id and job.deleted_at is None),
@@ -20,7 +20,7 @@ def ordered_folder_jobs(jobs: Iterable[Job], folder_id: str) -> list[Job]:
     )
 
 
-def next_job_in_folder(jobs: Iterable[Job], job: Job) -> Job | None:
+def next_job_in_folder(jobs: Iterable[FolderJob], job: FolderJob) -> FolderJob | None:
     """The job after `job` inside its folder, or None (root job / last job)."""
     if job.folder_id is None:
         return None
@@ -31,7 +31,7 @@ def next_job_in_folder(jobs: Iterable[Job], job: Job) -> Job | None:
     return None
 
 
-def previous_job_in_folder(jobs: Iterable[Job], job: Job) -> Job | None:
+def previous_job_in_folder(jobs: Iterable[FolderJob], job: FolderJob) -> FolderJob | None:
     """The job before `job` inside its folder, or None."""
     if job.folder_id is None:
         return None
@@ -42,7 +42,7 @@ def previous_job_in_folder(jobs: Iterable[Job], job: Job) -> Job | None:
     return None
 
 
-def up_next_job_ids(jobs: Iterable[Job], *, prebuffer_seconds: int) -> set[str]:
+def up_next_job_ids(jobs: Iterable[FolderJob], *, prebuffer_seconds: int) -> set[str]:
     """Jobs that should be warmed because a listener is about to reach them.
 
     Derived, never stored: every actively listening job contributes its folder

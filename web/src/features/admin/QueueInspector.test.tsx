@@ -15,8 +15,6 @@ import { QueueInspector } from "./QueueInspector";
 
 /* ── Fixtures ─────────────────────────────────────────────── */
 
-const NOW = 1_700_000_000;
-
 function buildChunk(overrides: Partial<QueueChunk> = {}): QueueChunk {
   return {
     job_id: "job-1",
@@ -46,8 +44,8 @@ function buildChunk(overrides: Partial<QueueChunk> = {}): QueueChunk {
     is_pending: true,
     is_rendering: false,
     in_next_batch: true,
-    created_at: NOW - 30,
-    updated_at: NOW - 5,
+    created_at: "1970-01-01T00:00:00Z",
+    updated_at: "1970-01-01T00:00:00Z",
     error: null,
     versions: [{ version: 0, status: "planned", deprecated: false }],
     ...overrides,
@@ -91,7 +89,7 @@ function buildGroup(overrides: Partial<QueueJobGroup> = {}): QueueJobGroup {
 
 function buildQueue(overrides: Partial<AdminQueue> = {}): AdminQueue {
   return {
-    generated_at: NOW,
+    generated_at: "2026-11-15T18:04:11Z",
     queue_depth: 2,
     active_batch: null,
     next_batch: null,
@@ -282,7 +280,7 @@ test("shows the rendering batch while a batch is in flight", async () => {
         model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         language: "English",
         voice_id: "suzy",
-        started_at: Date.now() / 1000 - 3,
+        started_at: new Date(Date.now() - 3000).toISOString(),
       },
     }),
   );

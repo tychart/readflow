@@ -12,6 +12,9 @@ dependencies = [
   "pydantic-settings>=2.9.1",
   "python-multipart>=0.0.20",
   "qwen-tts",
+  # SQLAlchemy Core only (no ORM): app/db/schema.py is the metadata Alembic
+  # autogenerates from, and the Postgres adapter issues Core statements.
+  "sqlalchemy[asyncio]>=2.0",
   # Pinned deliberately. PyPI torch 2.9 is a CUDA 12.8 build that matches the
   # nvidia/cuda:12.8 base images AND has a prebuilt flash-attn 2.8.3 wheel
   # (cu12torch2.9), so the container never has to compile flash-attn.

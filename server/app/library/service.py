@@ -8,12 +8,12 @@ any mutation so a rejected move/reorder leaves the library exactly as it was
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from time import time
 from uuid import uuid4
 
 from app.core.identity import DEFAULT_USER_ID
+from app.core.time import utc_now
 from app.db.protocols import Database, UnitOfWork
-from app.jobs.models import Job
+from app.jobs.models import Job, JobSummary
 from app.library.models import Folder, JobProgress, TrashEntry, TrashKind
 from app.library.tree import (
     LibraryError,
@@ -29,10 +29,16 @@ from app.library.tree import (
 
 @dataclass(frozen=True, slots=True)
 class LibrarySnapshot:
-    """Everything the library page needs in one consistent read."""
+    """Everything the library page needs in one consistent read.
+
+    `jobs` are **summaries**, not aggregates: the page renders ordering, status
+    and derived progress, and none of that needs a chunk list or the source
+    text. This is why a library refresh stays constant-cost as the library (and
+    each book) grows.
+    """
 
     folders: list[Folder]
-    jobs: list[Job]
+    jobs: list[JobSummary]
     progress: dict[str, JobProgress] = field(default_factory=dict)
     trash_count: int = 0
 
@@ -47,7 +53,7 @@ class LibraryService:
     def snapshot(self) -> LibrarySnapshot:
         with self._db.transaction() as uow:
             folders = uow.folders.list(self._user_id)
-            jobs = uow.jobs.list(self._user_id)
+            jobs = uow.jobs.summaries(self._user_id)
             progress = {row.job_id: row for row in uow.progress.list(self._user_id)}
             trash_count = len(uow.trash.list(self._user_id))
         return LibrarySnapshot(
@@ -70,7 +76,7 @@ class LibraryService:
 
     def create_folder(self, name: str, parent_id: str | None = None) -> Folder:
         clean_name = self._clean_name(name)
-        now = time()
+        now = utc_now()
         with self._db.transaction() as uow:
             self._require_live_folder(uow, parent_id)
             folder = Folder(
@@ -90,7 +96,7 @@ class LibraryService:
         with self._db.transaction() as uow:
             folder = self._require_folder(uow, folder_id)
             folder.name = clean_name
-            folder.updated_at = time()
+            folder.updated_at = utc_now()
             uow.folders.save(folder)
             return folder
 
@@ -99,7 +105,7 @@ class LibraryService:
         with self._db.transaction() as uow:
             job = self._require_live_job(uow, job_id)
             job.title = clean_title
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -130,13 +136,13 @@ class LibraryService:
             for position, folder_id in enumerate(ordered_folders):
                 folder = by_folder_id[folder_id]
                 folder.position = position
-                folder.updated_at = time()
+                folder.updated_at = utc_now()
                 uow.folders.save(folder)
             by_job_id = {job.id: job for job in jobs}
             for position, job_id in enumerate(ordered_jobs):
                 job = by_job_id[job_id]
                 job.position = position
-                job.updated_at = time()
+                job.updated_at = utc_now()
                 uow.jobs.save(job)
 
     def move(self, items: list[LibraryItem], folder_id: str | None) -> None:
@@ -214,7 +220,7 @@ class LibraryService:
                 self._reindex_jobs(uow, parent_id)
 
     def _reindex_folders(self, uow: UnitOfWork, parent_id: str | None) -> None:
-        now = time()
+        now = utc_now()
         children = sorted(
             (folder for folder in uow.folders.list(self._user_id) if folder.parent_id == parent_id),
             key=lambda folder: (folder.position, folder.name, folder.id),
@@ -227,7 +233,7 @@ class LibraryService:
             uow.folders.save(folder)
 
     def _reindex_jobs(self, uow: UnitOfWork, folder_id: str | None) -> None:
-        now = time()
+        now = utc_now()
         children = sorted(
             (job for job in uow.jobs.list(self._user_id) if job.folder_id == folder_id),
             key=lambda job: (job.position, job.submitted_at, job.id),
@@ -245,7 +251,7 @@ class LibraryService:
         """Soft-delete each top-level item, grouping folder subtrees."""
         if not items:
             return []
-        now = time()
+        now = utc_now()
         entries: list[TrashEntry] = []
         with self._db.transaction() as uow:
             folders = uow.folders.list(self._user_id)
@@ -339,7 +345,7 @@ class LibraryService:
         lost: the children stay in the library and the empty folder is
         restorable from the trash.
         """
-        now = time()
+        now = utc_now()
         with self._db.transaction() as uow:
             folder = self._require_folder(uow, folder_id)
             parent_id = folder.parent_id
@@ -408,7 +414,7 @@ class LibraryService:
         """
         if not entry_ids:
             return
-        now = time()
+        now = utc_now()
         with self._db.transaction() as uow:
             folders = uow.folders.list(self._user_id, include_deleted=True)
             jobs = uow.jobs.list(self._user_id, include_deleted=True)

@@ -4,6 +4,7 @@ from app.chunking.planner import ChunkPlan
 from app.db.memory import MemoryDatabase
 from app.jobs.manager import JobManager
 from app.jobs.models import ChunkRecord, ChunkStatus, Job, JobStatus
+from app.library.progress_service import ProgressService
 
 
 def test_voice_switch_rebuilds_pending_chunks_in_place():
@@ -200,7 +201,9 @@ def test_planned_chunk_index_ignores_versioned_records():
 
 
 def test_completed_jobs_ignore_playback_lifecycle_mutations():
-    manager = JobManager(MemoryDatabase())
+    database = MemoryDatabase()
+    manager = JobManager(database)
+    progress = ProgressService(database)
     job = manager.create_job(
         source_text="One finished chunk.",
         source_kind="text",
@@ -229,7 +232,7 @@ def test_completed_jobs_ignore_playback_lifecycle_mutations():
     assert manager.get_job(job.id).is_active_listening is True
     manager.pause_job(job.id)
     assert manager.get_job(job.id).is_active_listening is False
-    manager.update_playback(job.id, current_time_seconds=2.5, is_playing=True)
+    progress.record(job.id, position_seconds=2.5, is_playing=True)
 
     finished = manager.get_job(job.id)
     assert finished.status == JobStatus.COMPLETED
@@ -256,7 +259,10 @@ def test_create_job_stores_canonical_source_text():
         voice_id="suzy",
     )
 
-    assert job.source_text == "First line.\n\nSecond line."
+    # The text is normalized exactly once, when the job is created, and lives
+    # in its own row; the aggregate only carries its length.
+    assert manager.source_text(job.id) == "First line.\n\nSecond line."
+    assert job.source_char_count == len("First line.\n\nSecond line.")
 
 
 def _job_with_chunks(count: int) -> tuple[JobManager, Job, list[ChunkRecord]]:
@@ -542,7 +548,9 @@ def test_queue_depth_ignores_superseded_takes():
 
 def test_buffered_seconds_use_the_playable_run_not_audio_after_a_gap():
     """Audio beyond an unwritten chunk is rendered, but not listenable."""
-    manager = JobManager(MemoryDatabase())
+    database = MemoryDatabase()
+    manager = JobManager(database)
+    progress = ProgressService(database)
     job = manager.create_job(
         source_text="One. Two. Three.",
         source_kind="text",
@@ -567,7 +575,7 @@ def test_buffered_seconds_use_the_playable_run_not_audio_after_a_gap():
     assert job.contiguous_written_seconds == 10.0
     assert job.buffered_seconds == 10.0
 
-    manager.update_playback(job.id, current_time_seconds=4.0, is_playing=True)
+    progress.record(job.id, position_seconds=4.0, is_playing=True)
     assert job.buffered_seconds == 6.0
 
 

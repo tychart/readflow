@@ -10,8 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from app.jobs.models import Job
-from app.library.models import Folder
+from app.library.models import Folder, FolderJob
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +37,7 @@ def folder_children(folders: Iterable[Folder], parent_id: str | None) -> list[Fo
     )
 
 
-def job_children(jobs: Iterable[Job], folder_id: str | None) -> list[Job]:
+def job_children(jobs: Iterable[FolderJob], folder_id: str | None) -> list[FolderJob]:
     """Direct, live jobs in manual order."""
     return sorted(
         (job for job in jobs if job.folder_id == folder_id and job.deleted_at is None),
@@ -116,7 +115,7 @@ def next_position(positions: Iterable[int]) -> int:
 
 def subtree_counts(
     folders: Sequence[Folder],
-    jobs: Sequence[Job],
+    jobs: Sequence[FolderJob],
     folders_by_parent: dict[str | None, list[Folder]] | None = None,
 ) -> dict[str, int]:
     """Recursive live job count for every folder (including nested folders)."""

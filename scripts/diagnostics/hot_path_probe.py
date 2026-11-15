@@ -47,11 +47,14 @@ if str(SERVER_DIR) not in sys.path:
 from app.core.config import RuntimeConfig, Settings  # noqa: E402
 from app.core.services import AppServices, build_services  # noqa: E402
 from app.db.memory import MemoryDatabase  # noqa: E402
-from app.jobs.models import ChunkRecord, Job  # noqa: E402
+from app.jobs.models import ChunkRecord, Job, JobSummary  # noqa: E402
 
 # Rough per-chunk bookkeeping cost (ids, paths, timestamps, status). Kept
 # explicit so the byte estimate is reproducible rather than magic.
 CHUNK_OVERHEAD_BYTES = 240
+
+# One summary row: ids, numbers, flags and a small version map.
+SUMMARY_OVERHEAD_BYTES = 512
 
 # Repository methods whose result is a Job aggregate.
 _AGGREGATE_METHODS = frozenset({"get", "get_any"})
@@ -59,13 +62,23 @@ _AGGREGATE_LIST_METHODS = frozenset({"list", "planned_chunks", "rendering_chunks
 
 
 def job_bytes(job: Job, *, include_source: bool = True) -> int:
-    """Approximate the in-memory size materialised by loading one aggregate."""
+    """Approximate the in-memory size materialised by loading one aggregate.
+
+    The canonical text lives in its own row, so an aggregate only carries
+    `source_char_count`; counting that is the fair comparison against the old
+    "source text on the job" baseline (prose is roughly one byte per character).
+    """
     total = 0
     if include_source:
-        total += len(job.source_text.encode("utf-8"))
+        total += job.source_char_count
     for chunk in job.chunks:
         total += len(chunk.text.encode("utf-8")) + CHUNK_OVERHEAD_BYTES
     return total
+
+
+def summary_bytes(summary: JobSummary) -> int:
+    """Approximate the size of one flat read-model row (no chunks, no text)."""
+    return SUMMARY_OVERHEAD_BYTES
 
 
 @dataclass
@@ -126,6 +139,8 @@ class CountingRepository:
             return job_bytes(result)
         if self._aggregate and method in _AGGREGATE_LIST_METHODS:
             return sum(job_bytes(job) for job in result or ())
+        if method in {"summaries", "summaries_all"}:
+            return sum(summary_bytes(summary) for summary in result or ())
         return 0
 
 

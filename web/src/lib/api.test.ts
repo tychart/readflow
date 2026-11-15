@@ -54,7 +54,7 @@ test("attaches the request path and status to the error", async () => {
 
 test("getAdminQueue requests the admin queue endpoint", async () => {
   const payload = {
-    generated_at: 0,
+    generated_at: "2026-11-15T18:04:11Z",
     queue_depth: 0,
     active_batch: null,
     next_batch: null,

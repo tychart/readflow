@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import build_router
 from app.core.config import get_settings
 from app.core.services import AppServices, build_services
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -22,6 +25,19 @@ def create_app() -> FastAPI:
         nonlocal scheduler_task
         services = build_services(settings, base_dir)
         app.state.services = services
+        # Reconcile whatever the previous process left mid-flight *before* the
+        # scheduler can dispatch: an interrupted `RENDERING` chunk or a
+        # `WRITTEN` chunk whose audio is gone is repaired here, once.
+        recovery = services.job_manager.recover_after_restart(
+            services.media_store.chunk_files_exist
+        )
+        if recovery.recovered:
+            logger.info(
+                "Recovered %d of %d job(s) after restart: %s",
+                len(recovery.recovered),
+                recovery.examined,
+                ", ".join(recovery.recovered),
+            )
         if settings.scheduler_autostart:
             scheduler_task = asyncio.create_task(services.scheduler.run_forever())
         yield
@@ -33,6 +49,7 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
         await services.model_manager.unload()
+        services.database.close()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

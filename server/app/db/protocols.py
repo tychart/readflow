@@ -1,30 +1,42 @@
 """The storage boundary.
 
-Everything the server would one day keep in PostgreSQL goes through these two
-protocols: a `Database` that can open a transaction, and a `UnitOfWork` that
-exposes one repository per entity for the duration of that transaction.
+Everything the server keeps in PostgreSQL goes through these two protocols: a
+`Database` that can open a transaction, and a `UnitOfWork` that exposes one
+repository per entity for the duration of that transaction.
 
-The current implementation is `app.db.memory.MemoryDatabase`. A SQL adapter is
-expected to implement exactly these protocols; nothing above this layer imports
-the in-memory module directly.
+Two implementations satisfy them: `app.db.memory.MemoryDatabase` (development and
+tests) and, later, the Postgres adapter. Nothing above this layer imports either.
 
 Semantics every adapter must provide
 ------------------------------------
-- **User scoping.** Every lookup is `(user_id, id)`; a repository never returns
-  another user's rows.
+- **User scoping.** Every user-scoped lookup is `(user_id, id)`; a repository
+  never returns another user's rows, so a foreign id is indistinguishable from
+  a missing one.
 - **Explicit writes.** Reading an entity never writes. Mutations are declared
   with `save()` / `add()` / `delete()`, and `commit()` is the durability point.
 - **Aggregate boundaries.** A `Job` is loaded and saved together with its
-  `ChunkRecord` list. The adapter decides how that is stored (one row with a
-  child table, or diffed child rows).
+  `ChunkRecord` list. Chunks are append-only: a superseded take is marked
+  `deprecated`, never deleted. The canonical source text lives in its own
+  `job_sources` row and is not part of the aggregate.
 - **Identity within a transaction.** Repeated reads of the same row in one
   transaction return the same object, so a service can mutate it in place and
   save it at the end.
-- **Rollback.** An exception inside `with database.transaction()` must leave no
-  structural change behind (added rows are gone, deleted rows are back). The
-  in-memory adapter does not snapshot in-place attribute edits; code that must
-  be atomic validates before mutating, which is the pattern the services
-  already follow.
+- **Rollback.** An exception inside `transaction()` must leave no structural
+  change behind (added rows are gone, deleted rows are back). Neither adapter
+  snapshots in-place attribute edits; code that must be atomic validates before
+  mutating, which is the pattern the services already follow.
+- **Numbers are IEEE-754 doubles** (`double precision`) end to end. Instants are
+  epoch-second floats in the domain and `timestamptz` in Postgres; the adapter is
+  the only place that converts (see `app.core.time`).
+- **JSONB integer keys.** `Job.active_chunk_version` and `JobProgress.heard`
+  have `int` keys in the domain; Postgres JSONB keys are strings, so the adapter
+  converts in both directions.
+
+Scope
+-----
+A repository method prefixed `get_any` / `*_all` is **system scope**: it sees
+every user's rows and exists for the scheduler, which owns one GPU for the whole
+machine. No request handler may reach one.
 """
 
 from __future__ import annotations
@@ -33,8 +45,8 @@ from collections.abc import Iterable
 from types import TracebackType
 from typing import Protocol, runtime_checkable
 
-from app.db.models import User
-from app.jobs.models import Job
+from app.db.models import Session, User
+from app.jobs.models import ChunkRecord, Job, JobSummary
 from app.library.models import Folder, JobProgress, TrashEntry
 
 
@@ -47,7 +59,24 @@ class UserRepository(Protocol):
 
     def get(self, user_id: str) -> User | None: ...
 
+    def get_by_username(self, username: str) -> User | None: ...
+
     def list(self) -> list[User]: ...
+
+
+@runtime_checkable
+class SessionRepository(Protocol):
+    def add(self, session: Session) -> None: ...
+
+    def save(self, session: Session) -> None: ...
+
+    def get_by_token_hash(self, token_hash: bytes) -> Session | None: ...
+
+    def delete(self, session_id: str) -> None: ...
+
+    def delete_for_user(self, user_id: str) -> None: ...
+
+    def list_for_user(self, user_id: str) -> list[Session]: ...
 
 
 @runtime_checkable
@@ -71,21 +100,60 @@ class FolderRepository(Protocol):
 
 @runtime_checkable
 class JobRepository(Protocol):
-    def add(self, job: Job) -> None:
-        """Insert a new job aggregate. Raises if the id already exists."""
+    # ── user scope ──────────────────────────────────────────────────────────
+
+    def add(self, job: Job, *, source_text: str) -> None:
+        """Insert a new job aggregate: row, source text and chunks."""
 
     def save(self, job: Job) -> None:
-        """Persist the job aggregate (row + chunks) and its current fields."""
+        """Persist the job aggregate (row + changed chunks)."""
 
     def get(self, user_id: str, job_id: str, *, include_deleted: bool = False) -> Job | None: ...
 
     def list(self, user_id: str, *, include_deleted: bool = False) -> list[Job]: ...
+
+    def summaries(self, user_id: str, *, include_deleted: bool = False) -> list[JobSummary]:
+        """One row per job, without chunks or source text."""
+        ...
+
+    def source_text(self, user_id: str, job_id: str) -> str:
+        """The canonical source text, ownership checked."""
+        ...
 
     def delete(self, user_id: str, job_id: str) -> None: ...
 
     def next_position(self, user_id: str, folder_id: str | None) -> int:
         """Next append position among the folder's live job children."""
         ...
+
+    # ── system scope (scheduler only; never reachable from a handler) ───────
+
+    def summaries_all(self, *, include_deleted: bool = False) -> list[JobSummary]: ...
+
+    def get_any(self, job_id: str, *, include_deleted: bool = False) -> Job | None: ...
+
+    def planned_chunks(self) -> list[ChunkRecord]:
+        """Dispatchable chunks across every job, current takes only.
+
+        Superseded takes, stale plan generations, trashed jobs and paused jobs
+        are excluded, because the scheduler can never act on them.
+        """
+        ...
+
+    def rendering_chunks(self) -> list[ChunkRecord]:
+        """In-flight chunks across every job (the active batch)."""
+        ...
+
+    def source_text_any(self, job_id: str) -> str:
+        """Source text without an ownership check (scheduler planning only)."""
+        ...
+
+
+@runtime_checkable
+class JobSourceRepository(Protocol):
+    def get(self, job_id: str) -> str | None: ...
+
+    def put(self, job_id: str, text: str) -> None: ...
 
 
 @runtime_checkable
@@ -119,8 +187,10 @@ class UnitOfWork(Protocol):
     """One transaction's view of the database."""
 
     users: UserRepository
+    sessions: SessionRepository
     folders: FolderRepository
     jobs: JobRepository
+    sources: JobSourceRepository
     progress: ProgressRepository
     trash: TrashRepository
 
@@ -153,3 +223,20 @@ class Database(Protocol):
         work just to resolve the caller.
         """
         ...
+
+    def get_user_by_username(self, username: str) -> User | None: ...
+
+    def close(self) -> None: ...
+
+
+__all__ = [
+    "Database",
+    "FolderRepository",
+    "JobRepository",
+    "JobSourceRepository",
+    "ProgressRepository",
+    "SessionRepository",
+    "TrashRepository",
+    "UnitOfWork",
+    "UserRepository",
+]

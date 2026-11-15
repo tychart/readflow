@@ -299,14 +299,29 @@ async def test_playback_updates_keep_active_listener_status_honest(client, servi
     await services.scheduler._expire_stale_listeners()
     assert services.job_manager.get_job(job_id).is_active_listening is False
 
+    # One command owns a playback report: it folds the position into the job
+    # and the heard marks into progress in a single transaction.
     synced = await client.post(
-        f"/api/jobs/{job_id}/playback",
-        json={"current_time_seconds": 12.5, "is_playing": True},
+        f"/api/jobs/{job_id}/progress",
+        json={"position_seconds": 12.5, "is_playing": True},
     )
 
     assert synced.status_code == 200
-    assert synced.json()["is_active_listening"] is True
-    assert services.job_manager.get_job(job_id).completed_seconds == 12.5
+    assert synced.json()["position_seconds"] == 12.5
+    job = services.job_manager.get_job(job_id)
+    assert job.is_active_listening is True
+    assert job.completed_seconds == 12.5
+
+
+async def test_the_old_playback_endpoint_is_gone(client, services):
+    created = await client.post(
+        "/api/jobs", data={"text": "Short text for playback.", "voice_id": "suzy"}
+    )
+    job_id = created.json()["job"]["id"]
+
+    response = await client.post(f"/api/jobs/{job_id}/playback", json={"current_time_seconds": 1.0})
+
+    assert response.status_code == 404
 
 
 async def test_admin_state_reports_scheduler_liveness(client, services):
@@ -322,7 +337,8 @@ async def test_admin_state_reports_scheduler_liveness(client, services):
     assert "model_last_error" in body
 
 
-async def test_playback_updates_do_not_broadcast_job_events(client, services):
+async def test_progress_reports_broadcast_compact_progress_not_job_payloads(client, services):
+    """A position ping must not re-send the job (its chunks or source text)."""
     create_response = await client.post(
         "/api/jobs",
         data={"text": "A playback-tracked job.", "voice_id": "suzy"},
@@ -334,14 +350,18 @@ async def test_playback_updates_do_not_broadcast_job_events(client, services):
 
     try:
         response = await client.post(
-            f"/api/jobs/{job_id}/playback",
-            json={"current_time_seconds": 4.5, "is_playing": True},
+            f"/api/jobs/{job_id}/progress",
+            json={"position_seconds": 4.5, "is_playing": True},
         )
     finally:
         await services.hub.disconnect(websocket)
 
     assert response.status_code == 200
-    assert websocket.messages == []
+    message_types = {message["type"] for message in websocket.messages}
+    assert message_types == {"job_progress"}
+    payload = cast(dict[str, Any], websocket.messages[0]["payload"])
+    assert payload["job_id"] == job_id
+    assert "chunks" not in payload and "source_text" not in payload
 
 
 async def test_scheduler_emits_chunk_ready_without_duplicate_job_updated(client, services):
@@ -1418,3 +1438,108 @@ async def test_each_chunk_version_is_served_from_its_own_files(client, services)
     assert active["segment_url"] is not None
     assert "v=1" in active["segment_url"]
     assert (await client.get(active["segment_url"])).content == new_bytes
+
+
+async def test_progress_and_the_websocket_ping_produce_the_same_state(client, services):
+    """One command owns a playback report, whichever transport delivers it."""
+    from app.api.router import handle_socket_message
+
+    first = await client.post(
+        "/api/jobs", data={"text": "First text for parity.", "voice_id": "suzy"}
+    )
+    first_id = first.json()["job"]["id"]
+    second = await client.post(
+        "/api/jobs", data={"text": "Second text for parity.", "voice_id": "suzy"}
+    )
+    second_id = second.json()["job"]["id"]
+
+    http_response = await client.post(
+        f"/api/jobs/{first_id}/progress",
+        json={"position_seconds": 7.5, "is_playing": True, "heard_chunk_indexes": [0]},
+    )
+    assert http_response.status_code == 200
+
+    await handle_socket_message(
+        services,
+        json.dumps(
+            {
+                "type": "playback_sync",
+                "payload": {
+                    "job_id": second_id,
+                    "current_time_seconds": 7.5,
+                    "is_playing": True,
+                },
+            }
+        ),
+    )
+
+    http_job = services.job_manager.get_job(first_id)
+    socket_job = services.job_manager.get_job(second_id)
+    assert http_job.playback_state.current_time_seconds == 7.5
+    assert socket_job.playback_state.current_time_seconds == 7.5
+    assert http_job.is_active_listening is socket_job.is_active_listening is True
+    assert services.progress.view(http_job).heard_chunks == (
+        services.progress.view(socket_job).heard_chunks
+    )
+
+
+async def test_a_stale_socket_ping_is_ignored(client, services):
+    """A tab that outlived its job must not raise out of the socket loop."""
+    from app.api.router import handle_socket_message
+
+    reply = await handle_socket_message(
+        services,
+        json.dumps(
+            {"type": "playback_sync", "payload": {"job_id": "gone", "current_time_seconds": 1}}
+        ),
+    )
+
+    assert reply is None
+
+
+async def test_reader_detail_returns_the_exact_canonical_source_text(client, services):
+    """The reader slices this string, so it must match the plan's offsets exactly."""
+    created = await client.post(
+        "/api/jobs",
+        data={"text": "  First   line. \r\n\r\n\r\n\r\nSecond\tline.  ", "voice_id": "suzy"},
+    )
+    job_id = created.json()["job"]["id"]
+
+    detail = await client.get(f"/api/jobs/{job_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+
+    assert body["source_text"] == "First line. \n\nSecond line."
+    # The aggregate carries only the length, so the two cannot drift.
+    assert services.job_manager.get_job(job_id).source_char_count == len(body["source_text"])
+
+
+async def test_list_endpoints_never_read_the_source_text(client, services, monkeypatch):
+    """The whole point of the split: listing must not materialise a book.
+
+    A source read here would mean a list endpoint pays for every job's text,
+    which is exactly the regression the read model exists to prevent.
+    """
+    from app.db import memory
+
+    created = await client.post(
+        "/api/jobs", data={"text": "Listing must not read this text.", "voice_id": "suzy"}
+    )
+    job_id = created.json()["job"]["id"]
+
+    reads: list[str] = []
+    original_get = memory.MemoryJobRepository.source_text_any
+
+    def recording_get(self, source_job_id):
+        reads.append(source_job_id)
+        return original_get(self, source_job_id)
+
+    monkeypatch.setattr(memory.MemoryJobRepository, "source_text_any", recording_get)
+
+    assert (await client.get("/api/library")).status_code == 200
+    assert (await client.get("/api/jobs")).status_code == 200
+    assert reads == []
+
+    # The reader detail is the one read that legitimately loads it.
+    assert (await client.get(f"/api/jobs/{job_id}")).status_code == 200
+    assert reads == [job_id]

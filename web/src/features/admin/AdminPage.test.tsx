@@ -94,7 +94,7 @@ function mockFetch({ failConfigSave = false } = {}) {
       return {
         ok: true,
         json: async () => ({
-          generated_at: 0,
+          generated_at: "2026-11-15T18:04:11Z",
           queue_depth: 0,
           active_batch: null,
           next_batch: null,
@@ -436,7 +436,7 @@ test("surfaces scheduler liveness and the last error", () => {
         queue_depth: 2,
         batch_candidates: [8, 7, 6, 5],
         running: false,
-        last_tick_at: Date.now() / 1000 - 30,
+        last_tick_at: new Date(Date.now() - 30_000).toISOString(),
         last_error: "RuntimeError: boom",
         consecutive_errors: 2,
         warning:

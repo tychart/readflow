@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import Settings
+from app.jobs.models import ChunkRecord
 from app.media.download_formats import DownloadFormat
 from app.media.mp4 import split_fragmented_mp4
 from app.media.peaks import compute_peaks
@@ -68,6 +69,17 @@ class MediaStore:
 
     def wav_path(self, job_id: str, chunk_index: int, version: int = 0) -> Path:
         return self._chunk_dir(job_id) / f"{self._chunk_stem(chunk_index, version)}.wav"
+
+    def chunk_files_exist(self, chunk: ChunkRecord) -> bool:
+        """True when the audio a written take references is still on disk.
+
+        Used by startup reconciliation: a `WRITTEN` chunk whose segment vanished
+        (media volume recreated, /tmp cleaned) describes audio that cannot be
+        served, so it has to be rendered again.
+        """
+        if not chunk.segment_path:
+            return False
+        return Path(chunk.segment_path).exists()
 
     def package_wav_chunk(
         self, job_id: str, chunk_index: int, wav_bytes: bytes, version: int = 0

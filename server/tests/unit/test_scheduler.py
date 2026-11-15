@@ -352,7 +352,8 @@ def test_active_batch_groups_rendering_chunks(services):
     assert batch.model_id == job.model_id
     assert batch.language == "English"
     assert batch.voice_id == "suzy"
-    assert batch.started_at == 100.0
+    # Instants travel as ISO-8601 with an explicit `Z`.
+    assert batch.started_at == "1970-01-01T00:01:40Z"
 
 
 def test_queue_snapshot_ranks_are_contiguous_and_priority_ordered(services):
@@ -598,13 +599,13 @@ def test_queue_snapshot_reports_unplanned_remaining_chars(services):
     snapshot = services.scheduler.queue_snapshot()
     group = snapshot.jobs[0]
     assert group.chunks == []
-    assert group.unplanned_chars == len(job.source_text)
+    assert group.unplanned_chars == job.source_char_count
 
     # Planning one chunk consumes part of the source text.
     planned = _add_chunk(services, job, "planned prefix")
     job.planner_cursor.offset = planned.char_end
     snapshot = services.scheduler.queue_snapshot()
-    assert snapshot.jobs[0].unplanned_chars == len(job.source_text) - planned.char_end
+    assert snapshot.jobs[0].unplanned_chars == job.source_char_count - planned.char_end
 
     # An exhausted cursor means nothing is left.
     job.planner_cursor.offset = -1
@@ -758,7 +759,7 @@ def test_playback_report_reactivates_an_expired_listener(services):
     asyncio.run(services.scheduler.run_once())
     assert services.job_manager.get_job(job.id).is_active_listening is False
 
-    services.job_manager.update_playback(job.id, current_time_seconds=5.0, is_playing=True)
+    services.progress.record(job.id, position_seconds=5.0, is_playing=True)
 
     current = services.job_manager.get_job(job.id)
     assert current.is_active_listening is True
@@ -779,7 +780,7 @@ def test_buffer_seconds_use_job_timeline_coordinates(services):
             wav_path=f"/tmp/{index}.wav",
         )
 
-    services.job_manager.update_playback(job.id, current_time_seconds=25.0, is_playing=True)
+    services.progress.record(job.id, position_seconds=25.0, is_playing=True)
 
     current = services.job_manager.get_job(job.id)
     assert current.buffered_seconds == 5.0

@@ -41,7 +41,8 @@ class TrashEntryResponse(BaseModel):
     name: str
     parent_id: str | None
     job_count: int
-    created_at: float
+    # ISO-8601 instant (`...Z`); the browser renders it in the viewer's zone.
+    created_at: str
 
 
 class ItemRef(BaseModel):

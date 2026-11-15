@@ -1,24 +1,28 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from time import time
+from collections.abc import Callable, Iterable
 from uuid import uuid4
 
 from app.chunking.normalize import normalize_source_text
 from app.chunking.planner import ChunkPlan
 from app.core.identity import DEFAULT_USER_ID
+from app.core.time import utc_now
 from app.db.protocols import Database, UnitOfWork
 from app.jobs.models import (
     PENDING_CHUNK_STATUSES,
+    TERMINAL_JOB_STATUSES,
     ChunkRecord,
     ChunkStatus,
     Job,
     JobStatus,
+    JobSummary,
 )
-
-# Coarse statuses that mean "nothing more will render". Playback of them is
-# local-only, but the listener state (folder warming) is still tracked.
-_TERMINAL_JOB_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED})
+from app.jobs.recovery import (
+    RecoveryPlan,
+    RecoveryResult,
+    plan_startup_recovery,
+)
+from app.library.progress import heard_seconds
 
 # Chunk states a partial voice change can re-point at the new voice. `WRITTEN`
 # keeps its rendered audio and `RENDERING` is reconciled when the batch returns.
@@ -91,9 +95,19 @@ class JobManager:
             jobs = uow.jobs.list(self._user_id)
         return sorted(jobs, key=lambda job: job.submitted_at, reverse=True)
 
+    def summaries(self) -> list[JobSummary]:
+        """Flat projections of every live job, without chunks or source text."""
+        with self._db.transaction() as uow:
+            return uow.jobs.summaries(self._user_id)
+
     def get_job(self, job_id: str) -> Job:
         with self._db.transaction() as uow:
             return self._require_job(uow, job_id)
+
+    def source_text(self, job_id: str) -> str:
+        """The canonical (already normalized) source text of one job."""
+        with self._db.transaction() as uow:
+            return uow.jobs.source_text(self._user_id, job_id)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -110,7 +124,7 @@ class JobManager:
     ) -> Job:
         """Create a job, appended to the end of its folder's manual order."""
         normalized_text = normalize_source_text(source_text)
-        now = time()
+        now = utc_now()
         with self._db.transaction() as uow:
             if folder_id is not None and uow.folders.get(self._user_id, folder_id) is None:
                 raise KeyError(f"Unknown folder '{folder_id}'")
@@ -118,7 +132,7 @@ class JobManager:
                 id=str(uuid4()),
                 title=title or self._derive_title(normalized_text),
                 source_kind=source_kind,
-                source_text=normalized_text,
+                source_char_count=len(normalized_text),
                 model_id=model_id,
                 voice_id=voice_id,
                 language=language,
@@ -128,7 +142,9 @@ class JobManager:
                 submitted_at=now,
                 updated_at=now,
             )
-            uow.jobs.add(job)
+            # The source text is its own row: list and scheduler reads must not
+            # pay for megabytes they never look at.
+            uow.jobs.add(job, source_text=normalized_text)
             return job
 
     def delete_job(self, job_id: str) -> None:
@@ -145,11 +161,11 @@ class JobManager:
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
             job.is_active_listening = True
-            job.playback_state.last_event_at = time()
-            if job.status not in _TERMINAL_JOB_STATUSES:
+            job.playback_state.last_event_at = utc_now()
+            if job.status not in TERMINAL_JOB_STATUSES:
                 job.playback_state.is_playing = True
                 job.status = JobStatus.PLAYING
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -158,10 +174,10 @@ class JobManager:
             job = self._require_job(uow, job_id)
             job.is_active_listening = False
             job.playback_state.is_playing = False
-            job.playback_state.last_event_at = time()
-            if job.status not in _TERMINAL_JOB_STATUSES:
+            job.playback_state.last_event_at = utc_now()
+            if job.status not in TERMINAL_JOB_STATUSES:
                 job.status = JobStatus.PAUSED
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -171,46 +187,7 @@ class JobManager:
             if job.status == JobStatus.COMPLETED:
                 return job
             job.status = JobStatus.QUEUED
-            job.updated_at = time()
-            uow.jobs.save(job)
-            return job
-
-    def update_playback(self, job_id: str, current_time_seconds: float, is_playing: bool) -> Job:
-        """Record the listener's position.
-
-        `current_time_seconds` is in **job-timeline** seconds (0 = the start of
-        the first chunk), not the player's stream-normalized MSE clock. The
-        buffer is derived from the same timeline, and subtracting a stream
-        position after a seek/reload made `buffered_seconds` look permanently
-        full (it is what kept a lookahead cap from ever being released), so the
-        reader adds its anchor offset before reporting.
-        """
-        with self._db.transaction() as uow:
-            job = self._require_job(uow, job_id)
-            if job.status in _TERMINAL_JOB_STATUSES:
-                # A finished job plays from local audio: position, buffer and
-                # totals are frozen. Listener intent is not, because the folder
-                # successor is warmed from it.
-                job.is_active_listening = is_playing
-                job.playback_state.last_event_at = time()
-                job.updated_at = time()
-                uow.jobs.save(job)
-                return job
-            job.playback_state.current_time_seconds = current_time_seconds
-            job.playback_state.is_playing = is_playing
-            job.playback_state.last_event_at = time()
-            job.completed_seconds = max(job.completed_seconds, current_time_seconds)
-            # The playable run is the cached contiguous duration, so this stays
-            # O(1) on a path the reader hits ~20x/s during playback.
-            job.buffered_seconds = max(0.0, job.contiguous_written_seconds - current_time_seconds)
-            if is_playing and job.status != JobStatus.PAUSED:
-                # A position report while playing is proof of an active
-                # listener, so the flag does not depend on the reader hitting
-                # /activate after a reload. Explicit pause still wins: that path
-                # sets PAUSED first.
-                job.is_active_listening = True
-                job.status = JobStatus.PLAYING
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -224,7 +201,7 @@ class JobManager:
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
             job.render_to_end = enabled
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -238,7 +215,7 @@ class JobManager:
         """
         if timeout_seconds <= 0:
             return []
-        now = time()
+        now = utc_now()
         expired: list[Job] = []
         with self._db.transaction() as uow:
             for job in uow.jobs.list(self._user_id):
@@ -281,7 +258,7 @@ class JobManager:
                 return job
             job.voice_id = voice_id
             job.plan_version += 1
-            now = time()
+            now = utc_now()
             requeued = False
             for chunk in job.chunks:
                 if chunk.deprecated:
@@ -305,7 +282,7 @@ class JobManager:
                 job.completed_seconds = 0.0
                 job.playback_state.current_time_seconds = 0.0
                 job.playback_state.is_playing = False
-            self._refresh_derived(job)
+            self._refresh_derived(uow, job)
             if requeued or rerender_written:
                 # A finished job with work to redo must leave the terminal state
                 # or the reader treats it as local and stops watching for the
@@ -343,7 +320,7 @@ class JobManager:
         """
         if chunk.deprecated or chunk.plan_version == job.plan_version:
             return False
-        self._apply_voice(job, chunk, time())
+        self._apply_voice(job, chunk, utc_now())
         return True
 
     def add_planned_chunk(self, job_id: str, plan: ChunkPlan) -> ChunkRecord:
@@ -370,10 +347,11 @@ class JobManager:
             # Planning resumes where this span ended; reaching the end of the
             # source text exhausts it (`plan_next` would return None anyway).
             job.planner_cursor.offset = (
-                -1 if plan.char_end >= len(job.source_text) else plan.char_end
+                -1 if plan.char_end >= job.source_char_count else plan.char_end
             )
             job.planner_cursor.chunks_emitted += 1
-            job.updated_at = time()
+            self._refresh_derived(uow, job)
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return chunk
 
@@ -382,7 +360,7 @@ class JobManager:
         with self._db.transaction() as uow:
             job = self._require_job(uow, job_id)
             job.planner_cursor.offset = -1
-            job.updated_at = time()
+            self._refresh_derived(uow, job)
             self._settle_status(job)
             uow.jobs.save(job)
             return job
@@ -392,10 +370,10 @@ class JobManager:
             job = self._require_chunk_job(uow, chunk.job_id)
             stored = self._resolve_chunk(job, chunk)
             stored.status = ChunkStatus.RENDERING
-            stored.updated_at = time()
+            stored.updated_at = utc_now()
             if job.status != JobStatus.PAUSED:
                 job.status = JobStatus.RENDERING
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
 
     def mark_chunk_planned(self, chunk: ChunkRecord) -> Job:
@@ -429,10 +407,11 @@ class JobManager:
 
     def _requeue_chunk_locked(self, uow: UnitOfWork, job: Job, chunk: ChunkRecord) -> Job:
         chunk.status = ChunkStatus.PLANNED
-        chunk.updated_at = time()
+        chunk.updated_at = utc_now()
         self._requeue_superseded_chunk(job, chunk)
+        self._refresh_derived(uow, job)
         self._settle_status(job)
-        job.updated_at = time()
+        job.updated_at = utc_now()
         uow.jobs.save(job)
         return job
 
@@ -451,7 +430,8 @@ class JobManager:
             # requeued with the job's current voice rather than written as stale
             # audio (see `_requeue_superseded_chunk`).
             if self._requeue_superseded_chunk(job, stored):
-                job.updated_at = time()
+                self._refresh_derived(uow, job)
+                job.updated_at = utc_now()
                 uow.jobs.save(job)
                 return job
             stored.status = ChunkStatus.WRITTEN
@@ -459,10 +439,10 @@ class JobManager:
             stored.segment_path = segment_path
             stored.wav_path = wav_path
             stored.error = None
-            stored.updated_at = time()
-            self._refresh_derived(job)
+            stored.updated_at = utc_now()
+            self._refresh_derived(uow, job)
             self._settle_status(job)
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -479,11 +459,11 @@ class JobManager:
             stored = self._resolve_chunk(job, chunk)
             stored.status = ChunkStatus.FAILED
             stored.error = error
-            stored.updated_at = time()
+            stored.updated_at = utc_now()
             self._requeue_superseded_chunk(job, stored)
-            self._refresh_derived(job)
+            self._refresh_derived(uow, job)
             self._settle_status(job)
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -509,35 +489,32 @@ class JobManager:
         else:
             job.status = JobStatus.QUEUED
 
-    def _refresh_derived(self, job: Job) -> None:
-        """Recompute everything derived from the chunk list, in one pass.
+    def _refresh_derived(self, uow: UnitOfWork, job: Job) -> None:
+        """Recompute the derived state, then keep the progress row consistent.
 
-        Counts, timeline positions, the playable-run duration and
-        `buffered_seconds` all describe the **live** takes. Superseded versions
-        stay in `job.chunks` as history, and including them used to double-count
-        a reprocessed chunk, inflate `buffered_seconds` with audio nobody will
-        hear, and skew `total_chunks_completed` past `total_chunks_emitted`.
+        The computation itself lives on the domain object
+        (`Job.recompute_derived`), because it is a property of the aggregate, not
+        of storage: a freshly built job in a test can be made consistent the
+        same way the manager does it.
         """
-        running_start = 0.0
-        contiguous = 0.0
-        contiguous_open = True
-        completed = 0
-        for chunk in job.active_chunks():
-            if chunk.status != ChunkStatus.WRITTEN:
-                # Start times place later written chunks as if the gap were
-                # zero-length (the gap-aware timeline), but the *playable* run
-                # stops at the first hole.
-                contiguous_open = False
-                continue
-            completed += 1
-            chunk.start_seconds = running_start
-            running_start += chunk.duration_seconds
-            if contiguous_open:
-                contiguous += chunk.duration_seconds
-        job.total_chunks_completed = completed
-        job.contiguous_written_seconds = contiguous
-        job.buffered_seconds = max(0.0, contiguous - job.playback_state.current_time_seconds)
-        job.completed_seconds = max(job.completed_seconds, job.playback_state.current_time_seconds)
+        job.recompute_derived()
+        self._sync_progress_heard_seconds(uow, job)
+
+    def _sync_progress_heard_seconds(self, uow: UnitOfWork, job: Job) -> None:
+        """Keep the progress row's `heard_seconds` consistent with the takes.
+
+        The sum is stored rather than derived so `remaining_seconds` needs no
+        chunk access. A chunk's duration, version or epoch changing is what
+        invalidates it, and every one of those paths ends in `_refresh_derived`.
+        The row is only written when the value actually moved.
+        """
+        progress = uow.progress.get(job.user_id, job.id)
+        if progress is None:
+            return
+        expected = heard_seconds(job, progress)
+        if progress.heard_seconds != expected:
+            progress.heard_seconds = expected
+            uow.progress.save(progress)
 
     def exportable_wav_paths(self, job: Job) -> list[str]:
         """WAV paths of the downloadable run: live takes, written, from index 0.
@@ -632,9 +609,9 @@ class JobManager:
             )
             job.chunks.append(chunk)
             job.activate_chunk_version(parent_index, version)
-            self._refresh_derived(job)
+            self._refresh_derived(uow, job)
             self._settle_status(job)
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -654,9 +631,9 @@ class JobManager:
             job = self._require_job(uow, job_id)
             job.activate_chunk_version(chunk_index, version)
             job.audio_epoch += 1
-            self._refresh_derived(job)
+            self._refresh_derived(uow, job)
             self._settle_status(job)
-            job.updated_at = time()
+            job.updated_at = utc_now()
             uow.jobs.save(job)
             return job
 
@@ -674,7 +651,70 @@ class JobManager:
         job.status = JobStatus.QUEUED
         job.is_active_listening = False
         job.playback_state.is_playing = False
-        job.updated_at = time()
+        job.updated_at = utc_now()
+
+    # ── startup reconciliation ─────────────────────────────────────────────
+
+    def recover_after_restart(
+        self,
+        audio_exists: Callable[[ChunkRecord], bool] | None = None,
+    ) -> RecoveryResult:
+        """Repair the state a crashed process left behind.
+
+        Runs once at startup, before the scheduler autostarts, so no tick can
+        observe an interrupted chunk as in-flight. The decision is
+        `app.jobs.recovery.plan_startup_recovery` (pure); this only applies it,
+        one transaction per job, so one malformed job cannot block the rest.
+
+        A completed job whose audio is intact is untouched. A completed job
+        whose audio vanished *is* revived: its chunks go back in the queue, so
+        leaving it terminal would hide real work.
+
+        Trashed jobs are included on purpose. A job that was mid-render when the
+        process died keeps a `RENDERING` chunk, and `renderable_chunks()` only
+        dispatches `PLANNED` ones — so restoring it later would leave it stuck
+        forever. Repairing it here costs one write and keeps restore honest.
+        """
+        with self._db.transaction() as uow:
+            job_ids = [summary.id for summary in uow.jobs.summaries_all(include_deleted=True)]
+        recovered: list[str] = []
+        for job_id in job_ids:
+            with self._db.transaction() as uow:
+                job = uow.jobs.get_any(job_id, include_deleted=True)
+                if job is None:
+                    continue
+                plan = plan_startup_recovery(job, audio_exists)
+                if not plan.needed:
+                    continue
+                self._apply_recovery_plan(uow, job, plan)
+                recovered.append(job.id)
+        return RecoveryResult(examined=len(job_ids), recovered=tuple(recovered))
+
+    def _apply_recovery_plan(self, uow: UnitOfWork, job: Job, plan: RecoveryPlan) -> None:
+        now = utc_now()
+        reset_audio = {id(chunk) for chunk in plan.reset_audio}
+        for chunk in plan.requeue:
+            stored = self._resolve_chunk(job, chunk)
+            stored.status = ChunkStatus.PLANNED
+            if id(chunk) in reset_audio:
+                # The file is gone, so the duration and paths must go with it:
+                # keeping them would leave a written-looking take that cannot
+                # be served.
+                stored.duration_seconds = 0.0
+                stored.start_seconds = 0.0
+                stored.segment_path = None
+                stored.wav_path = None
+            stored.updated_at = now
+        if plan.clear_listener:
+            job.is_active_listening = False
+            job.playback_state.is_playing = False
+        if job.status in TERMINAL_JOB_STATUSES and job.has_unfinished_chunks():
+            # A terminal job with queued work is not terminal any more.
+            job.status = JobStatus.QUEUED
+        self._refresh_derived(uow, job)
+        self._settle_status(job)
+        job.updated_at = now
+        uow.jobs.save(job)
 
     def _derive_title(self, source_text: str) -> str:
         first_line = source_text.strip().splitlines()[0] if source_text.strip() else "Untitled Job"
