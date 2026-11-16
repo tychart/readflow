@@ -42,6 +42,13 @@ test-fast:
 # data in a versioned subdirectory so pg_upgrade can work across majors.
 # database (`readflow`) and the throwaway test database (`readflow_test`) live
 # in one container and one named volume; nothing is published beyond loopback.
+# The database section reads the same `.env` the app and `scripts/dev.sh` read,
+# so `make db-up` creates a container whose credentials match DATABASE_URL.
+# (Without this, the container got the defaults below and every migration failed
+# with an authentication error.)
+-include .env
+export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
+
 PG_CONTAINER ?= readflow-dev-pg
 PG_VOLUME ?= readflow-dev-pgdata
 PG_PORT ?= 5432

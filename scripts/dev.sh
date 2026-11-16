@@ -45,6 +45,10 @@
 #   --access-log        show uvicorn per-request access logs           [DEV_ACCESS_LOG=1]
 #   --memory            use the in-memory adapter: no database         [DEV_MEMORY=1]
 #   --with-db           with 'stop': also remove the dev Postgres container
+#   --wipe-db           delete every row: drop and recreate the schema, then
+#                       migrate again. Combine with 'stop --with-db' to delete
+#                       the dev volume as well, so the next start builds a
+#                       brand-new cluster. There is no undo.
 #   NO_COLOR=1          plain output (also automatic when not a TTY)
 #
 # The ports are fixed at 8000 (api) and 5173 (web) because Vite's /api proxy is
@@ -103,6 +107,7 @@ web_host="${DEV_WEB_HOST:-0.0.0.0}"
 provider="${DEV_PROVIDER:-qwen}"
 memory_mode="${DEV_MEMORY:-0}"
 with_db=0
+wipe_db="${DEV_WIPE_DB:-0}"
 no_server="${DEV_NO_SERVER:-0}"
 no_web="${DEV_NO_WEB:-0}"
 no_follow="${DEV_NO_FOLLOW:-0}"
@@ -480,17 +485,38 @@ ensure_database() {
     fi
     db_started_here=1
     local waited=0
-    until "$engine" exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; do
+    # Wait for the *final* server: a fresh volume runs initdb behind a temporary
+    # socket-only server, and `pg_isready` answers during that phase too. A TCP
+    # query with the configured credentials is the first moment the app can
+    # actually connect, and it also proves the password matches.
+    until "$engine" exec -e PGPASSWORD="$PG_PASSWORD" "$PG_CONTAINER" \
+        psql -h 127.0.0.1 -U "$PG_USER" -d "$PG_DB" -tAc 'select 1' >/dev/null 2>&1; do
       sleep 0.5
       waited=$((waited + 1))
-      ((waited > 120)) && die "postgres did not become ready (see '$engine logs $PG_CONTAINER')"
+      if ((waited > 240)); then
+        die "postgres did not accept connections (see '$engine logs $PG_CONTAINER')"
+      fi
     done
     ok "dev postgres is ready"
   fi
 
   info "applying migrations"
-  ( cd "$SERVER_DIR" && READFLOW_DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
-      uv run alembic upgrade head >/dev/null ) || die "database migration failed"
+  local migration_log; migration_log=$(mktemp)
+  if ! ( cd "$SERVER_DIR" && READFLOW_DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
+        uv run alembic upgrade head ) >"$migration_log" 2>&1; then
+    warn "the migration failed:"
+    tail -n 12 "$migration_log" | sed 's/^/      /' >&2
+    if grep -qiE "password authentication|authentication failed|role .* does not exist" "$migration_log"; then
+      # The usual cause: the container predates a `.env` change (e.g. it was made
+      # by `make db-up` before those credentials existed).
+      warn "the database rejected these credentials"
+      hint "the running container was created with different POSTGRES_* values."
+      hint "recreate it from .env with:  scripts/dev.sh stop --with-db --wipe-db && scripts/dev.sh"
+    fi
+    rm -f "$migration_log"
+    die "database migration failed"
+  fi
+  rm -f "$migration_log"
   ok "schema is up to date"
 }
 
@@ -501,12 +527,66 @@ container_engine() {
   fi
 }
 
+# Drop and recreate the schema, then migrate again.
+#
+# The DDL goes through SQLAlchemy rather than `psql`, because the host is not
+# guaranteed to have a Postgres client (this machine does not — the client only
+# exists inside the container). It works for any reachable URL, local or remote.
+wipe_database() {
+  if ((memory_mode)); then
+    info "database: in-memory, nothing to wipe"
+    return 0
+  fi
+  if ! db_reachable; then
+    die "the database is not reachable, so it cannot be wiped (start it first)"
+  fi
+  info "wiping the database ${BOLD}${database_url%%\?*}${OFF}"
+  if ! (
+    cd "$SERVER_DIR" &&
+      DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
+        uv run python - <<'PY'
+import asyncio
+import os
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+
+async def main() -> None:
+    engine = create_async_engine(os.environ["DATABASE_URL"])
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
+    finally:
+        await engine.dispose()
+
+
+asyncio.run(main())
+PY
+  ) >/dev/null 2>&1; then
+    die "wiping the database failed"
+  fi
+  ok "schema dropped"
+  info "applying migrations"
+  ( cd "$SERVER_DIR" && DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
+      uv run alembic upgrade head >/dev/null ) || die "database migration failed"
+  ok "fresh schema is up to date"
+  hint "every account and job is gone; the next visit shows /setup"
+}
+
 stop_database() {
   local engine; engine=$(container_engine)
   [[ -z $engine ]] && return 0
   if "$engine" container inspect "$PG_CONTAINER" >/dev/null 2>&1; then
     "$engine" rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
-    ok "removed the dev postgres container (the $PG_VOLUME volume is kept)"
+    if ((wipe_db)); then
+      "$engine" volume rm -f "$PG_VOLUME" >/dev/null 2>&1 || true
+      ok "removed the dev postgres container and its $PG_VOLUME volume"
+      hint "the next start creates a brand-new cluster and shows /setup"
+    else
+      ok "removed the dev postgres container (the $PG_VOLUME volume is kept)"
+    fi
   fi
 }
 
@@ -751,6 +831,7 @@ start() {
 
   trap startup_signal INT TERM
   ensure_database
+  ((wipe_db)) && wipe_database
   start_api
   start_web
 
@@ -925,6 +1006,9 @@ status() {
       box_row "network" "$sw_lan  (other devices)" "${C_OK}${sw_lan}${OFF}  ${DIM}(other devices)${OFF}"
     fi
   fi
+  if ((wipe_db)); then
+    box_row "wipe-db" "next start" "${YEL}dataset will be wiped${OFF}"
+  fi
   if [[ -n $(state_get provider) ]]; then
     local sp; sp=$(state_get provider)
     box_row "provider" "$sp" "${BOLD}$sp${OFF}"
@@ -1004,6 +1088,7 @@ while ((i < ${#args[@]})); do
     --access-log) access_log=1 ;;
     --memory) memory_mode=1 ;;
     --with-db) with_db=1 ;;
+    --wipe-db) wipe_db=1 ;;
     -*) die "unknown option '$a' — try 'scripts/dev.sh help'" ;;
     *) die "unknown command '$a' — try 'scripts/dev.sh help'" ;;
   esac
@@ -1017,7 +1102,8 @@ esac
 
 case "$cmd" in
   start | up) start ;;
-  stop) stop; ((with_db)) && stop_database; exit 0 ;;
+  # With --with-db the volume is gone, so removing it *is* the wipe.
+  stop) stop; ((with_db)) && stop_database; ((wipe_db && !with_db)) && wipe_database; exit 0 ;;
   restart) stop; ((with_db)) && stop_database; start ;;
   status) status ;;
   logs) logs ;;
