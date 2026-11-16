@@ -242,7 +242,9 @@ http_status() {
 }
 
 code_2xx() { [[ $1 == 2* ]]; }
-api_ready() { code_2xx "$(http_status "$api_url/api/voices")"; }
+# `/health` is the only unauthenticated route, so it is the only one a readiness
+# probe can use: everything else under /api answers 401 without a session.
+api_ready() { code_2xx "$(http_status "$api_url/health")"; }
 web_ready() {
   local code
   code="$(http_status "$web_url/")"
