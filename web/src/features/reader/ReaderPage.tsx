@@ -94,6 +94,12 @@ interface ReaderPageStoreState {
   voices: ReturnType<typeof useAppStore.getState>["voices"];
 }
 
+interface QueuedReaderRefresh {
+  jobId: string;
+  reason: string;
+  showLoading: boolean;
+}
+
 /* ── Component ────────────────────────────────────────────── */
 
 export function ReaderPage() {
@@ -178,8 +184,10 @@ export function ReaderPage() {
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
-  const queuedRefreshReasonRef = useRef<string | null>(null);
-  const manifestRef = useRef<JobManifest | null>(null);
+  const queuedRefreshRef = useRef<QueuedReaderRefresh | null>(null);
+  const currentJobIdRef = useRef(jobId);
+  currentJobIdRef.current = jobId;
+  const eventRefreshTimerRef = useRef<number | null>(null);
   const previousSocketStatusRef = useRef(websocketStatus);
 
   const isJobTerminal = isTerminalStatus(job?.status);
@@ -527,25 +535,42 @@ export function ReaderPage() {
   const shouldUsePollingFallback =
     !!job &&
     !isTerminalStatus(job.status) &&
-    (websocketStatus !== "open" || isSocketStale);
+    // WebSockets are the low-latency path, not the source of truth. While the
+    // listener is starved, reconcile even if a mobile browser still reports an
+    // OPEN socket: a backgrounded tab can miss frames without receiving close.
+    (websocketStatus !== "open" ||
+      isSocketStale ||
+      (playIntent && isWaitingForData));
 
   // ── Effects ─────────────────────────────────────────────
-  useEffect(() => {
-    manifestRef.current = manifest;
-  }, [manifest]);
-
   const refreshReaderState = useCallback(
-    async (reason: string, showLoading = false) => {
-      if (!jobId) return;
+    async (
+      reason: string,
+      showLoading = false,
+      targetJobId = currentJobIdRef.current,
+    ) => {
+      if (!targetJobId) return;
       if (refreshInFlightRef.current) {
-        queuedRefreshReasonRef.current = reason;
+        // The component stays mounted while routes change. Remember the latest
+        // request *and its owner* so a refresh queued for job A cannot fetch
+        // and apply over job B after navigation.
+        queuedRefreshRef.current = { reason, showLoading, jobId: targetJobId };
         return refreshInFlightRef.current;
       }
       if (showLoading) setLoading(true);
       const requestId = ++refreshRequestIdRef.current;
-      const task = Promise.all([api.getJob(jobId), api.getManifest(jobId)])
+      let task: Promise<void>;
+      task = Promise.all([
+        api.getJob(targetJobId),
+        api.getManifest(targetJobId),
+      ])
         .then(([nextJob, nextManifest]) => {
-          if (requestId < lastAppliedRequestIdRef.current) return;
+          if (
+            targetJobId !== currentJobIdRef.current ||
+            requestId < lastAppliedRequestIdRef.current
+          ) {
+            return;
+          }
           lastAppliedRequestIdRef.current = requestId;
           setJob(nextJob);
           setManifest(nextManifest);
@@ -554,8 +579,9 @@ export function ReaderPage() {
           setLastRefreshReason(reason);
         })
         .catch((loadError) => {
+          if (targetJobId !== currentJobIdRef.current) return;
           if (loadError instanceof ApiError && loadError.status === 404) {
-            setMissingJobId(jobId);
+            setMissingJobId(targetJobId);
             return;
           }
           setError(
@@ -565,16 +591,25 @@ export function ReaderPage() {
           );
         })
         .finally(async () => {
+          // A newer route request may have taken ownership while this network
+          // request was settling. It alone may drain the queued refresh.
+          if (refreshInFlightRef.current !== task) return;
           refreshInFlightRef.current = null;
           if (showLoading) setLoading(false);
-          const queuedReason = queuedRefreshReasonRef.current;
-          queuedRefreshReasonRef.current = null;
-          if (queuedReason) await refreshReaderState(queuedReason);
+          const queuedRefresh = queuedRefreshRef.current;
+          queuedRefreshRef.current = null;
+          if (queuedRefresh) {
+            await refreshReaderState(
+              queuedRefresh.reason,
+              queuedRefresh.showLoading,
+              queuedRefresh.jobId,
+            );
+          }
         });
       refreshInFlightRef.current = task;
       return task;
     },
-    [jobId],
+    [],
   );
 
   /**
@@ -603,7 +638,21 @@ export function ReaderPage() {
   );
 
   useEffect(() => {
-    void refreshReaderState("initial", true);
+    void refreshReaderState("initial", true, jobId);
+  }, [jobId, refreshReaderState]);
+
+  // Browsers are allowed to suspend a backgrounded tab and its WebSocket. When
+  // it becomes visible again, fetch the authoritative detail + manifest instead
+  // of waiting for a socket close event that mobile networking may never emit.
+  useEffect(() => {
+    const refreshAfterResume = () => {
+      if (document.visibilityState === "visible") {
+        void refreshReaderState("visibility-resume");
+      }
+    };
+    document.addEventListener("visibilitychange", refreshAfterResume);
+    return () =>
+      document.removeEventListener("visibilitychange", refreshAfterResume);
   }, [refreshReaderState]);
 
   // The live link only returns through "reconnecting" after a real drop, so a
@@ -656,14 +705,31 @@ export function ReaderPage() {
     setLastRefreshAt(Date.now());
     setLastRefreshReason(`ws:${lastEvent.type}`);
     if (
-      lastEvent.type === "chunk_ready" &&
-      !payload?.mime_type &&
-      !payload?.init_segment_url &&
-      !manifestRef.current
+      lastEvent.type === "chunk_ready" ||
+      lastEvent.type === "job_completed"
     ) {
-      void refreshReaderState(`ws:${lastEvent.type}:reconcile`);
+      // The store deliberately keeps only its latest event. React may batch a
+      // burst of several chunk frames (especially after a phone wakes), which
+      // would otherwise skip intermediate deltas. Apply this delta immediately
+      // for low latency, then coalesce one authoritative HTTP reconciliation.
+      if (eventRefreshTimerRef.current === null) {
+        eventRefreshTimerRef.current = window.setTimeout(() => {
+          eventRefreshTimerRef.current = null;
+          void refreshReaderState(`ws:${lastEvent.type}:reconcile`);
+        }, 250);
+      }
     }
   }, [applyJobPatch, jobId, lastEvent, refreshReaderState]);
+
+  useEffect(
+    () => () => {
+      if (eventRefreshTimerRef.current !== null) {
+        window.clearTimeout(eventRefreshTimerRef.current);
+        eventRefreshTimerRef.current = null;
+      }
+    },
+    [jobId],
+  );
 
   useEffect(() => {
     if (!shouldUsePollingFallback) return;

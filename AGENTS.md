@@ -2115,6 +2115,25 @@ Important caveat:
 - do not "fix" WS problems by hardcoding backend URLs into the frontend runtime unless the user explicitly wants that
 - the preferred architecture is relative frontend paths with proxy/reverse-proxy ownership of upstream routing
 
+### PWA rules (static shell, explicit update)
+
+`vite-plugin-pwa` in `web/vite.config.ts` generates a Workbox service worker in
+both production and Vite development. It is deliberately an **application-shell
+cache only**: there is no runtime caching for `/api` or rendered media. Do not
+add an audio/API cache casually; that would create authenticated-data staleness,
+media retention and quota/eviction responsibilities that the current player
+intentionally does not have.
+
+`web/src/pwa/updates.ts` owns registration, and `PwaUpdatePrompt` is the only
+update UI. It uses a waiting-worker prompt rather than automatic activation,
+because an automatic reload destroys the active `MediaSource` and interrupts a
+listener. The bottom-centre action is raised above the phone reader dock or the
+mini-player; preserve that placement. A reverse-proxied phone dev origin must
+be HTTPS (the operator already owns TLS); `localhost` is the browser-only
+exception. A PWA helps resume and installation but does **not** guarantee that
+screen-off browser streaming survives OS suspension — retain the reader's
+visibility/reconnect reconciliation path.
+
 ## Local dev entry point: `scripts/dev.sh`
 
 The user asked for one command that runs the app locally during development, so this script —

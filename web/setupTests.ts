@@ -44,6 +44,15 @@ Object.defineProperty(window.URL, "revokeObjectURL", {
   value: () => undefined,
 });
 
+// jsdom implements neither pause() nor playback. The player-specific suites
+// replace this stub with spies where they assert media behavior; the default
+// keeps component cleanup from printing a false implementation error.
+Object.defineProperty(HTMLMediaElement.prototype, "pause", {
+  configurable: true,
+  writable: true,
+  value: () => undefined,
+});
+
 // jsdom has no matchMedia. Suites testing media queries replace this inert
 // default; ordinary components can still subscribe to theme/density changes.
 Object.defineProperty(window, "matchMedia", {

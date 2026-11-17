@@ -62,6 +62,28 @@ reached through Vite's `/api` proxy, so nothing else needs a LAN bind.
 `web/vite.config.ts` proxies `/api` and `/api/ws` to the backend, so the browser session is
 same-origin with no extra setup.
 
+## Progressive Web App
+
+ReadFlow is installable as a PWA. Its service worker intentionally precaches
+only the static application shell (HTML, JavaScript, CSS, icons and manifest):
+authenticated API data and rendered audio stay network-only. That avoids stale
+job state, retained private media and unbounded device storage.
+
+A downloaded new release waits for the listener to choose it. The app shows a
+small bottom-center **New version available · Reload** action; it never reloads
+and tears down active MediaSource playback automatically. On phone readers the
+control sits above the transport dock.
+
+PWA service workers require a secure origin. `localhost` is a browser exception;
+for phone testing through `scripts/dev.sh`, use the existing HTTPS reverse proxy
+that forwards to Vite and set `HOST_URL` in `.env` if Vite needs to allow that
+hostname. The PWA worker is enabled in development as well as production.
+
+Installing a browser PWA improves startup and resume behavior, but does not
+guarantee that a locked phone will keep JavaScript, WebSockets, fetches or
+MediaSource appending alive. The reader reconciles state when it resumes; a
+hard screen-off playback guarantee requires a native mobile audio path.
+
 ## Features
 
 - **Library**: ordered, nestable folders that are also playable collections;
@@ -96,6 +118,7 @@ same-origin with no extra setup.
   - a **phone bottom dock** that puts the transport and conveyor in the thumb zone
   - the open **job's title in the header**, fading in as the playbar compacts so
     the document keeps its name once the heading has scrolled away
+- Installable PWA with explicit, non-disruptive updates and static-shell offline support
 - WebSocket-driven live job and admin updates
 - Built-in server-side voices discovered from `server/voices/`
 - Voice switching for future chunks only

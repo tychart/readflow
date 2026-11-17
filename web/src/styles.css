@@ -196,5 +196,32 @@ html {
   animation-play-state: paused;
 }
 
+/* ── PWA update prompt ───────────────────────────────────── */
+/*
+ * Update activation reloads the document, so the prompt deliberately lives
+ * above—not inside—playback controls. CSS owns the safe-area/media-query math:
+ * Tailwind cannot reliably emit arbitrary utility values containing nested
+ * `max()` and `env()` expressions.
+ */
+.pwa-update-prompt {
+  bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.pwa-update-prompt[data-placement="above-mini-player"] {
+  bottom: calc(max(1rem, env(safe-area-inset-bottom) + 5.5rem));
+}
+
+@media (max-width: 767px) {
+  .pwa-update-prompt[data-placement="above-reader-dock"] {
+    bottom: calc(max(1rem, env(safe-area-inset-bottom) + 8.5rem));
+  }
+}
+
+@media (min-width: 768px) {
+  .pwa-update-prompt[data-placement="above-reader-dock"] {
+    bottom: 1.5rem;
+  }
+}
+
 /* ── Tailwind dark variant ────────────────────────────────── */
 @custom-variant dark (&:where(.dark, .dark *));

@@ -15,6 +15,7 @@ __pycache__/
 .venv/
 server/.venv/
 web/coverage/
+web/dev-dist/
 tmp/
 
 web/tsconfig.node.tsbuildinfo

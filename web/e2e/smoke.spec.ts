@@ -326,6 +326,52 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("serves an installable PWA shell in development", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute(
+    "href",
+    "/manifest.webmanifest",
+  );
+  const manifest = await page.request.get("/manifest.webmanifest");
+  expect(manifest.ok()).toBe(true);
+  await expect(manifest.json()).resolves.toMatchObject({
+    name: "ReadFlow",
+    display: "standalone",
+    icons: expect.arrayContaining([
+      expect.objectContaining({ src: "/pwa-192.png" }),
+      expect.objectContaining({ src: "/pwa-512.png" }),
+    ]),
+  });
+
+  await page.waitForFunction(async () =>
+    Boolean(await navigator.serviceWorker.getRegistration()),
+  );
+  // A new worker controls reloads, not the page that registered it. Exercise a
+  // controlled page before checking the cache policy below.
+  await page.reload();
+  await page.waitForFunction(async () => {
+    await navigator.serviceWorker.ready;
+    return Boolean(navigator.serviceWorker.controller);
+  });
+
+  await page.route("**/api/pwa-cache-probe", async (route) => {
+    await route.fulfill({ json: { private: true } });
+  });
+  await page.evaluate(async () => {
+    await fetch("/api/pwa-cache-probe", { cache: "no-store" });
+  });
+  const cachedUrls = await page.evaluate(async () => {
+    const cacheNames = await caches.keys();
+    const requests = await Promise.all(
+      cacheNames.map(async (name) => (await caches.open(name)).keys()),
+    );
+    return requests.flat().map((request) => new URL(request.url).pathname);
+  });
+
+  expect(cachedUrls).not.toContain("/api/pwa-cache-probe");
+});
+
 test("library page creates a job in the root", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "New job" }).click();

@@ -18,6 +18,13 @@ import {
 } from "../test-utils/auth";
 import { App } from "./App";
 
+let documentVisibility: "hidden" | "visible" = "visible";
+
+Object.defineProperty(document, "visibilityState", {
+  configurable: true,
+  get: () => documentVisibility,
+});
+
 class MockWebSocket extends EventTarget {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -25,6 +32,8 @@ class MockWebSocket extends EventTarget {
   static CLOSED = 3;
   static instances: MockWebSocket[] = [];
   static latest: MockWebSocket | null = null;
+  static respondToPing = true;
+  static throwOnSend = false;
 
   readyState = MockWebSocket.CONNECTING;
 
@@ -44,7 +53,10 @@ class MockWebSocket extends EventTarget {
   }
 
   send(payload: string) {
-    if (payload === "ping") {
+    if (MockWebSocket.throwOnSend) {
+      throw new Error("network path is gone");
+    }
+    if (payload === "ping" && MockWebSocket.respondToPing) {
       queueMicrotask(() => this.emit({ type: "pong", payload: {} }));
     }
   }
@@ -146,8 +158,11 @@ beforeEach(() => {
   // The open reader's title outlives a route change by design, so a test that
   // publishes one must not leak it into the next test.
   setReaderTitle(null);
+  documentVisibility = "visible";
   MockWebSocket.instances = [];
   MockWebSocket.latest = null;
+  MockWebSocket.respondToPing = true;
+  MockWebSocket.throwOnSend = false;
   vi.stubGlobal("WebSocket", MockWebSocket);
   // Stub matchMedia for useTheme hook (not available in jsdom)
   Object.defineProperty(window, "matchMedia", {
@@ -229,6 +244,83 @@ test("jobs list updates from websocket events and shows live connection state", 
   expect(await screen.findByText(/just now/i)).toBeInTheDocument();
 
   expect(await screen.findByText("Live job")).toBeInTheDocument();
+});
+
+test("reconnects the socket when the page becomes visible again", async () => {
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+  documentVisibility = "hidden";
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(MockWebSocket.instances).toHaveLength(1);
+
+  documentVisibility = "visible";
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED);
+  expect(MockWebSocket.latest?.readyState).toBe(MockWebSocket.OPEN);
+});
+
+test("reconnects instead of trusting a silent open socket", async () => {
+  vi.useFakeTimers();
+  MockWebSocket.respondToPing = false;
+
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+  expect(MockWebSocket.instances).toHaveLength(1);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_001);
+  });
+
+  expect(MockWebSocket.instances).toHaveLength(2);
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED);
+});
+
+test("reconnects immediately when a heartbeat send fails", async () => {
+  vi.useFakeTimers();
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+  expect(MockWebSocket.instances).toHaveLength(1);
+
+  MockWebSocket.throwOnSend = true;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(15_000);
+  });
+
+  expect(MockWebSocket.instances).toHaveLength(2);
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED);
+});
+
+test("reconnects when an open-looking socket rejects playback sync", async () => {
+  await act(async () => {
+    render(<App />);
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+  MockWebSocket.throwOnSend = true;
+  let sent = true;
+  act(() => {
+    sent = liveClient.sendPlaybackSync("job-live", 12, true);
+  });
+  expect(sent).toBe(false);
+
+  await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED);
 });
 
 test("socket reconnects and surfaces reconnecting state", async () => {

@@ -15,6 +15,7 @@ import readflowLockupDark from "../assets/brand/readflow-lockup-dark.svg";
 import readflowLockupLight from "../assets/brand/readflow-lockup-light.svg";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { NavbarJobTitle } from "../components/NavbarJobTitle";
+import { PwaUpdatePrompt } from "../components/PwaUpdatePrompt";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { AdminPage } from "../features/admin/AdminPage";
 import { LibraryPage } from "../features/library/LibraryPage";
@@ -27,6 +28,7 @@ import { useTheme } from "../hooks/useTheme";
 import { MiniPlayer } from "../player/MiniPlayer";
 import { PlayerProvider } from "../player/PlayerProvider";
 import { registerPlayerNavigate, usePlayerStore } from "../player/player-store";
+import { pwaUpdates } from "../pwa/updates";
 import { useAppStore } from "../state/store";
 import type { WebSocketStatus } from "../types/events";
 import { AuthGate } from "./auth/AuthGate";
@@ -140,6 +142,11 @@ function Shell() {
   // login/setup screens are the only thing on screen.
   const showMiniPlayer =
     isAuthenticated && hasPlayer && !location.pathname.startsWith("/jobs/");
+  const updatePromptPlacement = location.pathname.startsWith("/jobs/")
+    ? "above-reader-dock"
+    : showMiniPlayer
+      ? "above-mini-player"
+      : "default";
   const { theme } = useTheme();
   // Periodically re-render to update the "seconds ago" display
   const [, forceUpdate] = useState(0);
@@ -330,6 +337,7 @@ function Shell() {
         </ErrorBoundary>
       </main>
       {showMiniPlayer ? <MiniPlayer /> : null}
+      <PwaUpdatePrompt placement={updatePromptPlacement} updates={pwaUpdates} />
     </div>
   );
 }

@@ -53,6 +53,7 @@ class LiveClient {
       return;
     }
     this.started = true;
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
     void this.syncSnapshot("Bootstrap sync failed");
     this.connect();
   }
@@ -84,17 +85,32 @@ class LiveClient {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return false;
     }
-    this.socket.send(
-      JSON.stringify({
-        type: "playback_sync",
-        payload: {
-          job_id: jobId,
-          current_time_seconds: currentTimeSeconds,
-          is_playing: isPlaying,
-        },
-      }),
-    );
-    return true;
+    try {
+      this.socket.send(
+        JSON.stringify({
+          type: "playback_sync",
+          payload: {
+            job_id: jobId,
+            current_time_seconds: currentTimeSeconds,
+            is_playing: isPlaying,
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      // Mobile browsers can retain an OPEN-looking socket after the radio has
+      // gone away. Progress still has an HTTP path; reconnect the hint channel
+      // instead of letting a synchronous send failure interrupt playback.
+      this.setSocketState({
+        status: "error",
+        error:
+          error instanceof Error
+            ? `Playback sync failed: ${error.message}`
+            : "Playback sync failed",
+      });
+      this.restartConnection();
+      return false;
+    }
   }
 
   private store() {
@@ -160,12 +176,40 @@ class LiveClient {
       window.clearTimeout(this.staleTimer);
     }
     this.staleTimer = window.setTimeout(() => {
+      if (!this.started) return;
+      // A missing pong or event means an OPEN-looking socket may be a dead
+      // mobile connection. A label alone cannot recover the reader, so discard
+      // it and let the normal reconnect + snapshot path make state current.
       this.setSocketState({
         isStale: true,
-        error: "Live updates are stale. Polling fallback is active.",
+        error: "Live updates are stale. Reconnecting…",
       });
+      this.restartConnection();
     }, STALE_AFTER_MS);
   }
+
+  /**
+   * A backgrounded mobile tab can keep a WebSocket object alive after its TCP
+   * connection is gone. Treat foregrounding and failed writes as a transport
+   * discontinuity: reconnect rather than trusting readyState, then sync the
+   * authoritative HTTP snapshot on open.
+   */
+  private restartConnection() {
+    if (!this.started) return;
+    this.clearTimers();
+    const socket = this.socket;
+    this.socket = null;
+    if (socket && socket.readyState < WebSocket.CLOSING) {
+      socket.close();
+    }
+    this.reconnectAttempt = Math.max(1, this.reconnectAttempt);
+    this.connect();
+  }
+
+  private handleVisibilityChange = () => {
+    if (document.visibilityState !== "visible" || !this.started) return;
+    this.restartConnection();
+  };
 
   private scheduleReconnect() {
     if (!this.started || this.reconnectTimer !== null) {
@@ -230,6 +274,7 @@ class LiveClient {
                   ? `Heartbeat failed: ${error.message}`
                   : "Heartbeat failed",
             });
+            this.restartConnection();
           }
         }
       }, HEARTBEAT_MS);
@@ -283,9 +328,13 @@ class LiveClient {
     });
 
     socket.addEventListener("close", (event) => {
-      if (this.socket === socket) {
-        this.socket = null;
+      // A deliberate replacement (for example after a phone resumes) has
+      // already installed a newer socket. Its late close event must not create
+      // a second reconnect timer.
+      if (this.socket !== socket) {
+        return;
       }
+      this.socket = null;
       if (!this.started || this.intentionalClose) {
         return;
       }
@@ -307,6 +356,10 @@ class LiveClient {
 
   private stop() {
     this.started = false;
+    document.removeEventListener(
+      "visibilitychange",
+      this.handleVisibilityChange,
+    );
     this.hasConnectedOnce = false;
     this.reconnectAttempt = 0;
     if (this.releaseTimer !== null) {

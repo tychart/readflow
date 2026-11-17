@@ -626,6 +626,77 @@ test("revalidates the loaded job and redirects when the live link reconnects to 
   expect(await screen.findByText("Jobs page")).toBeInTheDocument();
 });
 
+test("reconciles the manifest when the reader returns to the foreground", async () => {
+  seedStore();
+
+  let job = buildReaderJob(0, "rendering");
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => job };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(job.chunks.length) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  renderReader();
+  await screen.findByText("Reader job");
+  expect(screen.queryByRole("slider", { name: /^Chunk 1:/ })).toBeNull();
+
+  // A phone can wake with a socket that never reported the chunks rendered
+  // while its screen was off. Visibility resume must use the HTTP source of
+  // truth rather than waiting for a WebSocket close event.
+  job = buildReaderJob(1, "rendering");
+  fireEvent(document, new Event("visibilitychange"));
+
+  expect(
+    await screen.findByRole("slider", { name: /^Chunk 1:/ }),
+  ).toBeInTheDocument();
+});
+
+test("reconciles chunk bursts so no WebSocket deltas are lost", async () => {
+  seedStore();
+
+  let job = buildReaderJob(0, "rendering");
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      return { ok: true, json: async () => job };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      return { ok: true, json: async () => buildManifest(job.chunks.length) };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  job = buildReaderJob(2, "rendering");
+  act(() => {
+    for (const chunk of job.chunks) {
+      useAppStore.getState().applyEvent({
+        type: "chunk_ready",
+        payload: {
+          job,
+          chunk,
+          chunk_index: chunk.index,
+          mime_type: 'audio/mp4; codecs="mp4a.40.2"',
+          init_segment_url: "/api/jobs/job-1/chunks/init",
+        },
+      });
+    }
+  });
+
+  // React is allowed to batch both store updates, leaving `lastEvent` with only
+  // the second delta. The debounced manifest read restores the whole burst.
+  expect(
+    await screen.findByRole("slider", { name: /^Chunk 2:/ }),
+  ).toBeInTheDocument();
+});
+
 test("shows a calm reconnect state while retrying, then the error once retries are exhausted", async () => {
   seedStore();
   vi.useFakeTimers();
@@ -2837,6 +2908,77 @@ test("autoplay follows the route's job, not the detail still on screen", async (
   await waitFor(() => expect(usePlayerStore.getState().playIntent).toBe(true));
   expect(calls).not.toContain("POST /api/jobs/job-1/activate");
   expect(calls).toContain("POST /api/jobs/job-2/activate");
+});
+
+test("does not let a foreground refresh for the old route block navigation", async () => {
+  seedStore();
+  const user = userEvent.setup();
+  const jobOne = { ...buildReaderJob(1), id: "job-1", title: "First book" };
+  const jobTwo = { ...buildReaderJob(1), id: "job-2", title: "Second book" };
+  let delayOldRefresh = false;
+  let jobOneRefreshRequests = 0;
+  let releaseOldRefresh = () => {};
+  const oldRefresh = new Promise<void>((resolve) => {
+    releaseOldRefresh = resolve;
+  });
+
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/jobs/job-1")) {
+      if (delayOldRefresh) {
+        jobOneRefreshRequests += 1;
+        await oldRefresh;
+      }
+      return { ok: true, json: async () => jobOne };
+    }
+    if (url.endsWith("/api/jobs/job-1/manifest")) {
+      if (delayOldRefresh) {
+        jobOneRefreshRequests += 1;
+        await oldRefresh;
+      }
+      return { ok: true, json: async () => buildManifest(1) };
+    }
+    if (url.endsWith("/api/jobs/job-2")) {
+      return { ok: true, json: async () => jobTwo };
+    }
+    if (url.endsWith("/api/jobs/job-2/manifest")) {
+      return {
+        ok: true,
+        json: async () => ({
+          ...buildManifest(1),
+          init_segment_url: "/api/jobs/job-2/chunks/init",
+        }),
+      };
+    }
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  renderReader(
+    <MemoryRouter initialEntries={["/jobs/job-1"]}>
+      <Routes>
+        <Route
+          element={
+            <>
+              <ReaderPage />
+              <NavigateProbe to="/jobs/job-2" />
+            </>
+          }
+          path="/jobs/:jobId"
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByText("First book");
+  delayOldRefresh = true;
+  fireEvent(document, new Event("visibilitychange"));
+  await waitFor(() => expect(jobOneRefreshRequests).toBe(2));
+
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  releaseOldRefresh();
+
+  await screen.findByText("Second book");
+  expect(usePlayerStore.getState().job?.id).toBe("job-2");
 });
 
 test("auto-advance opens the next job at its first chunk", async () => {
