@@ -9,9 +9,11 @@ const scrollTo = vi.fn();
 function FollowHarness({
   enabled,
   onPause,
+  activeChunkProgress = 0,
 }: {
   enabled: boolean;
   onPause: () => void;
+  activeChunkProgress?: number;
 }) {
   const chunkRefs = useRef(new Map<number, HTMLDivElement>());
   const chromeRef = useRef<HTMLDivElement>(null);
@@ -19,7 +21,7 @@ function FollowHarness({
   useReaderFollow({
     enabled,
     activeChunkIndex: 4,
-    activeChunkProgress: 0,
+    activeChunkProgress,
     chunkRefs,
     chromeRef,
     bottomInset: 24,
@@ -41,7 +43,7 @@ function FollowHarness({
         ref={(element) => {
           if (element) {
             element.getBoundingClientRect = () =>
-              new DOMRect(0, 1_000, 400, 400);
+              new DOMRect(0, 1_000 - window.scrollY, 400, 400);
             chunkRefs.current.set(4, element);
           } else {
             chunkRefs.current.delete(4);
@@ -64,9 +66,17 @@ describe("useReaderFollow", () => {
       configurable: true,
       value: 0,
     });
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 5_000,
+    });
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    delete (document.documentElement as { scrollHeight?: number }).scrollHeight;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   test("aligns the active chunk when smart follow starts", () => {
     render(<FollowHarness enabled onPause={vi.fn()} />);
@@ -75,6 +85,28 @@ describe("useReaderFollow", () => {
       top: 605.92,
       behavior: "smooth",
     });
+  });
+
+  test("waits for native smooth scrolling to finish before choosing another target", () => {
+    const { rerender } = render(<FollowHarness enabled onPause={vi.fn()} />);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+
+    // Playback may advance while a long initial mobile movement is still in
+    // flight. It must not retarget that browser animation by elapsed time.
+    rerender(
+      <FollowHarness activeChunkProgress={1} enabled onPause={vi.fn()} />,
+    );
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 605.92,
+    });
+    window.dispatchEvent(new Event("scroll"));
+    rerender(
+      <FollowHarness activeChunkProgress={0.99} enabled onPause={vi.fn()} />,
+    );
+    expect(scrollTo).toHaveBeenCalledTimes(2);
   });
 
   test("immediately pauses for direct user scroll intent", () => {

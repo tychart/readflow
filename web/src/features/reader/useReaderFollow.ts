@@ -14,7 +14,9 @@ interface UseReaderFollowOptions {
   onPause: () => void;
 }
 
-const MIN_SCROLL_INTERVAL_MS = 250;
+// A small tolerance absorbs sub-pixel scroll positions while still waiting for
+// the browser to finish the native smooth-scroll movement.
+const SCROLL_TARGET_TOLERANCE_PX = 2;
 const SCROLL_KEYS = new Set([
   "ArrowDown",
   "ArrowUp",
@@ -35,6 +37,16 @@ function isReaderControl(event: KeyboardEvent): boolean {
   );
 }
 
+function boundedScrollTarget(target: number): number {
+  const scrollingElement =
+    document.scrollingElement ?? document.documentElement;
+  const maxScroll = Math.max(
+    0,
+    scrollingElement.scrollHeight - window.innerHeight,
+  );
+  return Math.min(maxScroll, Math.max(0, target));
+}
+
 /**
  * Keep the current spoken point in a comfortable viewport band while follow is
  * enabled. Direct user scroll intent always pauses the mode; listening never
@@ -51,23 +63,49 @@ export function useReaderFollow({
   onPause,
 }: UseReaderFollowOptions): void {
   const previousActiveChunkRef = useRef<number | null>(null);
-  const lastScrollAtRef = useRef(0);
+  const pendingAutoScrollTargetRef = useRef<number | null>(null);
+
+  // Native smooth scrolling does not return a completion promise. Keep exactly
+  // one destination in flight and release it when the page reaches that target
+  // (or the browser says the scroll ended), rather than guessing from elapsed
+  // time. On a phone, a long initial jump often outlives a short timer.
+  useEffect(() => {
+    const settleIfAtTarget = () => {
+      const target = pendingAutoScrollTargetRef.current;
+      if (
+        target !== null &&
+        Math.abs(window.scrollY - target) <= SCROLL_TARGET_TOLERANCE_PX
+      ) {
+        pendingAutoScrollTargetRef.current = null;
+      }
+    };
+    const settleOnScrollEnd = () => {
+      pendingAutoScrollTargetRef.current = null;
+    };
+    window.addEventListener("scroll", settleIfAtTarget, { passive: true });
+    window.addEventListener("scrollend", settleOnScrollEnd);
+    return () => {
+      window.removeEventListener("scroll", settleIfAtTarget);
+      window.removeEventListener("scrollend", settleOnScrollEnd);
+    };
+  }, []);
 
   useEffect(() => {
     if (!enabled || activeChunkIndex === null) {
       previousActiveChunkRef.current = null;
+      pendingAutoScrollTargetRef.current = null;
       return;
     }
 
     const chunk = chunkRefs.current.get(activeChunkIndex);
     if (!chunk) return;
 
-    const now = performance.now();
     const forceAlign = previousActiveChunkRef.current !== activeChunkIndex;
-    if (!forceAlign && now - lastScrollAtRef.current < MIN_SCROLL_INTERVAL_MS) {
-      return;
-    }
+    // Remember the latest chunk even while a prior movement settles. When the
+    // lock lifts, the normal readable-band check selects one destination for
+    // the current playhead instead of queueing stale chunk jumps.
     previousActiveChunkRef.current = activeChunkIndex;
+    if (pendingAutoScrollTargetRef.current !== null) return;
 
     const chunkRect = chunk.getBoundingClientRect();
     const chromeBottom = chromeRef.current?.getBoundingClientRect().bottom ?? 0;
@@ -83,9 +121,17 @@ export function useReaderFollow({
     });
     if (target === null) return;
 
-    lastScrollAtRef.current = now;
+    const boundedTarget = boundedScrollTarget(target);
+    if (
+      Math.abs(window.scrollY - boundedTarget) <= SCROLL_TARGET_TOLERANCE_PX
+    ) {
+      return;
+    }
+    if (motion === "animated") {
+      pendingAutoScrollTargetRef.current = boundedTarget;
+    }
     window.scrollTo({
-      top: target,
+      top: boundedTarget,
       behavior: motion === "reduced" ? "auto" : "smooth",
     });
   }, [
