@@ -50,6 +50,7 @@ import type { TimelineSlotData } from "../../types/timeline";
 import { getChunkText, isTerminalStatus } from "./chunk-utils";
 import { JobStepper } from "./JobStepper";
 import { ReaderEndCard } from "./ReaderEndCard";
+import { ReaderFollowButton } from "./ReaderFollowButton";
 import { ReaderReadMenu } from "./ReaderReadMenu";
 import { ReaderSidebar } from "./ReaderSidebar";
 import { ReaderContent, ReaderTextBody } from "./ReaderText";
@@ -75,6 +76,7 @@ import {
 import { buildReaderTextSegments } from "./reader-text";
 import { isRenderingStalled } from "./transport";
 import { UpNextChip } from "./UpNextChip";
+import { useReaderFollow } from "./useReaderFollow";
 
 /* ── Constants ────────────────────────────────────────────── */
 
@@ -180,6 +182,7 @@ export function ReaderPage() {
   }, [isLargeScreen]);
 
   const toggleSidebar = useCallback(() => setSidebarOpen((prev) => !prev), []);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
 
   const refreshRequestIdRef = useRef(0);
   const lastAppliedRequestIdRef = useRef(0);
@@ -531,6 +534,11 @@ export function ReaderPage() {
     if (targetIndex === null) return null;
     return activeChunks.find((c) => c.index === targetIndex) ?? null;
   }, [activeProgress.activeChunkIndex, activeChunks]);
+  const activeChunkProgress =
+    activeProgress.activeChunkIndex === null
+      ? 0
+      : (activeProgress.fillByIndex.get(activeProgress.activeChunkIndex) ?? 0) /
+        100;
 
   const shouldUsePollingFallback =
     !!job &&
@@ -1203,6 +1211,17 @@ export function ReaderPage() {
   const totalChunksInJob = job?.total_chunks_emitted ?? knownChunks.length;
 
   // ── Scroll-sync chunk content ───────────────────────────
+  // The progress value is written as a CSS property rather than React state:
+  // playback and scroll updates must not re-render this document per frame.
+  const attachScrollProgress = useScrollProgressVar({ alsoWriteRoot: true });
+  const readerChromeRef = useRef<HTMLDivElement>(null);
+  const attachReaderChrome = useCallback(
+    (element: HTMLDivElement | null) => {
+      readerChromeRef.current = element;
+      attachScrollProgress(element);
+    },
+    [attachScrollProgress],
+  );
   const contentRef = useRef<HTMLDivElement>(null);
   const chunkRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -1213,6 +1232,24 @@ export function ReaderPage() {
     },
     [],
   );
+
+  const pauseSmartFollow = useCallback(() => {
+    setReaderSettings({ smartFollow: false });
+  }, []);
+  const toggleSmartFollow = useCallback(() => {
+    setReaderSettings({ smartFollow: !settings.smartFollow });
+  }, [settings.smartFollow]);
+
+  useReaderFollow({
+    enabled: settings.smartFollow,
+    activeChunkIndex: activeProgress.activeChunkIndex,
+    activeChunkProgress,
+    chunkRefs,
+    chromeRef: readerChromeRef,
+    bottomInset: isPhoneViewport && settings.showConveyor ? 172 : 24,
+    motion,
+    onPause: pauseSmartFollow,
+  });
 
   // Reset userScrolledChunkRef after a brief window
   useEffect(() => {
@@ -1236,16 +1273,6 @@ export function ReaderPage() {
       // scrollIntoView may not be available in all environments (e.g. jsdom)
     }
   }, [activeProgress.activeChunkIndex]);
-
-  // ── Scroll-linked playbar compaction — must be before early returns ──
-  // The progress value is written as the `--scroll-progress` custom property on
-  // the sticky wrapper below, NOT held in state: it changes on every scroll
-  // frame, and re-rendering (and re-laying-out) the page per frame is what made
-  // the bar stutter and flicker mid-shrink on a phone.
-  //
-  // It is mirrored onto `<html>` so the app header — outside this subtree — can
-  // fade the job title in on the same continuous value.
-  const attachScrollProgress = useScrollProgressVar({ alsoWriteRoot: true });
 
   // ── Reader text layout — must be before early returns ─────
   // Slicing the document is memoized so playback ticks (which re-render the
@@ -1308,10 +1335,7 @@ export function ReaderPage() {
       <>
         {/* Sticky playbar wrapper — flush against the app header. Owns the
           `--scroll-progress` value every collapsing part below interpolates on. */}
-        <div
-          className="sticky top-[56px] z-30 w-full"
-          ref={attachScrollProgress}
-        >
+        <div className="sticky top-[56px] z-30 w-full" ref={attachReaderChrome}>
           {/* Background layer — a static surface whose opacity follows scroll.
             Deliberately no CSS transition and no backdrop blur: the value is
             already continuous, a transition would just lag behind and restart
@@ -1497,6 +1521,7 @@ export function ReaderPage() {
                     onMarkFrom={(index, read) =>
                       void handleMarkFrom(index, read)
                     }
+                    onOpenDetails={!isLargeScreen ? openSidebar : undefined}
                   />
                 }
                 title={job.title ?? "Untitled job"}
@@ -1522,6 +1547,7 @@ export function ReaderPage() {
                       onMarkFrom={(index, read) =>
                         void handleMarkFrom(index, read)
                       }
+                      onOpenDetails={!isLargeScreen ? openSidebar : undefined}
                     />
                   }
                   title={job.title ?? "Untitled job"}
@@ -1572,17 +1598,18 @@ export function ReaderPage() {
                 isOpen={sidebarOpen}
                 onToggle={toggleSidebar}
                 isOverlay={!isLargeScreen}
-                overlayTogglePositionClassName={
-                  // The phone dock owns the bottom strip; lift the floating sidebar
-                  // toggle above it so the two controls never overlap.
-                  isPhoneViewport && settings.showConveyor
-                    ? "bottom-[10rem]"
-                    : undefined
-                }
               />
             </div>
           )}
         </div>
+
+        <ReaderFollowButton
+          className={
+            isPhoneViewport && settings.showConveyor ? "bottom-40" : "bottom-6"
+          }
+          enabled={settings.smartFollow}
+          onToggle={toggleSmartFollow}
+        />
 
         {/* Phone bottom dock — transport plus the conveyor, in the thumb zone. */}
         {isPhoneViewport && settings.showConveyor ? (

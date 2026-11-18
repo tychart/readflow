@@ -45,6 +45,7 @@ describe("sanitizeReaderSettings", () => {
         motionMode: "always",
         showConveyor: false,
         showChunkJumpButtons: true,
+        smartFollow: true,
         conveyorWindowSize: 5,
         continuousPlay: false,
         playbackRate: 1.5,
@@ -53,6 +54,7 @@ describe("sanitizeReaderSettings", () => {
       motionMode: "always",
       showConveyor: false,
       showChunkJumpButtons: true,
+      smartFollow: true,
       conveyorWindowSize: 5,
       continuousPlay: false,
       playbackRate: 1.5,
@@ -62,6 +64,16 @@ describe("sanitizeReaderSettings", () => {
     ).toBe(3);
     expect(sanitizeReaderSettings({ motionMode: "reduced" }).motionMode).toBe(
       "reduced",
+    );
+  });
+
+  test("defaults smart follow off and accepts an explicit stored choice", () => {
+    expect(sanitizeReaderSettings({}).smartFollow).toBe(false);
+    expect(sanitizeReaderSettings({ smartFollow: true }).smartFollow).toBe(
+      true,
+    );
+    expect(sanitizeReaderSettings({ smartFollow: "yes" }).smartFollow).toBe(
+      false,
     );
   });
 

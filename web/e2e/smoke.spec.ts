@@ -973,20 +973,21 @@ test("phone widths get a bottom dock and keep the top bar as an overview", async
   // Secondary metadata is dropped on phone widths.
   await expect(page.getByText(/6\/6 chunks/i)).toBeHidden();
 
-  // The floating sidebar toggle must not sit under the dock.
-  const dockBox = await dock.boundingBox();
-  const toggle = page.getByRole("button", { name: "Open sidebar" });
-  await expect(toggle).toBeVisible();
-  const toggleBox = await toggle.boundingBox();
-  expect(dockBox).not.toBeNull();
-  expect(toggleBox).not.toBeNull();
-  expect((toggleBox?.y ?? 0) + (toggleBox?.height ?? 0)).toBeLessThanOrEqual(
-    dockBox?.y ?? 0,
+  // Details is diagnostic UI, so it has no persistent mobile control competing
+  // with the dock. It remains reachable from the reader title's ⋮ menu.
+  await expect(page.getByRole("button", { name: "Open sidebar" })).toHaveCount(
+    0,
   );
 
   // The dock controls stay reachable and still seek.
   await dock.getByRole("button", { name: "Forward 10 seconds" }).click();
   await expect(dock.getByTestId("conveyor-readout")).toBeVisible();
+
+  await page.getByRole("button", { name: "Listening state actions" }).click();
+  await page.getByRole("button", { name: "Open details" }).click();
+  await expect(
+    page.getByRole("button", { name: "Close sidebar" }),
+  ).toBeVisible();
 });
 
 test("the now-playing marker only moves while audio is actually running", async ({

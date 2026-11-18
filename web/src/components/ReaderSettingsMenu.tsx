@@ -215,7 +215,7 @@ export function ReaderSettingsMenu({
 
   // Move focus into the panel so the controls are reachable without a click.
   useEffect(() => {
-    if (open) panelRef.current?.focus();
+    if (open) panelRef.current?.focus({ preventScroll: true });
   }, [open]);
 
   const sectionLabel = (label: string) => (

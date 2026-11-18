@@ -2166,6 +2166,31 @@ function renderReader(ui?: React.ReactElement) {
   );
 }
 
+test("toggles smart follow and pauses it immediately for manual scrolling", async () => {
+  seedStore();
+  mockReaderFetch(buildTextChunks(2));
+
+  renderReader();
+  await screen.findByText("Reader job");
+
+  const follow = screen.getByRole("button", {
+    name: "Resume smart follow",
+  });
+  expect(follow).toHaveAttribute("aria-pressed", "false");
+
+  fireEvent.click(follow);
+  expect(getReaderSettings().smartFollow).toBe(true);
+  expect(
+    screen.getByRole("button", { name: "Pause smart follow" }),
+  ).toHaveAttribute("aria-pressed", "true");
+
+  act(() => window.dispatchEvent(new WheelEvent("wheel")));
+  await waitFor(() => expect(getReaderSettings().smartFollow).toBe(false));
+  expect(
+    screen.getByRole("button", { name: "Resume smart follow" }),
+  ).toHaveAttribute("aria-pressed", "false");
+});
+
 test("shows the whole pasted document before any chunk is planned", async () => {
   seedStore();
   mockLongJobFetch([]);
@@ -2260,6 +2285,7 @@ describe("phone layout", () => {
   });
 
   test("puts the transport and the conveyor in a bottom dock", async () => {
+    const user = userEvent.setup();
     seedStore();
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
@@ -2280,6 +2306,20 @@ describe("phone layout", () => {
     expect(screen.getAllByRole("button", { name: "Play" })).toHaveLength(1);
     expect(within(dock).getByTestId("chunk-conveyor")).toBeInTheDocument();
     expect(screen.getAllByTestId("chunk-conveyor")).toHaveLength(1);
+
+    // Details is intentionally not persistent on a phone; it is available from
+    // the reader title's existing overflow menu, leaving Smart Follow alone in
+    // the thumb-friendly corner above the dock.
+    expect(screen.queryByRole("button", { name: "Open sidebar" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Resume smart follow" }),
+    ).toHaveClass("bottom-40");
+
+    await user.click(
+      screen.getByRole("button", { name: "Listening state actions" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Open details" }));
+    expect(screen.getByRole("button", { name: "Close sidebar" })).toBeVisible();
   });
 
   test("uses on-screen sizes for the dock controls", async () => {

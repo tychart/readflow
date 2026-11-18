@@ -27,6 +27,8 @@ export interface ReaderSettings {
   showConveyor: boolean;
   /** Show the per-chunk jump control in the reader text. */
   showChunkJumpButtons: boolean;
+  /** Keep the current spoken point visible until the reader scrolls manually. */
+  smartFollow: boolean;
   /** Chunk slots visible in the conveyor; "auto" adapts to viewport width. */
   conveyorWindowSize: ConveyorWindowSize;
   /**
@@ -46,6 +48,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   motionMode: "auto",
   showConveyor: true,
   showChunkJumpButtons: true,
+  smartFollow: false,
   conveyorWindowSize: "auto",
   continuousPlay: true,
   playbackRate: 1,
@@ -85,6 +88,10 @@ export function sanitizeReaderSettings(raw: unknown): ReaderSettings {
       typeof value.showChunkJumpButtons === "boolean"
         ? value.showChunkJumpButtons
         : DEFAULT_READER_SETTINGS.showChunkJumpButtons,
+    smartFollow:
+      typeof value.smartFollow === "boolean"
+        ? value.smartFollow
+        : DEFAULT_READER_SETTINGS.smartFollow,
     conveyorWindowSize: WINDOW_SIZES.includes(
       value.conveyorWindowSize as ConveyorWindowSize,
     )

@@ -4,6 +4,8 @@ interface ReaderReadMenuProps {
   activeChunkIndex: number | null;
   onMarkAll: (read: boolean) => void;
   onMarkFrom: (chunkIndex: number, read: boolean) => void;
+  /** Opens the diagnostic sidebar in its overlay layout. */
+  onOpenDetails?: () => void;
 }
 
 /** Bulk listening-state actions for the whole document. */
@@ -11,6 +13,7 @@ export function ReaderReadMenu({
   activeChunkIndex,
   onMarkAll,
   onMarkFrom,
+  onOpenDetails,
 }: ReaderReadMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -68,6 +71,12 @@ export function ReaderReadMenu({
           className="absolute right-0 top-9 z-30 w-56 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-1 shadow-xl"
           role="menu"
         >
+          {onOpenDetails ? (
+            <>
+              {item("Open details", onOpenDetails)}
+              <div className="my-1 border-t border-[var(--line)]" />
+            </>
+          ) : null}
           {item("Mark all read", () => onMarkAll(true))}
           {item("Mark all unread", () => onMarkAll(false))}
           {activeChunkIndex !== null ? (

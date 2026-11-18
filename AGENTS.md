@@ -1477,8 +1477,10 @@ the overview waveform, the clock and the settings gear (`showTransport={false}`)
 first render would otherwise disagree with the CSS breakpoints.
 - The dock adds `padding-bottom: env(safe-area-inset-bottom)` and the reader adds
 bottom padding so the dock cannot cover the last text block.
-- `ReaderSidebar` takes `overlayTogglePositionClassName` to lift its floating toggle
-above the dock. Without it the two controls overlap on a phone.
+- The diagnostic `ReaderSidebar` has no persistent phone toggle. Its overlay
+  drawer opens from **Open details** in the reader title's existing ⋮ menu, while
+  Smart Follow alone stays in the bottom-right above the dock. Keep diagnostic
+  actions discoverable without competing with reading and playback controls.
 
 ### Playback ticks must not re-render the document
 
