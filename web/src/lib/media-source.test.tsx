@@ -1417,6 +1417,89 @@ test("reconciles a terminal job that stops at the end of the stream to ended (no
   cancelAnimationFrameSpy.mockRestore();
 });
 
+test("recognizes a mobile MSE pause at the terminal end without ended", async () => {
+  let bufferedEnd = 0;
+  let simulatedCurrentTime = 0;
+  let simulatedPaused = true;
+
+  installBufferedAudioState(() => bufferedEnd);
+  installRecordingMediaSource([], () => bufferedEnd);
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/init")) {
+      bufferedEnd = 0.5;
+      return { ok: true, arrayBuffer: async () => new Uint8Array([9]).buffer };
+    }
+    bufferedEnd = 4;
+    return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+  }) as unknown as typeof fetch;
+
+  function Harness() {
+    const { audioRef, hasEnded, playerState } = useMediaSourcePlayer({
+      jobId: "job-1",
+      manifest: buildManifest([0, 1]),
+      playbackAnchorIndex: 0,
+      playIntent: true,
+      isTerminal: true,
+    });
+
+    useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      Object.defineProperty(audio, "currentTime", {
+        configurable: true,
+        get: () => simulatedCurrentTime,
+        set: (value: number) => {
+          simulatedCurrentTime = value;
+        },
+      });
+      Object.defineProperty(audio, "paused", {
+        configurable: true,
+        get: () => simulatedPaused,
+      });
+    }, [audioRef]);
+
+    return (
+      <div data-ended={hasEnded ? "yes" : "no"} data-state={playerState}>
+        <audio ref={audioRef} />
+      </div>
+    );
+  }
+
+  const { container } = render(<Harness />);
+  const audio = container.querySelector("audio");
+  expect(audio).not.toBeNull();
+
+  await waitFor(() => expect(bufferedEnd).toBe(4));
+
+  act(() => {
+    simulatedCurrentTime = 3.9;
+    simulatedPaused = false;
+    audio?.dispatchEvent(new Event("play"));
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-state", "playing"),
+  );
+
+  // Chromium/Vivaldi on a phone can pause at the end of an MSE stream without
+  // dispatching `ended`. The end transition itself must still publish hasEnded;
+  // waiting for a second frozen animation frame loses the signal after the
+  // player stops its rAF loop.
+  act(() => {
+    simulatedCurrentTime = 4;
+    simulatedPaused = true;
+    audio?.dispatchEvent(new Event("timeupdate"));
+  });
+
+  await waitFor(() =>
+    expect(container.firstChild).toHaveAttribute("data-ended", "yes"),
+  );
+  expect(container.firstChild).toHaveAttribute("data-state", "ended");
+});
+
 describe("streaming window", () => {
   /**
    * These tests drive the playhead by hand: jsdom has no media clock, so

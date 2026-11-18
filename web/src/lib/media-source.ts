@@ -335,6 +335,10 @@ export function useMediaSourcePlayer({
   const isTerminalRef = useRef(isTerminal);
   const pendingSeekSecondsRef = useRef<number | null>(pendingSeekTargetSeconds);
   const renderedDurationRef = useRef(0);
+  // Some mobile engines report `paused` inconsistently around an MSE end. Keep
+  // an independent record of whether this stream really entered playback so a
+  // pause at the natural end cannot be mistaken for a paused seek.
+  const wasPlayingRef = useRef(false);
   const playbackRateRef = useRef(DEFAULT_PLAYBACK_RATE);
   // Latest stream-primed / buffered state, updated *synchronously* wherever
   // the stream lifecycle changes it. State values are stale within the same
@@ -437,30 +441,51 @@ export function useMediaSourcePlayer({
     const previousSnapshot = lastPlaybackSnapshotRef.current;
 
     // A terminal job has no future data: a playhead that stops at the end of
-    // the buffered stream is *ended*, not waiting. Reconcile the flags even
+    // the rendered stream is *ended*, not waiting. Reconcile the flags even
     // when nothing else changed (frozen playhead) so the UI never keeps a
     // spinner after playback completes without a browser 'ended' event.
+    if (!nextSnapshot.paused) {
+      wasPlayingRef.current = true;
+    }
     const advancedSinceLastSnapshot =
       nextSnapshot.currentTimeSeconds >
       previousSnapshot.currentTimeSeconds + PLAYABLE_EPSILON_SECONDS;
-    const terminalEnded =
-      pendingSeekSecondsRef.current === null &&
-      // A paused element sitting at the end is not "playback finished": it is
-      // what a seek to the end of a completed job looks like. Advancing on that
-      // would throw the listener into the next job without playing anything.
-      playIntentRef.current &&
-      isTerminalRef.current &&
-      renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
+    const stoppedAfterPlaying =
+      nextSnapshot.paused &&
+      (!previousSnapshot.paused || wasPlayingRef.current);
+    const bufferedStreamEnded =
       nextSnapshot.bufferedUntilSeconds >=
         renderedDurationRef.current - TERMINAL_END_EPSILON_SECONDS &&
-      nextSnapshot.currentTimeSeconds > PLAYABLE_EPSILON_SECONDS &&
       !hasBufferedAhead(audio, nextSnapshot.bufferedUntilSeconds) &&
       nextSnapshot.currentTimeSeconds >=
         Math.max(
           0,
           nextSnapshot.bufferedUntilSeconds - TERMINAL_END_EPSILON_SECONDS,
+        );
+    const pausedAtRenderedEnd =
+      stoppedAfterPlaying &&
+      nextSnapshot.currentTimeSeconds >=
+        Math.max(
+          0,
+          renderedDurationRef.current - TERMINAL_END_EPSILON_SECONDS,
         ) &&
-      !advancedSinceLastSnapshot;
+      !hasBufferedAhead(audio, nextSnapshot.bufferedUntilSeconds);
+    const terminalEnded =
+      pendingSeekSecondsRef.current === null &&
+      // A paused element sitting at the end is not "playback finished" when it
+      // was already paused: that is what a seek to the end of a completed job
+      // looks like. A mobile browser may, however, pause MSE at the natural end
+      // without firing `ended`; accept that transition when the prior snapshot
+      // was playing so the end signal is not lost when the rAF loop stops.
+      playIntentRef.current &&
+      isTerminalRef.current &&
+      renderedDurationRef.current > PLAYABLE_EPSILON_SECONDS &&
+      // Use the manifest's playable duration for the paused mobile fallback:
+      // MSE implementations can under-report the final buffered timestamp by
+      // more than the AAC rounding tolerance even though the listener has
+      // audibly reached the end of the stream.
+      (bufferedStreamEnded || pausedAtRenderedEnd) &&
+      (!advancedSinceLastSnapshot || stoppedAfterPlaying);
 
     if (terminalEnded) {
       if (audio && !audio.paused) {
@@ -478,6 +503,7 @@ export function useMediaSourcePlayer({
       setIsActuallyPlaying(false);
       setIsWaitingForData(false);
       setHasEnded(true);
+      wasPlayingRef.current = false;
       return;
     }
 
@@ -519,6 +545,7 @@ export function useMediaSourcePlayer({
     if (nextSnapshot.paused) {
       setIsActuallyPlaying(false);
       setIsWaitingForData(stoppedAtBoundary);
+      wasPlayingRef.current = false;
       return;
     }
 
@@ -1000,6 +1027,7 @@ export function useMediaSourcePlayer({
     }
 
     const handlePlay = () => {
+      wasPlayingRef.current = true;
       setIsActuallyPlaying(true);
       setIsWaitingForData(false);
       setIsAutoplayBlocked(false);
@@ -1031,6 +1059,7 @@ export function useMediaSourcePlayer({
       updatePlaybackState(true);
     };
     const handlePlaying = () => {
+      wasPlayingRef.current = true;
       setHasEnded(false);
       setIsActuallyPlaying(true);
       setIsWaitingForData(false);

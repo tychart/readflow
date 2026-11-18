@@ -130,6 +130,7 @@ export function ReaderPage() {
   // dead backend surfaces an error instead of being polled forever.
   const [loadRetryAttempt, setLoadRetryAttempt] = useState(0);
   const playIntent = usePlayerStore((state) => state.playIntent);
+  const hasEnded = usePlayerStore((state) => state.hasEnded);
   const setPlayIntent = usePlayerStore((state) => state.setPlayIntent);
   const playbackAnchorIndex = usePlayerStore((state) => state.anchorIndex);
   const setPlaybackAnchorIndex = usePlayerStore(
@@ -194,6 +195,8 @@ export function ReaderPage() {
   const previousSocketStatusRef = useRef(websocketStatus);
 
   const isJobTerminal = isTerminalStatus(job?.status);
+  const jobFolderId = job?.folder_id;
+  const jobNextId = job?.next_job_id;
   useAppBootstrap(!loading && !!job && !isJobTerminal);
 
   // ── Header title ────────────────────────────────────────
@@ -648,6 +651,25 @@ export function ReaderPage() {
   useEffect(() => {
     void refreshReaderState("initial", true, jobId);
   }, [jobId, refreshReaderState]);
+
+  // A phone can miss the final WebSocket/library update while it is backgrounded
+  // or waking. If playback has ended but the terminal job still has no known
+  // successor, reconcile once so a newly available folder neighbour can still
+  // trigger auto-advance. The job id keeps this from polling repeatedly after
+  // the reconciliation returns the same folder shape.
+  useEffect(() => {
+    if (!hasEnded || !jobId || !isJobTerminal || !jobFolderId || jobNextId) {
+      return;
+    }
+    void refreshReaderState("playback-ended");
+  }, [
+    hasEnded,
+    isJobTerminal,
+    jobFolderId,
+    jobId,
+    jobNextId,
+    refreshReaderState,
+  ]);
 
   // Browsers are allowed to suspend a backgrounded tab and its WebSocket. When
   // it becomes visible again, fetch the authoritative detail + manifest instead

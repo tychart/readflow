@@ -33,6 +33,7 @@ const GAP_BUFFERING_EPSILON_SECONDS = 0.5;
  */
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const job = usePlayerStore((state) => state.job);
+  const durationSeconds = usePlayerStore((state) => state.durationSeconds);
   const manifest = usePlayerStore((state) => state.manifest);
   const anchorIndex = usePlayerStore((state) => state.anchorIndex);
   const anchorOffsetSeconds = usePlayerStore(
@@ -246,15 +247,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // the provider already owns end detection, and navigating updates the reader
   // route while this provider (and the audio element) stays mounted.
   //
-  // `hasEnded` is the one signal every way of finishing converges on: the
-  // browser's `ended` event, and the hook's reconciliation of a playhead frozen
-  // at the end of an MSE stream (which is the common case). Advancing from the
-  // `pause`/intent path instead missed that second case, because the reconcile
-  // pauses the element and the `pause` handler clears intent first.
+  // `hasEnded` is the preferred signal every way of finishing converges on:
+  // the browser's `ended` event, and the hook's MSE reconciliation. The direct
+  // terminal-at-end fallback covers mobile engines that pause the element but
+  // expose neither signal reliably; playIntent makes it distinct from a
+  // deliberate paused seek.
   const autoAdvancedForRef = useRef<string | null>(null);
+  const terminalPlaybackAtEnd =
+    !!job?.isTerminal &&
+    playIntent &&
+    !isActuallyPlaying &&
+    renderedDurationSeconds > GAP_BUFFERING_EPSILON_SECONDS &&
+    currentTimeSeconds > GAP_BUFFERING_EPSILON_SECONDS &&
+    currentTimeSeconds >=
+      renderedDurationSeconds - GAP_BUFFERING_EPSILON_SECONDS;
   useEffect(() => {
     // A new end transition is a new chance to advance (a replay, then end again).
-    if (!hasEnded) {
+    if (!hasEnded && !terminalPlaybackAtEnd) {
       autoAdvancedForRef.current = null;
       return;
     }
@@ -263,7 +272,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const state = usePlayerStore.getState();
     const nextJobId = resolveAutoAdvance({
       job: state.job,
-      hasEnded,
+      hasEnded: hasEnded || terminalPlaybackAtEnd,
       streamEndSeconds:
         state.anchorOffsetSeconds + state.renderedDurationSeconds,
       durationSeconds: state.durationSeconds,
@@ -272,7 +281,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!nextJobId || autoAdvancedForRef.current === state.job?.id) return;
     autoAdvancedForRef.current = state.job?.id ?? null;
     playerNavigate(`/jobs/${nextJobId}?play=1`);
-  }, [hasEnded]);
+  }, [
+    currentTimeSeconds,
+    durationSeconds,
+    hasEnded,
+    isActuallyPlaying,
+    job?.id,
+    job?.isTerminal,
+    job?.nextJobId,
+    playIntent,
+    renderedDurationSeconds,
+    terminalPlaybackAtEnd,
+  ]);
 
   useEffect(() => {
     const audio = audioRef.current;

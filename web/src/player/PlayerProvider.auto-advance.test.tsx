@@ -127,6 +127,27 @@ it("opens the next folder job when playback reaches the end", () => {
   expect(navigate).toHaveBeenCalledWith("/jobs/job-2?play=1");
 });
 
+it("advances from a terminal playhead when mobile omits end signals", () => {
+  openTerminalJob();
+  usePlayerStore.getState().setPlayIntent(true);
+  const { rerender } = render(
+    <PlayerProvider>
+      <p>reader</p>
+    </PlayerProvider>,
+  );
+
+  media.player = makePlayer({ hasEnded: false, isActuallyPlaying: false });
+  act(() => {
+    rerender(
+      <PlayerProvider>
+        <p>reader</p>
+      </PlayerProvider>,
+    );
+  });
+
+  expect(navigate).toHaveBeenCalledWith("/jobs/job-2?play=1");
+});
+
 it("does not advance when continuous play is off", () => {
   setReaderSettings({ continuousPlay: false });
   openTerminalJob();
@@ -166,6 +187,42 @@ it("does not advance from the end of a job that has no next job", () => {
   });
 
   expect(navigate).not.toHaveBeenCalled();
+});
+
+it("rechecks a finished job when folder metadata arrives after the end", () => {
+  openTerminalJob(null);
+  const { rerender } = render(
+    <PlayerProvider>
+      <p>reader</p>
+    </PlayerProvider>,
+  );
+
+  media.player = makePlayer({ hasEnded: true });
+  act(() => {
+    rerender(
+      <PlayerProvider>
+        <p>reader</p>
+      </PlayerProvider>,
+    );
+  });
+  expect(navigate).not.toHaveBeenCalled();
+
+  // A mobile tab can miss the library update that supplies the folder
+  // successor. The player must retry the already-observed end when that
+  // metadata is reconciled, rather than requiring a second playback end.
+  act(() => {
+    usePlayerStore.getState().openJob({
+      id: "job-1",
+      title: "First book",
+      isTerminal: true,
+      audioEpoch: 0,
+      folderId: "books",
+      nextJobId: "job-2",
+      previousJobId: null,
+    });
+  });
+
+  expect(navigate).toHaveBeenCalledWith("/jobs/job-2?play=1");
 });
 
 it("does not advance when a gap stopped the stream before the job's end", () => {

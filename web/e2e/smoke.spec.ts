@@ -1747,7 +1747,9 @@ test("library moves a selected job into another folder", async ({ page }) => {
   });
 });
 
-test("finished folder job auto-advances to the next one", async ({ page }) => {
+test("auto-advance opens the next job before its first chunk is ready", async ({
+  page,
+}) => {
   const first = {
     ...buildJob(2, "playing"),
     status: "completed",
@@ -1773,10 +1775,13 @@ test("finished folder job auto-advances to the next one", async ({ page }) => {
     },
   };
   const second = {
-    ...buildJob(1, "queued"),
+    ...buildJob(0, "queued"),
     id: "job-2",
     title: "Second book",
-    chunks: [buildChunk(0)],
+    chunks: [],
+    total_chunks_emitted: 0,
+    total_chunks_completed: 0,
+    buffered_seconds: 0,
     source_kind: "text",
     source_text: "Second book source.",
     plan_version: 1,
@@ -1789,6 +1794,13 @@ test("finished folder job auto-advances to the next one", async ({ page }) => {
     next_job_title: null,
     folder_index: 2,
     folder_count: 2,
+    progress: {
+      fraction: 0,
+      read_status: "unread",
+      heard_chunks: [],
+      remaining_seconds: 0,
+      position_seconds: 0,
+    },
   };
 
   await page.route("**/api/jobs/job-1", async (route) => {
@@ -1814,9 +1826,25 @@ test("finished folder job auto-advances to the next one", async ({ page }) => {
     await route.fulfill({
       json: {
         mime_type: 'audio/mp4; codecs="mp4a.40.2"',
-        init_segment_url: "/api/jobs/job-2/chunks/init",
+        init_segment_url: null,
         chunks: second.chunks,
         audio_epoch: 0,
+      },
+    });
+  });
+  await page.route("**/api/jobs/job-2/activate", async (route) => {
+    await route.fulfill({
+      json: {
+        id: second.id,
+        title: second.title,
+        status: "playing",
+        voice_id: second.voice_id,
+        model_id: second.model_id,
+        is_active_listening: true,
+        total_chunks_emitted: 0,
+        total_chunks_completed: 0,
+        buffered_seconds: 0,
+        completed_seconds: 0,
       },
     });
   });
@@ -1848,6 +1876,10 @@ test("finished folder job auto-advances to the next one", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Second book" }),
   ).toBeVisible();
+  // Navigation must not wait for the next job's producer. The new reader is
+  // visible immediately and remains in its first-chunk preparation state until
+  // that job emits audio.
+  await expect(page.getByText(/Preparing stream/i)).toBeVisible();
 });
 
 test("continuous play off stops at the end of the job", async ({ page }) => {
