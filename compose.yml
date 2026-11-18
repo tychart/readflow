@@ -9,8 +9,8 @@
 # Open http://localhost:8080. The api reserves the GPU; the web image is Caddy
 # serving the SPA and reverse-proxying /api + /api/ws to it.
 #
-# Image variant: `latest` is the generic CUDA/SDPA image and boots on any NVIDIA
-# GPU. For the flash-attn build, either pull it:
+# Image variant: `latest` is the generic CUDA/SDPA image for Ampere-or-newer
+# GPUs. For the flash-attn build, either pull it:
 #   READFLOW_API_IMAGE=ghcr.io/tychart/readflow-api:latest-flash podman compose up -d
 # or build it locally:
 #   READFLOW_FLASH=1 podman compose up -d --build

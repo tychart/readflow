@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.app import create_app
 from app.core.config import Settings
+from app.core.identity import DEFAULT_USER_PASSWORD, DEFAULT_USER_USERNAME
 from app.jobs.models import ChunkRecord
 from app.synthesis.provider import QwenProvider
 from app.voices.registry import VoiceRegistry
@@ -77,6 +78,15 @@ def test_real_qwen_app_serves_packaged_segments(monkeypatch):
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
+                login_response = await client.post(
+                    "/api/auth/login",
+                    json={
+                        "username": DEFAULT_USER_USERNAME,
+                        "password": DEFAULT_USER_PASSWORD,
+                    },
+                )
+                assert login_response.status_code == 200
+
                 response = await client.post(
                     "/api/jobs",
                     data={

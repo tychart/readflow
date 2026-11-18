@@ -39,7 +39,9 @@ Local development is two commands. Postgres is started (and migrated) for you
 if `DATABASE_URL` points at loopback; use `--memory` to skip it entirely:
 
 ```bash
-make install            # one-time: uv sync (server) + bun install (web)
+make install            # one-time portable CPU profile: uv + bun
+# Or, on a supported Ampere-or-newer NVIDIA workstation:
+make install-cuda       # locked CUDA + prebuilt flash-attn profile
 scripts/dev.sh          # api + web, Postgres auto-started and migrated
 scripts/dev.sh --memory # api + web, nothing persisted (local account: local / readflow-local-dev)
 ```
@@ -52,8 +54,38 @@ not the day-to-day loop — see [Container Deployment](#container-deployment). T
 `bun run setup` (setup) and `bun run dev` (run the stack).
 
 That starts the API (uvicorn `--reload`, real Qwen3-TTS by default) and the Vite dev server
-with HMR, waits until both are ready, then follows their logs. Ctrl-C stops both. Use
-`scripts/dev.sh --fake` for instant, GPU-free runs.
+with HMR, waits until the API is ready **before** exposing Vite's proxy, then follows their
+logs. This prevents an already-open browser tab from logging harmless proxy connection refusals
+while it reconnects during a restart. Ctrl-C stops both. Use `scripts/dev.sh --fake` for
+instant, GPU-free runs.
+
+### Native Qwen prerequisites (Fedora)
+
+The `qwen-tts` dependency imports Python's `sox` wrapper at startup. The app's media pipeline
+uses ffmpeg, but that wrapper still probes the **system** `sox` executable and otherwise emits a
+misleading warning on every API start. Install it once outside the Python environment:
+
+```bash
+sudo dnf install sox
+```
+
+Choose exactly one uv runtime profile before the first native run:
+
+```bash
+make install            # portable CPU Torch profile (the default)
+make install-cuda-sdpa  # supported NVIDIA GPU, PyTorch SDPA
+make install-cuda       # supported NVIDIA GPU, SDPA + prebuilt FlashAttention 2
+```
+
+The CUDA profile resolves the exact official prebuilt flash-attn wheel recorded in
+`server/uv.lock`. It matches Linux x86-64, Python 3.12, PyTorch 2.9, CUDA 12.8 and the C++11 ABI
+used by the pinned Torch wheel, so it does **not** compile flash-attn. CPU and CUDA Torch wheels
+come from their respective explicit PyTorch indexes and are both lockfile-managed by `uv sync`.
+`dev.sh` never guesses or changes a selected profile; after setup it launches with
+`uv run --no-sync`, so a restart never mutates `site-packages`.
+
+Container images already include `sox`, and the `-flash` image installs the same lockfile-managed
+CUDA + flash profiles.
 
 Vite binds `0.0.0.0`, so a phone or tablet on the same network can open the URL the script
 prints (`--localhost` restricts it to loopback-only). The API stays on loopback and is
@@ -344,14 +376,12 @@ This architecture is simple on purpose, but that simplicity has consequences.
 When it is absent the provider falls back to PyTorch's SDPA implementation,
 so the app works on development machines without CUDA.
 
-On the target machine with CUDA there are two options:
-
-- `uv sync --extra cuda` compiles flash-attn natively for your GPU architecture
-  (about 30–60 min). On Fedora 44+ the system GCC is too new for CUDA 12.8, so use the
-  container instead.
-- the container images: the default API image runs on PyTorch SDPA and needs no compile,
-  while the `-flash` tag installs a prebuilt flash-attn wheel. See
-  [Container Deployment](#container-deployment).
+For a native Fedora CUDA install, use `make install-cuda` (or
+`uv sync --group dev --extra cuda --extra flash` inside `server/`). The `cuda` profile selects the
+CUDA 12.8 Torch index and the `flash` extra resolves the verified wheel from the lockfile rather
+than compiling the extension, so Fedora's modern system GCC is not involved. The default container
+image uses the CUDA/SDPA profile; its `-flash` variant adds the same lockfile-managed wheel. See
+[Container Deployment](#container-deployment).
 
 `torch` is pinned to `2.9.0` in `server/pyproject.toml` so the prebuilt flash-attn
 wheel matches (CUDA 12.8 + `cu12torch2.9`). Changing that pin means re-checking that a
@@ -369,18 +399,21 @@ matching flash-attn wheel exists.
 
 ### For the real Qwen runtime (native install)
 
-- NVIDIA GPU
-- working CUDA stack visible to PyTorch
-- GCC ≤ 14 (CUDA 12.8 limitation)
-- enough VRAM for `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
-- successful `uv sync --extra cuda`
+- `sox` installed by the system package manager (`sudo dnf install sox` on Fedora)
+- the portable CPU profile (`make install`) for CPU inference, or
+- an Ampere-or-newer NVIDIA GPU with a working CUDA stack and enough VRAM for
+  `Qwen/Qwen3-TTS-12Hz-0.6B-Base`, plus `make install-cuda-sdpa` or
+  `make install-cuda`
 
 ### For the real Qwen runtime (Docker)
 
-- Docker (or Podman with NVIDIA container runtime)
-- enough VRAM for `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
+- Docker or Podman; use `compose.cpu.yml` without an NVIDIA runtime
+- for the GPU stack: Docker with `nvidia-container-toolkit`, or Podman with CDI,
+  and an Ampere-or-newer NVIDIA GPU with enough VRAM
 
-If `torch.cuda.is_available()` is false in your current shell, the real provider and the real-model test suite will fail immediately by design.
+The real provider uses CPU inference when its active Torch profile has no CUDA. The
+opt-in real-model test suite requires CUDA to be visible and is therefore expected to
+fail on the CPU profile.
 
 ## Container Deployment
 
@@ -388,8 +421,8 @@ ReadFlow ships as **two images**, with three api variants:
 
 | Image | Contents |
 |---|---|
-| `ghcr.io/tychart/readflow-api` | CUDA, PyTorch SDPA — boots on any NVIDIA GPU |
-| `ghcr.io/tychart/readflow-api:<tag>-flash` | CUDA, prebuilt flash-attn — fastest attention |
+| `ghcr.io/tychart/readflow-api` | CUDA, PyTorch SDPA — supported on Ampere-or-newer GPUs |
+| `ghcr.io/tychart/readflow-api:<tag>-flash` | CUDA + prebuilt flash-attn — fastest supported path on Ampere-or-newer GPUs |
 | `ghcr.io/tychart/readflow-api:<tag>-cpu` | CPU-only torch — no NVIDIA runtime needed |
 | `ghcr.io/tychart/readflow-web` | Caddy serving the built SPA and proxying `/api` + `/api/ws` |
 
@@ -470,8 +503,8 @@ READFLOW_API_IMAGE=ghcr.io/tychart/readflow-api:latest-flash podman compose up -
 
 ### Why flash-attn needs no compiler
 
-PyTorch 2.9 on PyPI is a **CUDA 12.8** build and flash-attn 2.8.3 publishes a matching
-prebuilt `cu12torch2.9` wheel, so the api image installs flash-attn from that wheel and
+The CUDA profile selects the **PyTorch CUDA 12.8** index and flash-attn 2.8.3 publishes a
+matching prebuilt `cu12torch2.9` wheel, so the api image installs flash-attn from that wheel and
 builds in minutes. The stack is pinned in `server/pyproject.toml` (`torch==2.9.0`,
 `torchaudio==2.9.0`) for exactly this reason — torch 2.11 is a CUDA 13 build with no
 matching flash-attn wheel, which is what previously forced a ~1 hour source compile.
@@ -492,7 +525,7 @@ and on manual dispatch — `latest`, the branch, `sha-<short>`, and semver tags,
 `-flash` and `-cpu` variants.
 
 The api Dockerfile is multi-target: a shared Ubuntu 24.04 builder creates the venv (and
-optionally installs the flash-attn wheel), and two runtime stages (`cuda` and `cpu`)
+optionally enables the lockfile-managed `cuda` extra), and two runtime stages (`cuda` and `cpu`)
 copy it. The builder deliberately matches the runtime distro so the copied venv's
 interpreter path stays valid.
 
@@ -501,8 +534,9 @@ interpreter path stays valid.
 | Activity | Command |
 |---|---|
 | Day-to-day dev (whole app, hot reload) | `scripts/dev.sh` |
-| Day-to-day dev (backend only) | `uv sync --extra dev && uv run uvicorn main:app --reload` |
-| Real-model test (native) | `uv sync --extra cuda` then `uv run pytest -m real_model` |
+| Day-to-day dev (backend only, CPU) | `uv sync --group dev --extra cpu && uv run --no-sync uvicorn main:app --reload` |
+| Native CUDA + FlashAttention setup | `make install-cuda` |
+| Real-model test (native) | `make test-real-model` |
 | Run containers from source | `podman compose up -d --build` |
 | Fast image check | `scripts/compose-smoke.sh` |
 | Logs / stop | `make docker-logs` / `make docker-down` |
@@ -521,7 +555,10 @@ Or separately:
 
 ```bash
 cd server
-uv sync --extra dev --extra utils
+uv sync --group dev --extra cpu
+
+# Or on a supported NVIDIA GPU:
+uv sync --group dev --extra cuda --extra flash
 ```
 
 ### Frontend

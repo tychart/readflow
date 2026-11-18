@@ -114,7 +114,15 @@ That means future agents should preserve the current core Qwen call pattern:
 
 Do not refactor the provider toward some different wrapper abstraction unless the user asks for that.
 
-### 4. Prefer simple, stable playback fixes over clever browser-event guesswork
+### 4. Privileged commands require an explicit user-run step
+
+Never try to bypass, fake, or work around missing `sudo` access. It is unavailable for a reason.
+If work needs a privileged command, use `ask_user_question` to ask Tyler to run the exact
+command, then wait for their explicit confirmation before doing dependent verification or
+changes. Approval to make a change is not permission to attempt non-interactive sudo or another
+privilege-escalation route.
+
+### 5. Prefer simple, stable playback fixes over clever browser-event guesswork
 
 A lot of the recent work in this repo was about the custom streaming player. The user is explicitly fine with architectural changes during development if they make the system simpler and more reliable.
 
@@ -2170,10 +2178,13 @@ Design rules that are deliberate and easy to break:
 - **Never kill by pattern.** Only pids this script recorded are signalled, and each child is
   started with `setsid` so `kill -TERM -<pid>` reaches `uv run` *and* the `uvicorn --reload`
   child. Process groups are why `stop` cannot take out an unrelated dev server.
-- **`uv run` is used without `--no-sync` only when the venv has no flash-attn.** A sync prunes
-  undeclared packages; if the user has a locally built `flash-attn` (≈1h rebuild) the script
-  switches to `uv run --no-sync`. It also never syncs an existing `server/.venv` — only a
-  missing one, with `--extra dev --extra utils`.
+- **Python profiles are normal uv state.** `cpu` and `cuda` select their matching locked
+  Torch indexes, while the `flash` extra is the official prebuilt FlashAttention wheel pinned in
+  `pyproject.toml` and `uv.lock`. `make install` runs the portable CPU profile;
+  `make install-cuda` runs `uv sync --group dev --extra cuda --extra flash`.
+  `dev.sh` never changes an existing profile implicitly and launches with `uv run --no-sync`, so a
+  restart cannot modify `site-packages`. There is no manually installed wheel, `uv pip` bypass, or
+  conditional preservation workaround.
 - **Signal handling is split.** `startup_signal` (installed before the first child) stops
   everything if the user interrupts during startup; `cleanup` (installed before `follow`)
   also removes the state file. `follow` backgrounds `tail -F` and `wait`s on it, because a
@@ -2343,7 +2354,8 @@ That is intentional.
 ### Install
 
 ```bash
-make install        # bun install (web) + uv sync --extra dev --extra utils (server)
+make install        # bun install (web) + locked CPU uv profile (server)
+make install-cuda   # supported NVIDIA GPU + locked FlashAttention profile
 ```
 
 or per half:
@@ -2353,7 +2365,8 @@ cd web
 bun install
 
 cd server
-uv sync --extra dev --extra utils
+uv sync --group dev --extra cpu
+# Supported NVIDIA GPU: uv sync --group dev --extra cuda --extra flash
 ```
 
 ### Run the whole app (the normal path)
@@ -2414,19 +2427,22 @@ Do not casually perturb:
 - build dependency configuration
 - Qwen runtime dependency graph
 
-**`flash-attn` is now an optional dependency (`[project.optional-dependencies] cuda`)**.
-Normal `uv sync` does not pull it. The QwenProvider falls back to SDPA when it is absent.
-This means daily development, testing, and CI do not trigger a flash-attn compile.
+**Torch profiles and `flash-attn` are uv-managed optional dependencies.** `cpu` and `cuda`
+select their respective official Torch indexes; `flash` points directly at the official prebuilt
+Linux x86-64 / CPython 3.12 / PyTorch 2.9 / CUDA 12.8 C++11-ABI wheel. `uv.lock` pins every
+profile, and the CPU and CUDA profiles are explicitly incompatible. The QwenProvider falls back
+to SDPA when `flash` is absent, keeping daily development, testing and CI free of CUDA compilation.
 
 Production / GPU installs use one of:
 
-- `uv sync --extra cuda` on a compatible machine (GCC ≤ 14)
+- `make install-cuda` (equivalently,
+  `uv sync --group dev --extra cuda --extra flash`)
 - the published container images (see the container section below)
 
 **Three api variants plus one web image are published to GHCR by
 `.github/workflows/images.yml`:**
 
-- `ghcr.io/tychart/readflow-api` — CUDA, PyTorch SDPA (universal default)
+- `ghcr.io/tychart/readflow-api` — CUDA, PyTorch SDPA (Ampere-or-newer default)
 - `ghcr.io/tychart/readflow-api:<tag>-flash` — CUDA, prebuilt flash-attn
 - `ghcr.io/tychart/readflow-api:<tag>-cpu` — CPU-only torch, no NVIDIA runtime
 - `ghcr.io/tychart/readflow-web` — Caddy serving the built SPA and proxying
@@ -2440,13 +2456,13 @@ no wrapper script. `compose.cpu.yml` is the no-GPU stack. `.env` (from
 provider. The `hf-cache` named volume holds the Hugging Face weights; they are
 **never baked into an image**.
 
-**flash-attn is installed from a PREBUILT wheel — no compiler, no ~1 h build.**
+**flash-attn is installed from a prebuilt wheel through uv — no compiler, no ~1 h build.**
 That only works because `torch` is pinned to `2.9.0` in `server/pyproject.toml`:
-PyPI torch 2.9 is a CUDA 12.8 build and flash-attn 2.8.3 publishes a matching
-`cu12torch2.9` wheel (the Dockerfile detects the CXX11 ABI, `TRUE` here).
-torch 2.11 is a CUDA 13 build with no matching wheel, which is what previously
-forced a source compile against a mismatched toolkit. If you bump `torch`,
-verify a matching flash-attn wheel exists before shipping `-flash`.
+the CUDA Torch profile selects CUDA 12.8 and flash-attn 2.8.3 publishes the matching
+`cu12torch2.9` C++11-ABI wheel. The direct URL is part of the optional `flash` extra and
+`uv.lock`, so the Dockerfile and native setup use the same dependency definition. Torch 2.11 is
+a CUDA 13 build with no matching wheel; if you bump torch, verify and update the locked wheel
+before shipping `-flash`.
 
 Verified end to end on this machine: the `-flash` image reports
 `torch 2.9.0+cu128`, `cuda_available True`, `flash_attn 2.8.3`, provider
@@ -2468,11 +2484,10 @@ Do not remove or significantly change `server/Dockerfile` without understanding:
 - the builder must install `curl` explicitly (the CUDA/Ubuntu bases have none).
   The uv installer is fetched with `curl | sh`, and the pipeline masks a missing
   `curl` as success, so `uv` would silently never install.
-- the flash-wheel step runs `cd / && uv pip install --no-config ...`. The
-  `--no-config` matters: `[tool.uv.extra-build-dependencies] flash-attn` (needed
-  for *native source builds*) otherwise makes uv look for `torch` in the one-wheel
-  resolution and abort with "declared as an extra build dependency ... but was not
-  found in the resolution".
+- the flash image enables the same `uv sync --extra cuda --extra flash` profiles as a native
+  accelerated install; the CPU image uses `uv sync --extra cpu`. Do not restore an ad-hoc
+  `uv pip install` wheel step or native-build dependency configuration; one lockfile-owned
+  dependency definition is intentional.
 - the runtime installs `libsndfile1` (there is **no** `libsndfile1-2` package on
   Ubuntu 24.04) and bakes in `server/voices/`, because `VoiceRegistry` fails fast
   when the voices directory is missing or empty.
@@ -3159,9 +3174,9 @@ Container distribution round (two passes):
    prebuilt `cu12torch2.9` flash-attn wheel applies; the api Dockerfile became
    multi-target (`cuda` / `cpu`, flash via build arg) with a distro-matched
    builder. A real GPU job was rendered to prove it.
-4. **Three api variants.** default CUDA/SDPA, `-flash`, and `-cpu`; the CPU
-   variant resolves CPU torch through `uv pip install --torch-backend=cpu` (the
-   one place the frozen lock is not used, because the lock pins the CUDA torch).
+4. **Three api variants.** default CUDA/SDPA, `-flash`, and `-cpu`; every
+   variant uses its locked uv profile (`cuda`, `cuda` + `flash`, or `cpu`), so
+   the CPU image no longer has a separate `uv pip install` resolution path.
 5. **compose builds from source.** `compose.yml`/`compose.cpu.yml` carry `build:`
    as well as `image:`, so `podman compose up -d --build` is the whole dev flow;
    `scripts/compose-smoke.sh` is the seconds-long image check.

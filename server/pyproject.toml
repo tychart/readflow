@@ -10,6 +10,10 @@ dependencies = [
   "numpy>=2.0",
   "pydantic>=2.11.4",
   "pydantic-settings>=2.9.1",
+  # `PasswordHash.recommended()` uses argon2id for account credentials.
+  "pwdlib[argon2]>=0.2.1",
+  # Used directly by the production Admin memory telemetry.
+  "psutil>=6.0.0",
   "python-multipart>=0.0.20",
   "qwen-tts",
   # SQLAlchemy Core only (no ORM): app/db/schema.py is the metadata Alembic
@@ -18,22 +22,30 @@ dependencies = [
   # psycopg3 async driver for the Postgres adapter; alembic owns migrations.
   "psycopg[binary]>=3.2",
   "alembic>=1.13",
-  # Pinned deliberately. PyPI torch 2.9 is a CUDA 12.8 build that matches the
-  # nvidia/cuda:12.8 base images AND has a prebuilt flash-attn 2.8.3 wheel
-  # (cu12torch2.9), so the container never has to compile flash-attn.
-  # torch 2.11 moved to CUDA 13 and has no matching flash-attn wheel.
-  "torch==2.9.0",
-  "torchaudio==2.9.0",
   "uvicorn[standard]>=0.34.2"
 ]
 
 [project.optional-dependencies]
+# Runtime profiles are intentionally explicit. They select the matching Torch
+# wheel source below, so CPU Docker builds and native CUDA installs are both
+# normal `uv sync` operations covered by this lockfile.
+cpu = [
+  "torch==2.9.0",
+  "torchaudio==2.9.0",
+]
 cuda = [
-  "flash-attn==2.8.3"
+  "torch==2.9.0",
+  "torchaudio==2.9.0",
 ]
-utils = [
-  "psutil>=6.0.0",
+# FlashAttention is an optional acceleration on top of the CUDA profile. The
+# direct official wheel is for Linux x86-64 / CPython 3.12 / Torch 2.9 / CUDA
+# 12.8 / C++11 ABI, so uv installs it without a local CUDA build.
+flash = [
+  "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3%2Bcu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
 ]
+
+[dependency-groups]
+# Local tooling, not a published/runtime feature.
 dev = [
   "httpx>=0.28.1",
   "pyright>=1.1.400",
@@ -45,6 +57,38 @@ dev = [
   "hypothesis>=6.100"
 ]
 
+[tool.uv]
+# The CPU and CUDA wheels provide the same packages from different PyTorch
+# indexes. A profile must select exactly one; flash is meaningful only with
+# CUDA and is explicitly incompatible with the CPU profile.
+conflicts = [
+  [{ extra = "cpu" }, { extra = "cuda" }],
+  [{ extra = "cpu" }, { extra = "flash" }],
+]
+
+[tool.uv.sources]
+# PyPI's current Torch wheel is CUDA-enabled, but the CPU container must use
+# the CPU index. Selecting sources by profile keeps both variants locked and
+# removes the former `uv pip install --torch-backend=cpu` escape hatch.
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cuda" },
+]
+torchaudio = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cuda" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -52,14 +96,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
-[tool.uv.extra-build-dependencies]
-flash-attn = [
-  { requirement = "torch", match-runtime = true },
-  "packaging",
-  "wheel",
-  "setuptools",
-  "ninja"
-]
+# The CUDA extra intentionally pins an official wheel URL. Hatch requires this
+# explicit opt-in before it can build the editable project metadata.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

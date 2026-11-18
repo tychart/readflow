@@ -1,17 +1,31 @@
 SHELL := /bin/bash
 UV_CACHE_DIR := /tmp/readflow-uv-cache
 
-.PHONY: install dev test-web test-server test-e2e test test-fast test-db lint lint-fix typecheck test-real-model \
+.PHONY: install install-cpu install-cuda install-cuda-sdpa dev test-web test-server test-e2e test test-fast test-db lint lint-fix typecheck test-real-model \
         db-up db-down db-reset migrate probe \
         cuda-install docker-build docker-build-flash docker-build-cpu docker-build-all \
         docker-run docker-run-cpu docker-logs docker-down docker-smoke docker-clean
 
 # ── Setup ─────────────────────────────────────
-# Bun owns the frontend, uv owns the backend.
+# Bun owns the frontend and uv owns the backend. `install` is the portable CPU
+# profile; use the explicit CUDA target on a supported NVIDIA workstation.
 
-install:
-	cd web && bun install
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv sync --extra dev --extra utils
+install: install-cpu
+
+install-cpu:
+	cd web && bun install --frozen-lockfile
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv sync --group dev --extra cpu
+
+# Native CUDA setup uses the locked CUDA Torch profile plus the official
+# prebuilt flash-attn wheel. It never invokes a local CUDA compiler.
+install-cuda:
+	cd web && bun install --frozen-lockfile
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv sync --group dev --extra cuda --extra flash
+
+# Useful for diagnosing a compatible NVIDIA system without FlashAttention.
+install-cuda-sdpa:
+	cd web && bun install --frozen-lockfile
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv sync --group dev --extra cuda
 
 # ── Local development ─────────────────────────
 # scripts/dev.sh is the one-command local stack (uvicorn --reload + Vite).
@@ -25,7 +39,7 @@ test-web:
 	cd web && bun run test:run
 
 test-server:
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pytest
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync pytest
 
 test-e2e:
 	cd web && bun run test:e2e
@@ -34,7 +48,7 @@ test: test-web test-server
 
 # Server tests without the coverage harness: the fast loop while iterating.
 test-fast:
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pytest --no-cov -q
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync pytest --no-cov -q
 
 # ── Database ──────────────────────────────────
 # A local Postgres for development and the adapter contract suite. Postgres 18
@@ -61,13 +75,13 @@ TEST_PG_URL ?= postgresql+psycopg://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_POR
 # `test-db` runs the adapter contract suite against real Postgres (it skips
 # itself when READFLOW_TEST_DATABASE_URL is unset).
 test-db:
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) READFLOW_TEST_DATABASE_URL=$(TEST_PG_URL) uv run pytest
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) READFLOW_TEST_DATABASE_URL=$(TEST_PG_URL) uv run --no-sync pytest
 
 # Alembic arrives with the Postgres adapter; until then this explains itself
 # instead of failing with "No such file: alembic.ini".
 migrate:
 	@if [ -f server/alembic.ini ]; then \
-		cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run alembic upgrade head; \
+		cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync alembic upgrade head; \
 	else \
 		echo "alembic.ini not present yet (migrations land with the Postgres adapter)"; \
 	fi
@@ -103,40 +117,32 @@ db-reset:
 
 # Read-model measurement harness (see docs/plan-postgres-auth.md).
 probe:
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run python ../scripts/diagnostics/hot_path_probe.py $(ARGS)
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync python ../scripts/diagnostics/hot_path_probe.py $(ARGS)
 
 # Biome owns formatting + linting for web/ (biome.jsonc at the repo root);
 # ruff owns the same for server/.
 lint:
 	cd web && bun run lint
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff check .
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff format --check .
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync ruff check .
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync ruff format --check .
 
 lint-fix:
 	cd web && bun run lint:fix
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff check --fix .
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run ruff format .
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync ruff check --fix .
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync ruff format .
 
 typecheck:
 	cd web && bun run typecheck
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run pyright
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync pyright
 
 test-real-model:
-	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) READFLOW_ENABLE_REAL_MODEL_TESTS=1 uv run pytest -m real_model
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) uv sync --group dev --extra cuda --extra flash
+	cd server && UV_CACHE_DIR=$(UV_CACHE_DIR) READFLOW_ENABLE_REAL_MODEL_TESTS=1 uv run --no-sync pytest -m real_model
 
 # ── CUDA / flash-attn (native install) ────────
-# Only needed if you want to install flash-attn on the host.
-# On Fedora 44+ (GCC > 14), this will fail — use docker-build instead.
-#
-# For older GCC setups:
-#   make cuda-install
-#
-# For RTX 30xx:
-#   FLASH_ATTN_CUDA_ARCHS=86 make cuda-install
-
-cuda-install:
-	cd server && \
-	uv sync --extra cuda
+# The CUDA + flash profiles are official locked wheels for Linux x86-64 /
+# CPython 3.12 / Torch 2.9 / CUDA 12.8. No system CUDA compiler is required.
+cuda-install: install-cuda
 
 # ── Containers ─────────────────────────────────
 # Engine auto-detects docker, then podman. Override: `make docker-build ENGINE=podman`.

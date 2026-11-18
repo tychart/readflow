@@ -65,11 +65,11 @@
 #     earlier failure is still diagnosable.
 #   * Nothing is ever killed by pattern — only the pids this script recorded, each
 #     in its own session so `uvicorn --reload`'s children go with it.
-#   * If server/.venv is missing it is created with
-#     `uv sync --extra dev --extra utils`. An existing venv is never re-synced
-#     implicitly, because a sync prunes undeclared packages — including a locally
-#     built flash-attn, which can take ~1h to rebuild. When flash-attn is present
-#     the api runs with `uv run --no-sync` for exactly that reason.
+#   * `uv sync` is the only operation that changes an existing Python environment.
+#     On first use this script creates the portable CPU profile; run
+#     `make install-cuda` first on a supported NVIDIA workstation. Every later
+#     process launch is `uv run --no-sync`, which keeps a restart from mutating
+#     the locked environment or triggering a reload from site-packages changes.
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -112,7 +112,6 @@ no_server="${DEV_NO_SERVER:-0}"
 no_web="${DEV_NO_WEB:-0}"
 no_follow="${DEV_NO_FOLLOW:-0}"
 access_log="${DEV_ACCESS_LOG:-0}"
-no_sync=0
 api_foreign=0
 web_foreign=0
 api_url="http://localhost:$api_port"
@@ -406,15 +405,13 @@ preflight() {
     die "voice assets missing: ${missing[*]}"
   fi
 
-  if [[ -x server/.venv/bin/python ]]; then
-    # Cheap check (no torch import). Never re-sync an existing venv: a sync
-    # would prune a locally built flash-attn, which costs ~1h to rebuild.
-    if compgen -G "server/.venv/lib/python*/site-packages/flash_attn" >/dev/null; then
-      no_sync=1
-    fi
-  else
-    info "server/.venv missing — running ${BOLD}uv sync --extra dev --extra utils${OFF}"
-    (cd server && uv sync --extra dev --extra utils)
+  # `uv sync` owns environment changes. A first-run checkout gets the portable
+  # CPU profile. CUDA is deliberately explicit (`make install-cuda`): package
+  # metadata cannot tell whether this host has a supported GPU, and a restart
+  # must never rewrite site-packages under WatchFiles.
+  if [[ ! -x server/.venv/bin/python ]]; then
+    info "server/.venv missing — running ${BOLD}uv sync --group dev --extra cpu${OFF}"
+    (cd server && uv sync --group dev --extra cpu)
   fi
 
   if [[ ! -x web/node_modules/.bin/vite ]]; then
@@ -503,7 +500,7 @@ ensure_database() {
   info "applying migrations"
   local migration_log; migration_log=$(mktemp)
   if ! ( cd "$SERVER_DIR" && READFLOW_DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
-        uv run alembic upgrade head ) >"$migration_log" 2>&1; then
+        uv run --no-sync alembic upgrade head ) >"$migration_log" 2>&1; then
     warn "the migration failed:"
     tail -n 12 "$migration_log" | sed 's/^/      /' >&2
     if grep -qiE "password authentication|authentication failed|role .* does not exist" "$migration_log"; then
@@ -544,7 +541,7 @@ wipe_database() {
   if ! (
     cd "$SERVER_DIR" &&
       DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
-        uv run python - <<'PY'
+        uv run --no-sync python - <<'PY'
 import asyncio
 import os
 
@@ -570,7 +567,7 @@ PY
   ok "schema dropped"
   info "applying migrations"
   ( cd "$SERVER_DIR" && DATABASE_URL="$database_url" UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/readflow-uv-cache}" \
-      uv run alembic upgrade head >/dev/null ) || die "database migration failed"
+      uv run --no-sync alembic upgrade head >/dev/null ) || die "database migration failed"
   ok "fresh schema is up to date"
   hint "every account and job is gone; the next visit shows /setup"
 }
@@ -607,9 +604,9 @@ start_api() {
   local flags=(--reload --port "$api_port" --no-access-log)
   (($access_log)) && flags=(--reload --port "$api_port" --access-log)
 
-  local uv_args=(run)
-  ((no_sync)) && uv_args+=(--no-sync)
-  uv_args+=(uvicorn main:app "${flags[@]}")
+  # Setup above owns synchronization. Never let a hot-reload process mutate
+  # site-packages: it would make WatchFiles restart the server mid-startup.
+  local uv_args=(run --no-sync uvicorn main:app "${flags[@]}")
 
   info "starting api on ${BOLD}$api_url${OFF} ${DIM}(provider: $provider)${OFF}"
   local api_env=("READFLOW_TTS_PROVIDER=$provider")
@@ -622,9 +619,6 @@ start_api() {
   fi
   start_proc server "$API_LOG" env "${api_env[@]}" uv "${uv_args[@]}"
   api_pid=$proc_pid
-  if ((no_sync)); then
-    hint "flash-attn present — running with 'uv run --no-sync' to avoid pruning the CUDA extra"
-  fi
   return 0
 }
 
@@ -833,16 +827,11 @@ start() {
   ensure_database
   ((wipe_db)) && wipe_database
   start_api
-  start_web
 
-  if ((${#pids[@]} == 0)); then
-    trap - INT TERM
-    warn "nothing started — see the messages above"
-    rm -f "$STATE_FILE"
-    return 0
-  fi
-  state_write
-
+  # A browser tab from the previous run reconnects as soon as Vite comes back.
+  # Do not expose Vite's proxy until the API can accept those HTTP/WebSocket
+  # requests; starting both processes at once produced harmless but noisy
+  # ECONNREFUSED errors for /api/auth/status and /api/ws on every restart.
   local failed=0
   if ((!no_server)) && [[ -n $api_pid ]]; then
     if alive "$api_pid"; then
@@ -855,6 +844,23 @@ start() {
       report_failure "api (exited immediately)" "$API_LOG"
     fi
   fi
+  if ((failed)); then
+    warn "stopping what did start"
+    stop_pids "${pids[@]}"
+    rm -f "$STATE_FILE"
+    die "start failed — fix the error above and rerun scripts/dev.sh"
+  fi
+
+  start_web
+
+  if ((${#pids[@]} == 0)); then
+    trap - INT TERM
+    warn "nothing started — see the messages above"
+    rm -f "$STATE_FILE"
+    return 0
+  fi
+  state_write
+
   if ((!no_web)) && [[ -n $web_pid ]]; then
     if alive "$web_pid"; then
       wait_ready "web ready on $web_url" 60 web_ready || {

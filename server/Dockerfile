@@ -42,21 +42,15 @@ FROM base AS builder
 COPY pyproject.toml uv.lock ./
 COPY app/ app/
 COPY main.py ./
-# `utils` installs psutil, which the Admin memory panel imports at runtime.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra utils
-
-# Optional flash-attn. The wheel must match torch's CXX11 ABI, so it is detected
-# rather than assumed; a mismatch is a hard error at build time.
+# The runtime profile selects the Torch wheel source. The optional flash extra
+# is a direct official wheel URL in pyproject.toml and uv.lock, so native and
+# container installs share the same fully locked `uv sync` contract.
 ARG INSTALL_FLASH_ATTN=0
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$INSTALL_FLASH_ATTN" = "1" ]; then \
-        ABI=$(./.venv/bin/python -c \
-            "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')"); \
-        WHEEL="flash_attn-2.8.3%2Bcu12torch2.9cxx11abi${ABI}-cp312-cp312-linux_x86_64.whl"; \
-        echo "Installing prebuilt flash-attn wheel for cxx11abi=${ABI}"; \
-        cd / && uv pip install --no-config --python /app/server/.venv/bin/python --no-deps \
-            "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/${WHEEL}"; \
+        uv sync --frozen --no-dev --extra cuda --extra flash; \
+    else \
+        uv sync --frozen --no-dev --extra cuda; \
     fi
 
 # ── CPU application environment ───────────────────────────────────────────
@@ -64,12 +58,10 @@ FROM base AS builder-cpu
 COPY pyproject.toml uv.lock ./
 COPY app/ app/
 COPY main.py ./
-# This is the one stage that resolves instead of using the frozen lock: the lock
-# pins the CUDA build of torch, and CPU torch wheels come from the PyTorch CPU
-# index that uv selects with --torch-backend=cpu.
+# The CPU Torch index is selected by the lockfile-managed `cpu` profile. No
+# `uv pip install` bypass or separate dependency resolution is needed.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv .venv && \
-    uv pip install --python .venv/bin/python --torch-backend=cpu -e ".[utils]"
+    uv sync --frozen --no-dev --extra cpu
 
 # ── Runtime: CPU ──────────────────────────────────────────────────────────
 FROM docker.io/library/ubuntu:24.04 AS cpu
@@ -79,7 +71,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/home/readflow/.cache/huggingface
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.12 python3.12-venv libsndfile1 ffmpeg \
+    python3.12 python3.12-venv libsndfile1 ffmpeg sox \
+    # qwen-tts imports the Python sox wrapper, which probes this executable at startup.
     # `pg_dump` lives in postgresql-client (admin backups); libpq is psycopg's
     # runtime. Both are small and stay out of the builder.
     postgresql-client libpq5 \
@@ -113,7 +106,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/home/readflow/.cache/huggingface
 # libsndfile1 is the Ubuntu 24.04 package name (there is no `libsndfile1-2`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.12 python3.12-venv libsndfile1 ffmpeg \
+    python3.12 python3.12-venv libsndfile1 ffmpeg sox \
+    # qwen-tts imports the Python sox wrapper, which probes this executable at startup.
     # `pg_dump` lives in postgresql-client (admin backups); libpq is psycopg's
     # runtime. Both are small and stay out of the builder.
     postgresql-client libpq5 \
